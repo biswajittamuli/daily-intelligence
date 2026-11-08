@@ -164,13 +164,13 @@ class NewsTaxonomyTests(unittest.TestCase):
 
     def test_topic_classification(self):
         self.assertEqual(classify_topic("Startup raises $20M Series A for AI agents platform funding"),
-                         "Funding & startups")
+                         "Startup funding")
         self.assertEqual(classify_topic("Government issues AI regulation guidelines policy"), "Policy & regulation")
 
     def test_regional_news_plan_carries_region_in_every_query(self):
         prefs = validate_preferences({"news": {"region": "India"}})
         plan = build_plan("news", "", prefs, max_queries=6, freshness_days=7, region="India",
-                          topic="Funding & startups")
+                          topic="Startup funding")
         self.assertTrue(all("India" in query or query.startswith("site:") or "IndiaAI" in query
                             for query in plan.queries))
         self.assertTrue(any("site:inc42.com" in query or "site:analyticsindiamag.com" in query
@@ -296,7 +296,7 @@ class MarketAndExportTests(unittest.TestCase):
                  "posted_date": "2026-11-05", "employer": "Acme"},
                 {"title": "Backend Developer", "skills": ["Java", "Kubernetes"],
                  "source_platform": "careers.example.com", "posted_date": "2026-10-30"}]
-        market = job_market(jobs, today=TODAY, resumes=[{"profile": {"skills": ["Python"]}}])
+        market = job_market(jobs, today=TODAY, resumes=[{"is_default": True, "profile": {"skills": ["Python", "SQL", "Git", "Linux", "FastAPI"]}}])
         self.assertIn("AI / ML", market["skills_by_role"]["roles"])
         self.assertEqual(market["skill_gap"][0]["name"], "Kubernetes")
         self.assertEqual(len(market["weekly"]), 12)

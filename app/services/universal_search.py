@@ -16,13 +16,15 @@ from app.config import Settings
 from app.llm import LocalModelError, OllamaProvider
 from app.memory.store import Store
 
-CATEGORIES = ("jobs", "government", "exams", "news", "papers")
-LABELS = {"jobs": "Jobs", "government": "Government & PSU", "exams": "Exams", "news": "AI News",
+CATEGORIES = ("jobs", "startups", "government", "exams", "news", "papers")
+LABELS = {"jobs": "Jobs", "startups": "Startups & employers", "government": "Government & PSU", "exams": "Exams", "news": "AI News",
           "papers": "Research Papers", "research": "Research"}
 
 RULES: dict[str, re.Pattern[str]] = {
     "jobs": re.compile(r"\b(jobs?|hiring|vacanc\w*|openings?|internships?|role|roles|positions?|"
-                       r"careers?|apply|fresher|sde|engineer jobs|developer jobs)\b", re.I),
+                       r"careers?(?! pages?)|apply|fresher|sde|engineer jobs|developer jobs)\b", re.I),
+    "startups": re.compile(r"\b(start-?ups?|employers?|companies|career pages?|recently funded|portfolio companies)\b",
+                           re.I),
     "government": re.compile(r"\b(government|govt|psu|sarkari|public sector|ssc|upsc|isro|drdo|bhel|"
                              r"ongc|ntpc|iocl|bank po|railway|rrb|notification for recruitment|"
                              r"recruitment)\b", re.I),
@@ -37,6 +39,12 @@ RULES: dict[str, re.Pattern[str]] = {
 
 def classify_rules(request: str) -> list[str]:
     found = [category for category, pattern in RULES.items() if pattern.search(request or "")]
+    # A startup *jobs* request is a job search (which discovers employers itself).
+    if "startups" in found and "jobs" in found:
+        found.remove("startups")
+    if "news" in found and "startups" in found and re.search(r"\b(funding|raises|raised)\b", request, re.I) \
+            and not re.search(r"\b(career pages?|employers?|discover)\b", request, re.I):
+        found.remove("startups")
     # "recruitment" alone with a company/job context should stay jobs-only.
     if "government" in found and "jobs" in found and not re.search(
             r"\b(government|govt|psu|sarkari|public sector)\b", request, re.I):
@@ -52,7 +60,7 @@ async def classify(request: str, settings: Settings, *, use_model: bool = True) 
     provider = OllamaProvider(host=settings.ollama_host, preferred_model=settings.ollama_model,
                               timeout=min(settings.ollama_timeout, 40.0))
     prompt = ("Classify the user's request for a personal intelligence assistant. Categories: "
-              "jobs (job/internship vacancies), government (government/PSU recruitment), exams "
+              "jobs (job/internship vacancies), startups (discover companies/startups and their career pages), government (government/PSU recruitment), exams "
               "(examination dates/notifications), news (AI/tech news), papers (research papers), "
               "research (any other question). Return JSON "
               '{"categories":[...],"query":"short search phrase without filler"}. '
@@ -116,6 +124,13 @@ async def run_universal(request: str, *, settings: Settings, store: Store, prefe
                 summary = await BroadJobSearch(settings, store, preferences).run(
                     _strip_job_words(query_for("jobs")) if categories is None else "", pool_size=pool,
                     progress=step, cancel_event=cancel_event)
+            elif category == "startups":
+                from app.services.employer_discovery import EmployerDiscovery
+                topic = "AI" if re.search(r"\b(ai|ml|llm|genai)\b", query, re.I) else (query.split()[0] if query else "AI")
+                summary = await EmployerDiscovery(settings, store).run(
+                    query_for("startups"), topic=topic, progress=step, cancel_event=cancel_event)
+                summary["records"] = summary.get("employers_saved")
+                summary["raw_results"] = summary.get("results")
             elif category == "research":
                 if research is None:
                     summary = {"status": "skipped", "reason": "Research is not available here"}

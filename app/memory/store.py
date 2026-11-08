@@ -842,6 +842,8 @@ class Store:
                      record.get("peer_reviewed") or "not_verified",
                      record.get("freshness") or "unverified", _json(record.get("evidence") or []),
                      _json(record.get("raw")), first_seen, now))
+                if record.get("updated_date"):
+                    db.execute("UPDATE intel_items SET updated_date=? WHERE canonical_url=?", (record["updated_date"], url))
                 row = db.execute("SELECT * FROM intel_items WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "intel_items"))
         return saved

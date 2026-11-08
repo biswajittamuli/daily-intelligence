@@ -77,6 +77,14 @@ JOB_BOARD_HINTS = ("wellfound", "naukri", "indeed", "linkedin", "workatastartup"
 
 
 def _skill_name(value: str) -> str | None:
+    from app.services.skills_taxonomy import canonical
+    name = canonical(value)
+    if name and name != " ".join(str(value or "").split()):
+        return name
+    return _legacy_skill_name(value)
+
+
+def _legacy_skill_name(value: str) -> str | None:
     clean = " ".join(str(value or "").split()).strip(" .,/|-")
     if not clean or len(clean) > 40:
         return None
@@ -156,6 +164,13 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
                resumes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     today = today or date.today()
     resumes = resumes or []
+    # Count each opening once: same employer|title|city across sources is one listing.
+    unique: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        key = job.get("dedup_key") or str(job.get("canonical_url") or job.get("original_url") or id(job))
+        unique.setdefault(key, job)
+    duplicates_removed = len(jobs) - len(unique)
+    jobs = list(unique.values())
     skills: Counter[str] = Counter()
     roles: Counter[str] = Counter()
     portals: Counter[str] = Counter()
@@ -231,6 +246,60 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
             resume_fit.append({"label": label, "families": {
                 family: round(sum(values) / len(values)) for family, values in families.items()}})
 
+    # ---- v2 analytics: dataset integrity and richer breakdowns
+    def experience_bucket(job: dict[str, Any]) -> str:
+        required = ((job.get("eligibility") or {}).get("experience") or {}).get("required_min")
+        if required is None:
+            return "Not stated"
+        return "0-1 yrs" if required <= 1 else "2 yrs" if required <= 2 else "3-5 yrs" if required <= 5 else "6+ yrs"
+
+    posted_dates = [parse_date(job.get("posted_date")) for job in jobs]
+    reliable = [value for value in posted_dates if value and value <= today]
+    employer_names = Counter(" ".join(str(job.get("employer")).split()) for job in jobs if job.get("employer"))
+    source_names = Counter(_portal_name(job) for job in jobs)
+    city_counter = Counter(_location(str(job.get("location") or "")) for job in jobs)
+    by_city: dict[str, Counter[str]] = {}
+    by_exp: dict[str, Counter[str]] = {}
+    by_employer: dict[str, Counter[str]] = {}
+    new_skills: Counter[str] = Counter()
+    weekly_skill: dict[str, Counter[str]] = {}
+    for job in jobs:
+        job_skills = _job_skills(job)
+        by_city.setdefault(_location(str(job.get("location") or "")), Counter()).update(job_skills)
+        by_exp.setdefault(experience_bucket(job), Counter()).update(job_skills)
+        if job.get("employer"):
+            by_employer.setdefault(" ".join(str(job["employer"]).split()), Counter()).update(job_skills)
+        first = parse_date(str(job.get("first_seen") or "")[:10])
+        if first and (today - first).days <= 7:
+            new_skills.update(job_skills)
+        seen_on = parse_date(job.get("posted_date")) or first
+        if seen_on and 0 <= (today - seen_on).days <= 56:
+            weekly_skill.setdefault(_week_start(seen_on).isoformat(), Counter()).update(job_skills)
+    top_skill_names = [item["name"] for item in _top(skills, 8)]
+
+    def matrix(groups: dict[str, Counter[str]], names: list[str]) -> dict[str, Any]:
+        return {"rows": names, "skills": top_skill_names,
+                "matrix": [[groups.get(name, Counter()).get(skill, 0) for skill in top_skill_names] for name in names]}
+
+    top_cities = [name for name, _ in city_counter.most_common(6) if name != "Not stated"][:5]
+    exp_order = [name for name in ("0-1 yrs", "2 yrs", "3-5 yrs", "6+ yrs", "Not stated") if name in by_exp]
+    top_employers = [name for name, _ in employer_names.most_common(8)]
+    week_keys = sorted(weekly_skill)[-8:]
+    trend = [{"skill": skill, "weeks": [{"week": week, "count": weekly_skill[week].get(skill, 0)} for week in week_keys]}
+             for skill in top_skill_names[:5]]
+    active = next((resume for resume in resumes if resume.get("is_default") or resume.get("is_active")), None)
+    active_skills = ((active or {}).get("profile") or {}).get("skills") or []
+    resume_complete = bool(active) and (active or {}).get("status", "processed") == "processed" and len(active_skills) >= 5
+    dataset = {
+        "unique_listings": len(jobs), "duplicates_removed": duplicates_removed,
+        "unique_employers": len(employer_names), "listings_without_employer": len(jobs) - sum(employer_names.values()),
+        "unique_sources": len(source_names),
+        "reliable_dates": len(reliable), "date_from": min(reliable).isoformat() if reliable else None,
+        "date_to": max(reliable).isoformat() if reliable else None,
+        "geography": _top(city_counter, 8),
+        "note": "Observations from the listings this app has discovered — not a complete picture of the job market.",
+    }
+
     best_resume_counts: Counter[str] = Counter(
         str(job.get("best_resume_label")) for job in jobs if job.get("best_resume_label"))
 
@@ -263,9 +332,16 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
         "board_vs_company": board_vs_company,
         "weekly": weeks,
         "employers": _top(employers, 10),
-        "skill_gap": gap,
+        "skill_gap": gap if resume_complete else [],
         "skill_strengths": have,
         "resume_fit": resume_fit,
+        "dataset": dataset,
+        "skills_by_location": matrix(by_city, top_cities),
+        "skills_by_experience": matrix(by_exp, exp_order),
+        "skills_by_employer": matrix(by_employer, top_employers),
+        "new_listing_skills": _top(new_skills, 10),
+        "skill_trend": trend,
+        "resume_complete": resume_complete,
         "best_resume": _top(best_resume_counts, 6),
         "recent": sorted(
             (job for job in jobs if job.get("posted_date")),

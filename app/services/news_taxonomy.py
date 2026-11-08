@@ -74,28 +74,32 @@ NEWS_REGIONS: dict[str, dict[str, Any]] = {
 }
 
 NEWS_TOPICS: dict[str, dict[str, Any]] = {
-    "Models & LLMs": {"query": "new AI model release LLM launch benchmark",
-                      "pattern": r"\b(llm|model|gpt|claude|gemini|llama|qwen|mistral|deepseek|benchmark|"
-                                 r"release[sd]?|launch(?:es|ed)?|open-weight|parameters)\b"},
-    "AI agents": {"query": "AI agents agentic AI launch enterprise",
-                  "pattern": r"\b(agents?|agentic|autonomous|copilot|assistant|mcp|tool use)\b"},
-    "Policy & regulation": {"query": "AI policy regulation government law",
-                            "pattern": r"\b(policy|regulat\w*|law|act|bill|government|ministry|guidelines?|"
-                                       r"compliance|governance|ban|framework|mission)\b"},
-    "Funding & startups": {"query": "AI startup funding raises round investment",
-                           "pattern": r"\b(raises?|raised|funding|series [a-e]|seed|valuation|invest\w*|"
-                                      r"startup|acquir\w*|ipo|unicorn)\b"},
-    "Research": {"query": "AI research breakthrough paper study",
-                 "pattern": r"\b(research\w*|paper|study|scientists?|breakthrough|arxiv|lab)\b"},
-    "Chips & hardware": {"query": "AI chips GPU semiconductor data center",
-                         "pattern": r"\b(chips?|gpus?|nvidia|amd|semiconductor|data cent(?:er|re)s?|"
-                                    r"compute|tpu|fab|tsmc|hardware)\b"},
-    "Open source": {"query": "open source AI model release",
+    "AI research": {"query": "AI research paper breakthrough study",
+                    "pattern": r"\b(research(?:ers)?|paper|study|arxiv|scientists?|breakthrough|benchmark results|lab finds)\b"},
+    "Model releases": {"query": "new AI model release LLM open weights",
+                       "pattern": r"\b(model|llm|gpt|claude|gemini|llama|qwen|mistral|deepseek|weights|parameters|"
+                                  r"multimodal|reasoning model)\b.*\b(release[sd]?|launch(?:es|ed)?|unveil\w*|introduc\w*)\b|"
+                                  r"\b(release[sd]?|launch(?:es|ed)?|unveil\w*)\b.*\b(model|llm)\b"},
+    "Product launches": {"query": "AI product launch new feature",
+                         "pattern": r"\b(launch(?:es|ed)?|unveil\w*|rolls? out|introduc\w*|debuts?|new feature|now available)\b"},
+    "Open source": {"query": "open source AI release",
                     "pattern": r"\b(open[- ]source|open weights?|hugging ?face|github|apache 2\.0|mit license)\b"},
-    "Jobs & skills": {"query": "AI jobs hiring skills workforce",
-                      "pattern": r"\b(jobs?|hiring|layoffs?|workforce|skills?|talent|upskill\w*|employment)\b"},
+    "Startup funding": {"query": "AI startup raises funding round",
+                        "pattern": r"\b(raises?|raised|funding|series [a-e]|seed round|pre-seed|valuation|investors?|"
+                                   r"crore|\$\d+\s?(?:m|mn|million|bn|billion))\b"},
+    "Hiring announcements": {"query": "AI company hiring plans to hire engineers",
+                             "pattern": r"\b(to hire|plans to hire|hiring|headcount|recruit\w*|new jobs|talent hunt)\b"},
+    "Policy & regulation": {"query": "AI policy regulation government",
+                            "pattern": r"\b(policy|regulat\w*|law|act\b|bill\b|government|ministry|meity|guidelines?|"
+                                       r"compliance|governance|ban|framework|mission)\b"},
     "Security & safety": {"query": "AI security safety risk",
-                          "pattern": r"\b(security|safety|vulnerab\w*|attack|jailbreak|deepfake|risk|threat)\b"},
+                          "pattern": r"\b(security|safety|vulnerab\w*|attack|jailbreak|deepfake|misuse|threat|breach)\b"},
+    "Chips & infrastructure": {"query": "AI chips GPU data centre infrastructure",
+                               "pattern": r"\b(chips?|gpus?|nvidia|amd|semiconductor|data cent(?:er|re)s?|compute|tpu|"
+                                          r"fab|tsmc|infrastructure|cloud capacity)\b"},
+    "Jobs & skills trends": {"query": "AI jobs skills workforce trends",
+                             "pattern": r"\b(jobs report|workforce|skills? gap|upskill\w*|layoffs?|employment|talent "
+                                        r"shortage|job market)\b"},
 }
 
 

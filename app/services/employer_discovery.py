@@ -588,3 +588,26 @@ def readable_boards(store: Store, *, limit: int = 80, india_first: bool = True) 
     if india_first:
         output.sort(key=lambda item: (item.get("country") != "India", item.get("classification") != "startup"))
     return output[:limit]
+
+
+def signals_from_news(store: Store, items: list[dict[str, Any]]) -> int:
+    """Indian startup intelligence from stored news: funding/launch/hiring/expansion signals.
+
+    A hiring announcement is stored as a *signal* on the employer, never as a vacancy.
+    """
+    created = 0
+    for item in items:
+        if item.get("region") not in {"India", None} and not INDIA_HINT.search(str(item.get("title") or "")):
+            continue
+        result = {"title": item.get("title"), "url": item.get("original_url"), "excerpts": [item.get("summary") or ""],
+                  "publish_date": item.get("published_date")}
+        for company in extract_companies([result]):
+            if not company["signals"]:
+                continue
+            employer, _ = store.upsert_employer({"name": company["name"], "classification": "startup",
+                                                 "country": "India" if company["india"] else None,
+                                                 "discovery_sources": [domain_of(str(item.get("original_url") or "")) or "news"],
+                                                 "evidence": company["evidence"][:2]})
+            for signal in company["signals"]:
+                created += int(store.add_signal({**signal, "employer_id": employer["id"], "company_name": company["name"]}))
+    return created

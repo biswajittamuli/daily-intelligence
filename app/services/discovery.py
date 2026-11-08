@@ -130,6 +130,11 @@ def _quote_matches(quote: str, text: str) -> bool:
 
 def _first_text(source: dict[str, Any], limit: int) -> str:
     body = str(source.get("content") or "")
+    if body and source.get("_article"):
+        from app.services.article_text import clean_article
+        cleaned = clean_article(body)
+        if len(cleaned) > 200:
+            body = cleaned
     if not body:
         excerpts = source.get("excerpts") or []
         if isinstance(excerpts, str):
@@ -244,6 +249,9 @@ class DiscoveryEngine:
                 return summary
 
             ranked = self._rank(category, request, sources, days)
+            if category in {"news", "papers"}:
+                for item in ranked["selected"]:
+                    item["_article"] = True
             summary["filtered"] = ranked["filtered"]
             candidates = ranked["selected"]
             if not candidates:
@@ -823,11 +831,14 @@ class DiscoveryEngine:
                 published=record.get("published_date") or source.get("publish_date"),
                 category=category,
                 window=self.preferences.get(category, {}).get("freshness"))
+            from app.services.article_text import article_dates
+            dates = article_dates(str(source.get("content") or ""))
             prepared.append({
                 **record, "category": category,
                 "url": source.get("url"), "original_url": source.get("url"),
                 "canonical_url": canonicalize_url(str(source.get("url"))),
                 "publisher": source.get("domain"),
+                "updated_date": dates["updated"] if dates["updated"] != record.get("published_date") else None,
                 "region": classify_region(source.get("url"), record.get("title"),
                                           record.get("summary"), record.get("raw_text"),
                                           requested=region) if category == "news" else (region or None),
@@ -842,7 +853,14 @@ class DiscoveryEngine:
                 continue
             prepared.append(self._fallback_intel(category, source, region=region, topic=topic))
             fallback += 1
-        return self.store.upsert_intel(prepared), fallback
+        saved = self.store.upsert_intel(prepared)
+        if category == "news":
+            try:
+                from app.services.employer_discovery import signals_from_news
+                signals_from_news(self.store, saved)
+            except Exception:  # signals are additive; never fail the news run
+                pass
+        return saved, fallback
 
     def _source_for(self, record: dict[str, Any], by_url: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
         direct = str(record.get("_source_url") or "")

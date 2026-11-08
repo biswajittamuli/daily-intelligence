@@ -143,6 +143,20 @@ class BriefingService:
             except Exception:  # the plan is additive; never fail the briefing for it
                 log.exception("today plan assembly failed")
                 today_plan = None
+            try:
+                from app.services.briefing_v2 import build_briefing
+                all_jobs = self.store.jobs(limit=2000)
+                active = self.store.profile()
+                actionable = build_briefing(
+                    jobs=all_jobs, notices=self.store.notices(limit=300), exams=self.store.exams(limit=300),
+                    news=self.store.intel(category="news", limit=200), papers=self.store.intel(category="papers", limit=200),
+                    employers=self.store.employers(limit=500), signals=self.store.signals(limit=300),
+                    applications=self.store.applications(), today_plan=today_plan,
+                    previous_at=previous[0]["created_at"] if previous else None, previous_urls=previous_urls,
+                    active_resume=(active or {}).get("label"))
+            except Exception:
+                log.exception("actionable briefing assembly failed")
+                actionable = None
 
             step("Saving briefing")
             content = {
@@ -159,6 +173,7 @@ class BriefingService:
                 "papers": papers[:8],
                 "deadlines": deadlines,
                 "today_plan": today_plan,
+                "actionable": actionable,
                 "changes": changes,
                 "recommended_actions": self._actions(all_tasks, jobs, notices, exams),
                 "weather": {"status": "not_configured", "message": "Weather integration is not configured."},
@@ -215,6 +230,10 @@ class BriefingService:
             for source in section.get("sources", []) or []:
                 if source.get("url"):
                     urls.add(str(source["url"]))
+        for section in (content.get("actionable") or {}).get("sections", []) or []:
+            for item in section.get("items", []) or []:
+                if item.get("url"):
+                    urls.add(str(item["url"]))
         return urls
 
     @staticmethod
