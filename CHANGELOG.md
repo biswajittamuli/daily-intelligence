@@ -1,5 +1,50 @@
 # Changelog
 
+## 3.1.0 — 2026-11-08
+
+### Two-stage job discovery
+- **Stage A, broad discovery** (`app/services/broad_search.py`): role-title variations (from the
+  request, preferences and the active resume's inferred titles); bounded Parallel MCP searches mixing
+  job-portal `site:` queries (two portals per call, bare domains only), company-career-page queries
+  and open-web queries; index pages fetched in small chunks and expanded into individual listings.
+- **Company career boards** (`app/services/ats_sources.py`): public Greenhouse / Lever / Ashby
+  job-board APIs for 25 verified employers (editable in Settings). The idea is credited to
+  [Career-Ops](https://github.com/santifer/career-ops) (MIT); no code was copied (Career-Ops is Node.js).
+- Configurable candidate pool: 50 / 100 / 200 (3 / 6 / 10 web searches + company boards).
+- Cross-source dedup keeps every source reference (`job_listings.sources_json`).
+- Per-platform coverage report (queries, results, blocked/not-found/no-results) and failures.
+- **Stage B, personalised ranking** against the **active resume** (`job_matching.rank_listing`):
+  role relevance (titles + role family), skill coverage, experience, India-aware location
+  (cities/states → India, Bangalore = Bengaluru, remote roles restricted to other countries
+  excluded), employment type, freshness. Explicit exclusions: articles, search pages,
+  non-technical roles, seniority, experience requirement, location. Tiers: strong / possible.
+
+### Resume manager
+- Dedicated Resumes page: upload PDF/DOCX (original files kept in `data/resumes/`), list with
+  filename/date/status, one **active** resume, switch/rename/delete/reprocess/replace file,
+  edit extracted profile (incl. inferred job titles). Extraction errors are stored and shown.
+- Switching the active resume re-ranks every stored listing.
+
+### Central search
+- Daily Briefing search box: intent detection (keyword rules + optional Qwen refinement,
+  validated), per-section clause splitting, shared engines for every section, Scan All.
+- Live progress log (sources attempted, results, pages fetched, failures).
+
+### Themes and UI
+- Three themes: **Minimal Light** (default), **Minimal Dark**, **Soft Neutral**; selectable in
+  Settings or the top bar; persisted. Compact job rows, consistent SVG icons, collapsed filters.
+
+### Desktop launcher
+- `scripts/install-desktop.sh` installs the launcher and icon for the user; the KDE menu entry
+  launches `scripts/daily-intelligence-launcher.sh` (single instance, launch lock, health check,
+  persistent logs in `~/.local/state/daily-intelligence/logs`, dedicated app window, clean
+  shutdown when the window closes, idle timeout fallback). `scripts/daily-intelligence-stop.sh`.
+
+### Data
+- `PRAGMA user_version` schema versioning; the database is backed up to `data/backups/` before
+  any migration. New columns: `resumes.stored_path/status/error/file_size/processed_at`,
+  `job_listings.sources_json/eligibility_json/discovered_via`.
+
 ## 3.0.0 — 2026-11-08
 
 ### Jobs

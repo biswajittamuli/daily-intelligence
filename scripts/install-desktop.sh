@@ -5,7 +5,12 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
-DESKTOP_FILE="$APPS_DIR/daily-intelligence.desktop"
+# The app window is Chrome --app; on Wayland its app id is fixed by Chrome as
+# "chrome-<host>__-Default" (--class is ignored). Installing the launcher under that id
+# makes the KDE menu entry, window icon, Alt+Tab and taskbar pin all refer to one app.
+DESKTOP_ID="chrome-127.0.0.1__-Default"
+DESKTOP_FILE="$APPS_DIR/$DESKTOP_ID.desktop"
+rm -f "$APPS_DIR/daily-intelligence.desktop"  # earlier install name
 
 mkdir -p "$APPS_DIR" "$ICON_DIR"
 chmod +x "$PROJECT_DIR/scripts/daily-intelligence-launcher.sh" "$PROJECT_DIR/scripts/daily-intelligence-stop.sh"
@@ -22,10 +27,10 @@ Exec=$PROJECT_DIR/scripts/daily-intelligence-launcher.sh
 Path=$PROJECT_DIR
 Icon=daily-intelligence
 Terminal=false
-Categories=Office;Utility;
+Categories=Utility;
 Keywords=jobs;resume;news;research;briefing;
 StartupNotify=true
-StartupWMClass=daily-intelligence
+StartupWMClass=$DESKTOP_ID
 Actions=Stop;
 
 [Desktop Action Stop]
@@ -40,4 +45,4 @@ desktop-file-validate "$DESKTOP_FILE"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS_DIR" || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "${ICON_DIR%/scalable/apps}" || true
 command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
-echo "Installed $DESKTOP_FILE and icon $ICON_DIR/daily-intelligence.svg"
+echo "Installed $DESKTOP_FILE (menu: Daily Intelligence) and icon $ICON_DIR/daily-intelligence.svg"

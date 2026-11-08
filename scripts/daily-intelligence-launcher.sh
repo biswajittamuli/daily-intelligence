@@ -3,7 +3,8 @@
 #
 # - one server per user: a healthy server on the port is reused, never duplicated
 # - launch lock prevents two simultaneous starts
-# - opens a dedicated app window (Chrome/Chromium --app with its own profile) so it
+# - opens a dedicated app window (Chrome/Chromium --app with its own profile); its
+#   Wayland/X11 app id is "chrome-127.0.0.1__-Default", matched by StartupWMClass so it
 #   groups and pins in the KDE taskbar; falls back to the default browser
 # - when the app window closes, the server is asked to shut down (it refuses while a
 #   search is running, and then stops by itself after the idle timeout)
@@ -48,8 +49,17 @@ start_server() {
     return 1
   fi
   if port_busy; then
-    notify_error "Port ${PORT} is used by another program. Close it or set DAILY_INTELLIGENCE_PORT."
-    return 1
+    # An older Daily Intelligence (without /api/health) from this project: stop it and upgrade.
+    old_pids="$(pgrep -f "$PROJECT_DIR/.venv/bin/python -m app.main serve" || true)"
+    if [[ -n "$old_pids" ]] && curl -fsS --max-time 2 "${URL}api/bootstrap" 2>/dev/null | grep -q '"version"'; then
+      log "stopping older Daily Intelligence server(s): $old_pids"
+      kill -TERM $old_pids 2>/dev/null || true
+      for _ in $(seq 1 40); do port_busy || break; sleep 0.25; done
+    fi
+    if port_busy; then
+      notify_error "Port ${PORT} is used by another program. Close it or set DAILY_INTELLIGENCE_PORT."
+      return 1
+    fi
   fi
   # Rotate a large server log.
   if [[ -f "$SERVER_LOG" && $(stat -c %s "$SERVER_LOG") -gt 5242880 ]]; then
@@ -103,13 +113,21 @@ PROFILE_DIR="$STATE_DIR/browser-profile"
 exec 9>"$STATE_DIR/window.lock"
 if ! flock -n 9; then
   # A window owned by another launcher is open: focus/open a window there and exit.
-  log "app window already open; asking it to open another window"
-  "$BROWSER" --user-data-dir="$PROFILE_DIR" --app="$URL" --class="$APP_CLASS" >/dev/null 2>&1 &
+  # A window owned by another launcher is open: bring it to the front (KWin), else open one.
+  match="$(gdbus call --session --dest org.kde.KWin --object-path /WindowsRunner \
+    --method org.kde.krunner1.Match "Daily Intelligence" 2>/dev/null | grep -o "'0_{[^}]*}'" | head -n1 | tr -d "'")"
+  if [[ -n "$match" ]] && gdbus call --session --dest org.kde.KWin --object-path /WindowsRunner \
+      --method org.kde.krunner1.Run "$match" "" >/dev/null 2>&1; then
+    log "app window already open; activated it"
+  else
+    log "app window already open; opening another window"
+    "$BROWSER" --user-data-dir="$PROFILE_DIR" --app="$URL" >/dev/null 2>&1 &
+  fi
   exit 0
 fi
 
 log "opening app window with $BROWSER"
-"$BROWSER" --user-data-dir="$PROFILE_DIR" --app="$URL" --class="$APP_CLASS" --name="$APP_CLASS" \
+"$BROWSER" --user-data-dir="$PROFILE_DIR" --app="$URL" \
   --no-first-run --no-default-browser-check >>"$LAUNCH_LOG" 2>&1
 log "app window closed"
 

@@ -1,6 +1,25 @@
 # Implementation Status
 
-Updated: 2026-11-08 (v3.0.0)
+Updated: 2026-11-08 (v3.1.0)
+
+## V3.1 acceptance results (2026-11-08, this host)
+
+All of these were run live: on a scratch copy of the database (search tests) and on the real
+installation (launcher tests).
+
+| # | Test | Result |
+| --- | --- | --- |
+| 1 | Upload two different resumes, switch active | Real PDF (`Biswajit_Tamuli_Amazon_SDE.pdf`) and a synthetic Frontend DOCX both processed and stored under `data/resumes/`. Switching works via the Jobs selector, the Resumes page and the API |
+| 2 | Active resume visible after restart | Server restarted: the active resume persisted (sidebar, Jobs page, API) |
+| 3 | Rankings differ per resume | Same stored pool: the AI/SDE top results are AI/backend roles (Cyble, Sarvam, GitLab); the Frontend top results are frontend roles. A fresh discovery with the Frontend resume found Swiggy and Botsync frontend roles |
+| 4 | Broad discovery across platforms | Pool 100: 6 MCP searches (Wellfound, Indeed, LinkedIn, YC, company careers, open web), 10 pages fetched, 169 listings expanded from Wellfound index pages, 25/25 company boards read (5,723 openings) → 5,952 raw / 4,975 unique |
+| 5 | Large pool → useful shortlist | 206 ranked as relevant, 100 stored: 35 strong, 65 possible (fresher-eligible, India/remote-global) |
+| 6 | Irrelevant jobs/articles excluded | 4,770 excluded with reasons: non-technical 1,390; seniority 1,466; search pages 898; location 422; remote-restricted 390; experience 136; articles 1 |
+| 7 | Three themes, persisted | Each theme set via the API, server restarted, and the theme persisted. Screenshots checked; an invalid theme is rejected |
+| 8 | Launch from the KDE menu | `kioclient exec` on the installed entry (the same KIO path the menu uses): the old v3.0.0 server was stopped, the DB was backed up, the new server started healthy, and the app window opened. The KWin window icon resolves to `daily-intelligence` |
+| 9 | No duplicate servers | Second launch: same server PID, the existing window was focused (no new window). Closing the window: server shut down, no leftover processes |
+| 10 | Central search updates sections | "latest AI startup funding news in India and GATE 2027 exam dates" → Exams + News. Exams 12→25, news 8→12, in 42 s |
+| 11 | Regression + host checks | 109 unit/integration tests pass; MCP diagnostic ok (6 tools, search + fetch); Ollama `qwen3:4b` |
 
 ## V3 summary
 

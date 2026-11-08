@@ -1,11 +1,19 @@
 [Desktop Entry]
-Version=1.0
+Version=1.5
 Type=Application
 Name=Daily Intelligence
-GenericName=Personal AI Assistant
-Comment=Open your local AI briefing and research assistant
-Exec=/home/biswajittamuli/projects/daily-intelligence/scripts/start-desktop.sh
-Icon=applications-internet
+GenericName=Personal Intelligence Assistant
+Comment=Jobs, exams, AI news and research — local and private
+Exec=/home/biswajittamuli/projects/daily-intelligence/scripts/daily-intelligence-launcher.sh
+Path=/home/biswajittamuli/projects/daily-intelligence
+Icon=daily-intelligence
 Terminal=false
 Categories=Utility;
+Keywords=jobs;resume;news;research;briefing;
 StartupNotify=true
+StartupWMClass=chrome-127.0.0.1__-Default
+Actions=Stop;
+
+[Desktop Action Stop]
+Name=Stop Daily Intelligence server
+Exec=/home/biswajittamuli/projects/daily-intelligence/scripts/daily-intelligence-stop.sh

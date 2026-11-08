@@ -11,6 +11,21 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 3.1
+
+- **Broad discovery, smart shortlist.** Each job search collects a large candidate pool
+  (50/100/200) from job portals, company career pages, the open web, and the public
+  Greenhouse/Lever/Ashby career boards of 25 employers. It then ranks the pool against your
+  **active resume** into *Strong* and *Possible* matches. Articles, search pages, senior roles,
+  over-experienced roles and out-of-region jobs are excluded, and the reason is counted for each.
+  The coverage report shows what was searched and what each platform returned.
+- **Resumes page.** Upload several PDF/DOCX resumes, choose the active one (shown in the sidebar
+  and on the Jobs page), and rename, delete, reprocess or edit them. Files stay in `data/resumes/`.
+- **Central search** on the Daily Briefing page, plus **Scan all**.
+- **Themes:** Minimal Light (default), Minimal Dark, Soft Neutral.
+- **KDE launcher:** run `./scripts/install-desktop.sh` once. Then start *Daily Intelligence* from the
+  application menu and pin it to the taskbar. Closing the window stops the server.
+
 ## What's new in 3.0
 
 - **Fresher, more jobs.** A *market scan* runs one bounded search per role family
@@ -65,6 +80,17 @@ The web interface binds only to `127.0.0.1`; the port defaults to `8765` and can
 changed with `DAILY_INTELLIGENCE_PORT`.
 
 ## Start
+
+Install the desktop launcher once (adds *Daily Intelligence* to the KDE application menu):
+
+```bash
+./scripts/install-desktop.sh
+```
+
+The launcher starts one server (it reuses a running one), opens a dedicated app window, and
+stops the server when the window closes. Logs: `~/.local/state/daily-intelligence/logs/`.
+Stop manually with `./scripts/daily-intelligence-stop.sh` or the *Quit* button in the sidebar.
+
 
 One-click startup from KDE:
 
