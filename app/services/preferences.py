@@ -50,6 +50,8 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "match_resume": True,
         "scan_roles": DEFAULT_SCAN_ROLES[:6],
         "scan_role_suggestions": DEFAULT_SCAN_ROLES,
+        "pool_size": 100,
+        "companies": None,  # None = built-in verified list (app.services.ats_sources)
     },
     "government": {
         "disciplines": ["Computer Science", "Information Technology"],
@@ -72,6 +74,7 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "sources": [],
         "freshness": "30d",
     },
+    "scan_all": {"categories": ["jobs", "government", "exams", "news", "papers"]},
     "automation": {
         "daily_refresh": False,
         "refresh_time": "08:00",
@@ -159,7 +162,13 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "match_resume": bool(jobs.get("match_resume", True)),
         "scan_roles": _strings(jobs.get("scan_roles"), 12) if "scan_roles" in jobs
         else list(DEFAULT_SCAN_ROLES[:6]),
+        "pool_size": _pool(jobs.get("pool_size")),
+        "companies": _companies(jobs.get("companies")),
     })
+    scan_all = payload.get("scan_all") if isinstance(payload.get("scan_all"), dict) else {}
+    output["scan_all"] = {"categories": [item for item in _strings(scan_all.get("categories"), 5)
+                                         if item in {"jobs", "government", "exams", "news", "papers"}]
+                          or ["jobs", "government", "exams", "news", "papers"]}
 
     government = payload.get("government") if isinstance(payload.get("government"), dict) else {}
     output["government"].update({
@@ -196,6 +205,24 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "freshness": str(papers.get("freshness") or "30d")[:20],
     })
     return output
+
+
+def _pool(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 100
+    return max(20, min(300, number))
+
+
+def _companies(value: Any) -> list[dict[str, str]] | None:
+    if value is None:
+        return None
+    from app.services.ats_sources import normalize_company
+    if not isinstance(value, list):
+        return None
+    clean = [company for company in (normalize_company(item) for item in value) if company]
+    return clean[:80]
 
 
 def _clock(value: Any) -> str:

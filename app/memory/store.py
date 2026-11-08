@@ -111,7 +111,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON search_sessions(created_at DE
 """
 
 JSON_COLUMNS = {
-    "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json"),
+    "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json",
+                     "sources_json", "eligibility_json"),
     "recruitment_notices": ("evidence_json", "raw_json"),
     "exam_events": ("evidence_json", "raw_json"),
     "intel_items": ("evidence_json", "raw_json"),
@@ -139,24 +140,56 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
+SCHEMA_VERSION = 4  # bump whenever _migrate adds tables/columns
+
+
 class Store:
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = data_dir
         self.path = data_dir / "daily-intelligence.sqlite3"
+        self.backup_path: Path | None = None
+        self._backup_before_migration()
         with self.connect() as db:
             db.executescript(SCHEMA)
             self._migrate(db)
+            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _backup_before_migration(self) -> None:
+        """Copy an existing database before any schema upgrade (sqlite online backup)."""
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        source = sqlite3.connect(self.path, timeout=10)
+        try:
+            version = int(source.execute("PRAGMA user_version").fetchone()[0])
+            if version >= SCHEMA_VERSION:
+                return
+            backups = self.data_dir / "backups"
+            backups.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target_path = backups / f"daily-intelligence-{stamp}-schema{version}.sqlite3"
+            target = sqlite3.connect(target_path)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+            self.backup_path = target_path
+        finally:
+            source.close()
 
     @staticmethod
     def _migrate(db: sqlite3.Connection) -> None:
         """Add columns introduced after a database was first created."""
         additions = {
             "intel_items": {"region": "TEXT", "topic": "TEXT"},
-            "job_listings": {"best_resume_id": "INTEGER", "best_resume_label": "TEXT",
-                             "resume_scores_json": "TEXT"},
             "tasks": {"due_time": "TEXT", "recurrence": "TEXT", "category": "TEXT",
                       "archived": "INTEGER NOT NULL DEFAULT 0", "original_text": "TEXT"},
             "saved_items": {"applied_at": "TEXT", "resume_id": "INTEGER", "note": "TEXT"},
+            "resumes": {"stored_path": "TEXT", "status": "TEXT NOT NULL DEFAULT 'processed'",
+                        "error": "TEXT", "file_size": "INTEGER", "processed_at": "TEXT"},
+            "job_listings": {"best_resume_id": "INTEGER", "best_resume_label": "TEXT",
+                             "resume_scores_json": "TEXT", "sources_json": "TEXT",
+                             "eligibility_json": "TEXT", "discovered_via": "TEXT"},
         }
         for table, columns in additions.items():
             existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
@@ -364,6 +397,7 @@ class Store:
         item = dict(row)
         item["profile"] = _loads(item.pop("profile_json"), {})
         item["is_default"] = bool(item.get("is_default"))
+        item["is_active"] = item["is_default"]
         # Compatibility with the single-profile API.
         item["resume_filename"] = item.get("filename")
         item["extracted_at"] = item.get("created_at")
@@ -380,25 +414,41 @@ class Store:
         return self._resume_row(row) if row else None
 
     def add_resume(self, profile: dict[str, Any], filename: str | None = None,
-                   label: str | None = None, *, make_default: bool = False) -> int:
+                   label: str | None = None, *, make_default: bool = False,
+                   stored_path: str | None = None, status: str = "processed",
+                   error: str | None = None, file_size: int | None = None) -> int:
         now = self.now()
         clean_label = " ".join(str(label or "").split())[:60] or _resume_label(filename)
         with self.connect() as db:
-            first = db.execute("SELECT COUNT(*) AS n FROM resumes").fetchone()["n"] == 0
-            if make_default or first:
+            first = db.execute("SELECT COUNT(*) AS n FROM resumes WHERE status='processed'").fetchone()["n"] == 0
+            make_default = (make_default or first) and status == "processed"
+            if make_default:
                 db.execute("UPDATE resumes SET is_default=0")
-            cur = db.execute("""INSERT INTO resumes(label,filename,profile_json,is_default,created_at,updated_at)
-                                VALUES(?,?,?,?,?,?)""",
-                             (clean_label, filename, _json(profile), 1 if (make_default or first) else 0, now, now))
+            cur = db.execute("""INSERT INTO resumes(label,filename,profile_json,is_default,created_at,updated_at,
+                                stored_path,status,error,file_size,processed_at)
+                                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                             (clean_label, filename, _json(profile), 1 if make_default else 0, now, now,
+                              stored_path, status, error, file_size, now))
+            first = make_default
             resume_id = int(cur.lastrowid)
             if make_default or first:
                 self._sync_legacy_profile(db, profile, filename, now)
             return resume_id
 
     def update_resume(self, resume_id: int, *, profile: dict[str, Any] | None = None,
-                      label: str | None = None) -> None:
+                      label: str | None = None, status: str | None = None,
+                      error: str | None = "__keep__", stored_path: str | None = None,
+                      file_size: int | None = None, filename: str | None = None) -> None:
         now = self.now()
         with self.connect() as db:
+            if status is not None:
+                db.execute("UPDATE resumes SET status=?, processed_at=?, updated_at=? WHERE id=?",
+                           (status, now, now, resume_id))
+            if error != "__keep__":
+                db.execute("UPDATE resumes SET error=? WHERE id=?", (error, resume_id))
+            if stored_path is not None:
+                db.execute("UPDATE resumes SET stored_path=?, file_size=?, filename=COALESCE(?, filename) WHERE id=?",
+                           (stored_path, file_size, filename, resume_id))
             if profile is not None:
                 db.execute("UPDATE resumes SET profile_json=?, updated_at=? WHERE id=?",
                            (_json(profile), now, resume_id))
@@ -415,6 +465,8 @@ class Store:
             row = db.execute("SELECT * FROM resumes WHERE id=?", (resume_id,)).fetchone()
             if not row:
                 raise ValueError("Resume not found")
+            if row["status"] != "processed":
+                raise ValueError("This resume could not be processed; reprocess or re-upload it before activating")
             db.execute("UPDATE resumes SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END", (resume_id,))
             self._sync_legacy_profile(db, _loads(row["profile_json"], {}), row["filename"], now)
 
@@ -424,7 +476,7 @@ class Store:
             row = db.execute("SELECT is_default FROM resumes WHERE id=?", (resume_id,)).fetchone()
             db.execute("DELETE FROM resumes WHERE id=?", (resume_id,))
             if row and row["is_default"]:
-                nxt = db.execute("SELECT * FROM resumes ORDER BY id LIMIT 1").fetchone()
+                nxt = db.execute("SELECT * FROM resumes WHERE status='processed' ORDER BY id LIMIT 1").fetchone()
                 if nxt:
                     db.execute("UPDATE resumes SET is_default=1 WHERE id=?", (nxt["id"],))
                     self._sync_legacy_profile(db, _loads(nxt["profile_json"], {}), nxt["filename"], now)
@@ -467,14 +519,18 @@ class Store:
                 if not url:
                     continue
                 original = str(record.get("original_url") or record.get("url") or url)
-                row = db.execute("SELECT id, first_seen FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
+                row = db.execute("SELECT id, first_seen, sources_json FROM job_listings WHERE canonical_url=?",
+                                 (url,)).fetchone()
                 first_seen = row["first_seen"] if row else now
+                sources = _merge_sources(_loads(row["sources_json"], []) if row else [],
+                                         record.get("sources") or [])
                 db.execute("""INSERT INTO job_listings(
                     canonical_url,original_url,employer,title,location,remote,employment_type,
                     experience,skills_json,salary,posted_date,deadline,status,source_platform,
                     match_score,match_reason,evidence_json,raw_json,first_seen,last_seen,last_verified,
-                    best_resume_id,best_resume_label,resume_scores_json)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    best_resume_id,best_resume_label,resume_scores_json,sources_json,eligibility_json,
+                    discovered_via)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(canonical_url) DO UPDATE SET
                     original_url=excluded.original_url, employer=excluded.employer, title=excluded.title,
                     location=excluded.location, remote=excluded.remote, employment_type=excluded.employment_type,
@@ -484,7 +540,8 @@ class Store:
                     match_reason=excluded.match_reason, evidence_json=excluded.evidence_json,
                     raw_json=excluded.raw_json, last_seen=excluded.last_seen, last_verified=excluded.last_verified,
                     best_resume_id=excluded.best_resume_id, best_resume_label=excluded.best_resume_label,
-                    resume_scores_json=excluded.resume_scores_json""",
+                    resume_scores_json=excluded.resume_scores_json, sources_json=excluded.sources_json,
+                    eligibility_json=excluded.eligibility_json, discovered_via=excluded.discovered_via""",
                     (url, original, record.get("employer"), record.get("title") or "Untitled role",
                      record.get("location"), record.get("remote"), record.get("employment_type"),
                      record.get("experience"), _json(record.get("skills") or []), record.get("salary"),
@@ -492,7 +549,8 @@ class Store:
                      record.get("source_platform"), record.get("match_score"), record.get("match_reason"),
                      _json(record.get("evidence") or []), _json(record.get("raw")), first_seen, now,
                      record.get("last_verified") or now, record.get("best_resume_id"),
-                     record.get("best_resume_label"), _json(record.get("resume_scores"))))
+                     record.get("best_resume_label"), _json(record.get("resume_scores")),
+                     _json(sources), _json(record.get("eligibility")), record.get("discovered_via")))
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "job_listings"))
         return saved
@@ -823,10 +881,12 @@ class Store:
         with self.connect() as db:
             for update in updates:
                 db.execute("""UPDATE job_listings SET match_score=?, match_reason=?, best_resume_id=?,
-                              best_resume_label=?, resume_scores_json=? WHERE id=?""",
+                              best_resume_label=?, resume_scores_json=?,
+                              eligibility_json=COALESCE(?, eligibility_json) WHERE id=?""",
                            (update.get("match_score"), update.get("match_reason"),
                             update.get("best_resume_id"), update.get("best_resume_label"),
-                            _json(update.get("resume_scores")), update["id"]))
+                            _json(update.get("resume_scores")), _json(update.get("eligibility")),
+                            update["id"]))
 
     def _row(self, row: sqlite3.Row, table: str) -> dict[str, Any]:
         item = dict(row)
@@ -834,8 +894,25 @@ class Store:
             if column not in item:
                 continue
             key = column.removesuffix("_json")
-            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores"} else {})
+            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores",
+                                                               "sources"} else {})
         return item
+
+
+def _merge_sources(existing: list[Any], new: list[Any]) -> list[dict[str, Any]]:
+    """Keep every distinct source reference for a listing (platform + URL)."""
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in list(existing or []) + list(new or []):
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        key = str(item["url"]).rstrip("/").casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append({"platform": item.get("platform"), "url": item["url"],
+                       "via": item.get("via")})
+    return output[:12]
 
 
 def _iso_date(value: Any) -> date | None:

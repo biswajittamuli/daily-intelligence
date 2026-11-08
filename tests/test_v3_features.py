@@ -352,7 +352,7 @@ class ApiTests(unittest.TestCase):
     def test_bootstrap_imports_free_form_note_and_exposes_v3_fields(self):
         status, data = self.call("/api/bootstrap")
         self.assertEqual(status, 200)
-        self.assertEqual(data["version"], "3.0.0")
+        self.assertEqual(data["version"], "3.1.0")
         self.assertIn("Walk my dog", [task["text"] for task in data["tasks"]])
         self.assertIn("India", data["news_presets"]["regions"])
         self.assertIn("today_plan", data)

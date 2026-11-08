@@ -29,7 +29,7 @@ from app.memory.store import Store
 from app.services.discovery import CATEGORIES, DiscoveryEngine
 from app.services.exports import calendar_ics, jobs_csv
 from app.services.insights import job_market, role_family
-from app.services.job_matching import best_resume_match
+from app.services.job_matching import active_resume_match, best_resume_match
 from app.services.listing_links import looks_like_index
 from app.services.news_taxonomy import NEWS_REGIONS, NEWS_TOPICS
 from app.services.preferences import (
@@ -41,7 +41,10 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
+APP_ID = "daily-intelligence"
+THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
+LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -107,6 +110,9 @@ class Application:
         self._jobs: dict[str, dict] = {}
         self._active_job: str | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="daily-intel")
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.last_activity = time.monotonic()
+        self.shutdown_requested = threading.Event()
         # One-time upgrade: score legacy listings against stored resumes.
         if self.store.get_preference("upgrade_version") != APP_VERSION:
             try:
@@ -144,6 +150,33 @@ class Application:
         except (TypeError, ValueError):
             return base
 
+    @staticmethod
+    def _clean_theme(value) -> str:
+        value = LEGACY_THEMES.get(str(value or ""), str(value or ""))
+        return value if value in THEMES else "minimal-light"
+
+    def theme(self) -> str:
+        return self._clean_theme(self.preferences.get("theme", "minimal-light"))
+
+    def set_theme(self, value: str) -> str:
+        """Persist only the theme (no model/settings validation needed)."""
+        theme = self._clean_theme(value)
+        if value not in THEMES and value not in LEGACY_THEMES:
+            raise ValueError("Theme must be minimal-light, minimal-dark or soft-neutral")
+        self.preferences["theme"] = theme
+        saved = self._read_preferences()
+        saved["theme"] = theme
+        self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
+        self.preferences_path.write_text(json.dumps(saved, indent=2), encoding="utf-8")
+        return theme
+
+    def health(self) -> dict:
+        return {"app": APP_ID, "version": APP_VERSION, "pid": os.getpid(),
+                "started_at": self.started_at, "active_job": bool(self._active_job)}
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
     def public_settings(self):
         return {
             "ollama_host": self.settings.ollama_host,
@@ -156,7 +189,7 @@ class Application:
             "mcp_timeout": self.settings.mcp_timeout,
             "location": self.preferences.get("location", ""),
             "briefing_preferences": self.preferences.get("briefing_preferences", ""),
-            "theme": self.preferences.get("theme", "light"),
+            "theme": self.theme(),
             "parallel_mcp_endpoint": self.settings.parallel_mcp_url,
         }
 
@@ -222,6 +255,10 @@ class Application:
             "last_visit": visits.get("previous"),
             "news_presets": {"regions": ["Global", *NEWS_REGIONS.keys()], "topics": list(NEWS_TOPICS.keys())},
             "scan_roles": scan_roles(self.discovery_preferences),
+            "job_search": self.last_job_search(),
+            "companies": (self.discovery_preferences.get("jobs", {}).get("companies")
+                          or __import__("app.services.ats_sources", fromlist=["x"]).DEFAULT_COMPANIES),
+            "themes": sorted(THEMES),
             "notices": self.store.notices(limit=40),
             "exams": self.store.exams(limit=60),
             "news": self.store.intel(category="news", limit=40),
@@ -236,6 +273,13 @@ class Application:
             "planning": self.planning_state(notes),
             "search_sessions": self.store.search_sessions(10),
         }
+
+    def last_job_search(self) -> dict | None:
+        for session in self.store.search_sessions(30):
+            summary = session.get("summary") or {}
+            if session.get("category") == "jobs" and summary.get("kind") == "broad_search":
+                return {**summary, "created_at": session.get("created_at"), "steps": summary.get("steps", [])[-30:]}
+        return None
 
     def mark_visit(self) -> dict:
         """Record a visit; the previous visit time drives "new since last visit" badges."""
@@ -252,20 +296,8 @@ class Application:
 
     # ---------------------------------------------------------------- resumes
     def rescore_jobs(self) -> int:
-        resumes = self.store.resumes()
-        jobs = self.store.jobs(limit=2000)
-        updates = []
-        for job in jobs:
-            kind = (job.get("raw") or {}).get("source_kind")
-            result = best_resume_match({**job, "raw_text": (job.get("raw") or {}).get("raw_text") or ""},
-                                       self.discovery_preferences, resumes)
-            if kind in {"search_page", "index_page", "harvested"} or job.get("match_score") is None and not job.get("skills"):
-                prefix = ("Listed on a job board index; open the listing to verify. " if kind == "harvested"
-                          else "Search result only; open the original listing to verify details. ")
-                result["match_reason"] = prefix + (result.get("match_reason") or "")
-            updates.append({"id": job["id"], **result})
-        self.store.update_job_matches(updates)
-        return len(updates)
+        from app.services.broad_search import rescore_stored
+        return rescore_stored(self.store, self.discovery_preferences)
 
     def relabel_news(self) -> int:
         """Label stored news by detected region/topic (content-based, not request-based)."""
@@ -284,17 +316,20 @@ class Application:
     def resume_action(self, resume_id: int, action: str, payload: dict) -> dict:
         if not self.store.resume(resume_id):
             raise ValueError("Resume not found")
-        if action == "default":
+        if action in {"default", "activate"}:
             self.store.set_default_resume(resume_id)
         elif action == "delete":
+            stored = (self.store.resume(resume_id) or {}).get("stored_path")
             self.store.delete_resume(resume_id)
+            if stored and Path(stored).is_file() and Path(stored).resolve().parent == self.resume_dir.resolve():
+                Path(stored).unlink()
         elif action == "label":
             self.store.update_resume(resume_id, label=str(payload.get("label") or ""))
         elif action == "profile":
             self.store.update_resume(resume_id, profile=self._clean_profile(payload.get("profile") or {}))
         else:
             raise ValueError("Unknown resume action")
-        rescored = self.rescore_jobs() if action in {"delete", "profile"} else 0
+        rescored = self.rescore_jobs() if action in {"delete", "profile", "default", "activate"} else 0
         return {"resumes": self.store.resumes(), "rescored": rescored}
 
     # ----------------------------------------------------------------- notes
@@ -433,6 +468,9 @@ class Application:
             job = self._jobs.get(job_id)
             if job and job["status"] in {"queued", "running"}:
                 job["message"] = message
+                steps = job.setdefault("steps", [])
+                steps.append({"at": round(time.monotonic() - job["started_mono"], 1), "message": message})
+                del steps[:-80]
                 job["updated_at"] = datetime.now(timezone.utc).isoformat()
                 job["elapsed_seconds"] = round(time.monotonic() - job["started_mono"], 1)
         log.info("job=%s progress=%s elapsed=%.1fs", job_id[:8], message,
@@ -474,6 +512,23 @@ class Application:
                     raise ValueError(f"Unsupported discovery category: {category}")
                 engine = DiscoveryEngine(self.settings, self.store,
                                          preferences=self.discovery_preferences)
+                if category == "jobs":
+                    from app.services.broad_search import BroadJobSearch
+                    prefs = self.discovery_preferences
+                    pool = int(payload.get("pool_size") or prefs.get("jobs", {}).get("pool_size") or 100)
+                    if payload.get("scan"):
+                        prefs = {**prefs, "jobs": {**prefs.get("jobs", {}),
+                                                   "roles": list(prefs.get("jobs", {}).get("roles") or [])
+                                                   + list(prefs.get("jobs", {}).get("scan_roles") or [])}}
+                    result = asyncio.run(BroadJobSearch(self.settings, self.store, prefs).run(
+                        str(payload.get("query") or "").strip(), pool_size=pool,
+                        progress=lambda message: self._progress(job_id, message),
+                        cancel_event=job["cancel_event"]))
+                    with self._lock:
+                        job["result"] = result
+                        job["status"] = "complete" if not job["cancel_event"].is_set() else "cancelled"
+                        job["message"] = "Complete" if job["status"] == "complete" else "Cancelled"
+                    return
                 if category == "jobs" and payload.get("scan"):
                     roles = payload.get("roles") if isinstance(payload.get("roles"), list) else None
                     self._progress(job_id, "Starting market scan")
@@ -509,6 +564,19 @@ class Application:
                 elif job["kind"] == "research":
                     self._progress(job_id, "Researching your request")
                     result = asyncio.run(service.ask(request, cancel_event=job["cancel_event"]))
+                elif job["kind"] in {"universal", "scan_all"}:
+                    from app.services.universal_search import run_universal
+                    payload = job.get("payload") or {}
+                    categories = None
+                    if job["kind"] == "scan_all":
+                        categories = [c for c in ((self.discovery_preferences.get("scan_all") or {}).get("categories")
+                                                  or ["jobs", "government", "exams", "news", "papers"])]
+                    result = asyncio.run(run_universal(
+                        request, settings=self.settings, store=self.store, preferences=self.discovery_preferences,
+                        progress=lambda message: self._progress(job_id, message),
+                        cancel_event=job["cancel_event"], categories=categories,
+                        pool_size=payload.get("pool_size"),
+                        research=lambda text: service.ask(text, cancel_event=job["cancel_event"])))
                 elif job["kind"] == "auto_refresh":
                     engine = DiscoveryEngine(self.settings, self.store, preferences=self.discovery_preferences)
                     categories = (self.discovery_preferences.get("automation") or {}).get("categories") or ["jobs", "news"]
@@ -595,7 +663,7 @@ class Application:
         prefs = {
             "location": str(payload.get("location", current["location"]))[:100],
             "briefing_preferences": str(payload.get("briefing_preferences", current["briefing_preferences"]))[:1000],
-            "theme": "light" if payload.get("theme", current["theme"]) == "light" else "dark",
+            "theme": self._clean_theme(payload.get("theme", current["theme"])),
         }
         self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = replace(self.settings, ollama_model=model,
@@ -645,6 +713,7 @@ class Application:
     def save_discovery_preferences(self, payload: dict) -> dict:
         clean = save_preferences(self.store, payload)
         self.discovery_preferences = clean
+        self.rescore_jobs()
         return clean
 
     def watchlist(self, kind: str) -> list[str]:
@@ -661,34 +730,77 @@ class Application:
             self.store.add_watchlist(kind, name)
         return self.store.watchlist(kind)
 
+    @property
+    def resume_dir(self) -> Path:
+        path = self.settings.data_dir / "resumes"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _store_resume_file(self, resume_id: int, filename: str, data: bytes) -> Path:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name)[:120] or "resume.pdf"
+        target = self.resume_dir / f"{resume_id:04d}-{safe}"
+        target.write_bytes(data)
+        return target
+
+    async def _extract_resume(self, filename: str, data: bytes) -> dict:
+        text = extract_text(filename, data)
+        if not text.strip():
+            raise ValueError("No readable text was found in the resume. Scanned PDFs need OCR before upload.")
+        provider = OllamaProvider(host=self.settings.ollama_host, preferred_model=self.settings.ollama_model,
+                                  timeout=min(self.settings.ollama_timeout, 90.0))
+        try:
+            return await extract_profile(text, provider)
+        except LocalModelError:
+            from app.services.resume import extract_profile_deterministic
+            return extract_profile_deterministic(text)
+
     async def process_resume(self, filename: str, data: bytes, *, label: str = "",
                              make_default: bool = False, replace_id: int | None = None) -> dict:
+        """Store the original file locally, extract a profile, and record errors visibly."""
         if not data:
             raise ValueError("Resume file is empty")
         if len(data) > 6_000_000:
             raise ValueError("Resume file exceeds 6 MB")
-        text = extract_text(filename, data)
-        if not text.strip():
-            raise ValueError("No readable text was found in the resume. Scanned PDFs may need OCR.")
-        provider = OllamaProvider(
-            host=self.settings.ollama_host,
-            preferred_model=self.settings.ollama_model,
-            timeout=min(self.settings.ollama_timeout, 60.0),
-        )
+        if not filename.lower().endswith((".pdf", ".docx", ".txt", ".md")):
+            raise ValueError("Upload a PDF or DOCX resume (TXT and Markdown are also accepted)")
+        profile, error = {}, None
         try:
-            profile = await extract_profile(text, provider)
-        except LocalModelError:
-            from app.services.resume import extract_profile_deterministic
-            profile = extract_profile_deterministic(text)
+            profile = await self._extract_resume(filename, data)
+        except Exception as exc:  # keep the file and show the error instead of failing silently
+            error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        status = "processed" if not error else "error"
         if replace_id and self.store.resume(replace_id):
-            self.store.update_resume(replace_id, profile=profile, label=label or None)
             resume_id = replace_id
+            self.store.update_resume(resume_id, profile=profile if not error else None, label=label or None,
+                                     status=status, error=error)
         else:
-            resume_id = self.store.add_resume(profile, filename[:200], label or None, make_default=make_default)
-        rescored = self.rescore_jobs()
-        return {"profile": profile, "filename": filename, "resume_id": resume_id,
-                "resumes": self.store.resumes(), "rescored": rescored,
+            resume_id = self.store.add_resume(profile, filename[:200], label or None,
+                                              make_default=make_default, status=status, error=error)
+        stored = self._store_resume_file(resume_id, filename, data)
+        self.store.update_resume(resume_id, stored_path=str(stored), file_size=len(data), filename=filename[:200])
+        rescored = self.rescore_jobs() if not error else 0
+        return {"profile": profile, "filename": filename, "resume_id": resume_id, "status": status,
+                "error": error, "resumes": self.store.resumes(), "rescored": rescored,
                 "extracted_at": datetime.now(timezone.utc).isoformat()}
+
+    async def reprocess_resume(self, resume_id: int) -> dict:
+        resume = self.store.resume(resume_id)
+        if not resume:
+            raise ValueError("Resume not found")
+        path = Path(str(resume.get("stored_path") or ""))
+        if not resume.get("stored_path") or not path.is_file():
+            raise ValueError("The original file is not stored for this resume; upload it again with “Replace file”")
+        try:
+            profile = await self._extract_resume(path.name, path.read_bytes())
+            self.store.update_resume(resume_id, profile=profile, status="processed", error=None)
+        except Exception as exc:
+            self.store.update_resume(resume_id, status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
+        if not self.store.profile():
+            try:
+                self.store.set_default_resume(resume_id)
+            except ValueError:
+                pass
+        return {"resumes": self.store.resumes(), "rescored": self.rescore_jobs()}
 
     def save_profile(self, profile: dict) -> dict:
         clean = self._clean_profile(profile)
@@ -751,6 +863,7 @@ class Application:
                 return parse_qs(urlparse(self.path).query)
 
             def do_GET(self):
+                app.touch()
                 path = urlparse(self.path).path
                 params = self.query()
                 if path == "/":
@@ -760,6 +873,7 @@ class Application:
                     typ = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
                     try: return self.send(200, (STATIC_DIR / name).read_text(encoding="utf-8"), typ)
                     except OSError: return self.send(404, "Not found", "text/plain; charset=utf-8")
+                if path == "/api/health": return self.json(200, app.health())
                 if path == "/api/bootstrap": return self.json(200, app.bootstrap())
                 if path == "/api/state": return self.json(200, app.job_state())
                 if path.startswith("/api/jobs/"):
@@ -842,6 +956,7 @@ class Application:
                 return self.send(404, "Not found", "text/plain; charset=utf-8")
 
             def do_POST(self):
+                app.touch()
                 path = urlparse(self.path).path
                 try:
                     if path == "/api/resume":
@@ -905,6 +1020,26 @@ class Application:
                         job_id, active = app.start_job("mcp_diagnostics")
                         if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
                         return self.json(202, {"id": job_id, "status": "queued"})
+                    if path in {"/api/search/universal", "/api/search/scan-all"}:
+                        request = str(payload.get("request") or "").strip()
+                        kind = "universal" if path.endswith("universal") else "scan_all"
+                        if kind == "universal" and (not request or len(request) > 1000):
+                            return self.json(400, {"error": "Enter a request of 1–1000 characters"})
+                        job_id, active = app.start_job(kind, request, {"pool_size": payload.get("pool_size")})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued", "kind": kind})
+                    if path == "/api/theme":
+                        return self.json(200, {"theme": app.set_theme(str(payload.get("theme") or ""))})
+                    if path == "/api/heartbeat":
+                        return self.json(200, {"ok": True})
+                    if path == "/api/shutdown":
+                        if app._active_job and app.job_state().get("status") in {"queued", "running"} \
+                                and not payload.get("force"):
+                            return self.json(409, {"error": "A search is still running; cancel it or confirm quitting"})
+                        app.shutdown_requested.set()
+                        return self.json(202, {"ok": True, "message": "Daily Intelligence is shutting down"})
+                    if path.startswith("/api/resumes/") and path.endswith("/reprocess"):
+                        return self.json(200, asyncio.run(app.reprocess_resume(int(path.split("/")[3]))))
                     if path == "/api/planning/interpret":
                         if app._active_job and app.job_state().get("status") in {"queued", "running"}:
                             return self.json(409, {"error": "Wait for the active request to finish (the local model is busy)"})
@@ -1042,14 +1177,56 @@ class Application:
         return thread
 
 
-def serve(open_browser=True):
+def _existing_instance(settings: Settings) -> dict | None:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://{settings.host}:{settings.port}/api/health", timeout=1.5) as response:
+            data = json.loads(response.read() or b"{}")
+            return data if data.get("app") == APP_ID else None
+    except Exception:
+        return None
+
+
+def serve(open_browser=True, *, idle_timeout: float | None = None, pid_file: Path | None = None):
+    """Run the local server. Refuses to start a duplicate instance on the same port.
+
+    idle_timeout: when set (seconds), shut down after no UI request for that long and no
+    running job — used by the desktop launcher so closing the window leaves no orphan.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings.from_env()
+    existing = _existing_instance(settings)
+    if existing:
+        url = f"http://{settings.host}:{settings.port}/"
+        print(f"Daily Intelligence is already running (pid {existing.get('pid')}) at {url}")
+        if open_browser:
+            webbrowser.open(url)
+        return 0
     app = Application(settings)
-    server = BoundedThreadingHTTPServer((settings.host, settings.port), app.handler())
+    try:
+        server = BoundedThreadingHTTPServer((settings.host, settings.port), app.handler())
+    except OSError as exc:
+        print(f"Daily Intelligence could not bind {settings.host}:{settings.port}: {exc}")
+        return 2
+    if pid_file:
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(os.getpid()), encoding="utf-8")
     app.start_scheduler()
     url = f"http://{settings.host}:{settings.port}/"
-    print(f"Daily Intelligence listening at {url}; press Ctrl+C to stop.")
+    print(f"Daily Intelligence {APP_VERSION} listening at {url}; press Ctrl+C to stop.", flush=True)
+    if app.store.backup_path:
+        print(f"Database backed up before migration: {app.store.backup_path}", flush=True)
+
+    def watchdog():
+        while not app.shutdown_requested.wait(5):
+            if idle_timeout and time.monotonic() - app.last_activity > idle_timeout:
+                state = app.job_state()
+                if state.get("status") not in {"queued", "running"}:
+                    log.info("idle for %.0fs; shutting down", idle_timeout)
+                    app.shutdown_requested.set()
+        server.shutdown()
+
+    threading.Thread(target=watchdog, name="daily-intel-watchdog", daemon=True).start()
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
@@ -1062,3 +1239,11 @@ def serve(open_browser=True):
             app.cancel_job(active_id)
         server.server_close()
         app._executor.shutdown(wait=False, cancel_futures=True)
+        if pid_file and pid_file.exists():
+            try:
+                if pid_file.read_text().strip() == str(os.getpid()):
+                    pid_file.unlink()
+            except OSError:
+                pass
+        log.info("Daily Intelligence stopped")
+    return 0

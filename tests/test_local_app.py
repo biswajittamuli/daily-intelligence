@@ -69,7 +69,7 @@ class LocalApplicationTests(unittest.TestCase):
             reloaded = Application(settings)
             self.assertEqual(updated["max_fetch_urls"], 2)
             self.assertEqual(reloaded.settings.notes_dir, Path(tmp) / "custom-notes")
-            self.assertEqual(reloaded.public_settings()["theme"], "light")
+            self.assertEqual(reloaded.public_settings()["theme"], "minimal-light")
             self.assertEqual(reloaded.public_settings()["location"], "India")
             app._executor.shutdown(wait=True)
             reloaded._executor.shutdown(wait=True)

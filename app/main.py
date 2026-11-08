@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import asyncio
 import json
 
@@ -76,7 +77,11 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     models = commands.add_parser("models", help="Inspect local Ollama models")
     models.add_argument("--json-worker", action="store_true", help=argparse.SUPPRESS)
-    commands.add_parser("serve", help="Start the local desktop interface")
+    serve_parser = commands.add_parser("serve", help="Start the local desktop interface")
+    serve_parser.add_argument("--no-browser", action="store_true", help="Do not open a browser window")
+    serve_parser.add_argument("--idle-timeout", type=float, default=None,
+                              help="Stop after this many seconds without UI activity (launcher mode)")
+    serve_parser.add_argument("--pid-file", type=Path, default=None)
     diagnostics = commands.add_parser("diagnostics", help="Check external service integrations")
     diagnostic_commands = diagnostics.add_subparsers(dest="diagnostic", required=True)
     mcp_diagnostic = diagnostic_commands.add_parser("mcp", help="Run live Parallel MCP discovery, search and fetch")
@@ -89,8 +94,8 @@ def main() -> int:
         return asyncio.run(show_models(json_worker=args.json_worker))
     if args.command == "serve":
         try:
-            serve()
-            return 0
+            return int(serve(open_browser=not args.no_browser, idle_timeout=args.idle_timeout,
+                             pid_file=args.pid_file) or 0)
         except OSError as exc:
             print(f"Local interface could not start on 127.0.0.1:{Settings.from_env().port}: {type(exc).__name__}: {exc}")
             return 1
