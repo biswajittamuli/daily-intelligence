@@ -41,7 +41,7 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 APP_ID = "daily-intelligence"
 THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
 LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}
@@ -116,6 +116,8 @@ class Application:
         # One-time upgrade: score legacy listings against stored resumes.
         if self.store.get_preference("upgrade_version") != APP_VERSION:
             try:
+                self.seed_employers()
+                self.store.link_jobs_to_employers()
                 self.rescore_jobs()
                 self.relabel_news()
                 self.store.set_preference("upgrade_version", APP_VERSION)
@@ -218,7 +220,46 @@ class Application:
                     and looks_like_index(str(job.get("original_url") or ""), str(job.get("title") or "")):
                 kind = "search_page"
             job["source_kind"] = kind
+            from app.services.verification import lifecycle
+            job["lifecycle"] = lifecycle(job)
         return jobs
+
+    INDIAN_BOARDS = {"groww": "startup", "cred": "startup", "meesho": "startup", "zeta": "startup",
+                     "sarvam": "startup", "paytm": "established"}
+
+    def seed_employers(self) -> int:
+        """Built-in verified job boards become employer records (classification is explicit, not guessed)."""
+        from app.services.ats_sources import DEFAULT_COMPANIES
+        count = 0
+        for company in self.discovery_preferences.get("jobs", {}).get("companies") or DEFAULT_COMPANIES:
+            slug = company["slug"]
+            india = slug in self.INDIAN_BOARDS
+            self.store.upsert_employer({
+                "name": company["name"], "ats_provider": company["ats"], "ats_slug": slug,
+                "classification": self.INDIAN_BOARDS.get(slug, "established"), "country": "India" if india else None,
+                "career_status": "public job board (built-in list)",
+                "discovery_sources": ["built-in verified board list"]})
+            count += 1
+        return count
+
+    def application_reminders(self) -> int:
+        """Follow-up dates and interviews become planning tasks (idempotent)."""
+        existing = {task["text"] for task in self.store.tasks(include_archived=True)}
+        created = 0
+        for item in self.store.applications():
+            label = f"{item.get('role')}" + (f" at {item['company']}" if item.get("company") else "")
+            wanted = []
+            if item.get("follow_up_date") and item.get("status") not in {"rejected", "withdrawn", "closed", "offer"}:
+                wanted.append((f"Follow up: {label}", item["follow_up_date"], None))
+            for interview in item.get("interview_dates") or []:
+                at = str(interview.get("at") or "")
+                wanted.append((f"Interview: {label}", at[:10], at[11:16] or None))
+            for text, due, clock in wanted:
+                if text[:300] not in existing:
+                    self.store.add_task(text[:300], due, source="tracker", category="career", due_time=clock)
+                    existing.add(text[:300])
+                    created += 1
+        return created
 
     def today_plan(self, *, jobs=None, market=None) -> dict:
         if jobs is None:
@@ -226,7 +267,7 @@ class Application:
                     if job["source_kind"] not in {"search_page", "index_page"}]
         market = market or job_market(jobs, resumes=self.store.resumes())
         return build_today_plan(tasks=self.store.tasks(), jobs=jobs, exams=self.store.exams(limit=200),
-                                notices=self.store.notices(limit=200), tracker=self.store.tracker(),
+                                notices=self.store.notices(limit=200), tracker=self.store.applications(),
                                 skill_gap=market.get("skill_gap"), item_states=self.store.item_states())
 
     def bootstrap(self):
@@ -251,6 +292,11 @@ class Application:
             "job_insights": market,
             "resumes": resumes,
             "tracker": self.store.tracker(),
+            "applications": self.store.applications(),
+            "application_statuses": self.store.APPLICATION_STATUSES,
+            "employers": self.store.employers(limit=300),
+            "signals": self.store.signals(limit=150),
+            "last_reverify": self.store.get_preference("last_reverify"),
             "today_plan": self.today_plan(jobs=fresh, market=market),
             "last_visit": visits.get("previous"),
             "news_presets": {"regions": ["Global", *NEWS_REGIONS.keys()], "topics": list(NEWS_TOPICS.keys())},
@@ -577,6 +623,29 @@ class Application:
                         cancel_event=job["cancel_event"], categories=categories,
                         pool_size=payload.get("pool_size"),
                         research=lambda text: service.ask(text, cancel_event=job["cancel_event"])))
+                elif job["kind"] == "reverify":
+                    from app.services.verification import select_for_verification, verify_jobs
+                    payload = job.get("payload") or {}
+                    ids = [int(x) for x in payload.get("job_ids") or []] or None
+                    targets = select_for_verification(self.store, limit=int(payload.get("limit") or 40), job_ids=ids)
+                    self._progress(job_id, f"Re-verifying {len(targets)} listings")
+
+                    def cancel_check():
+                        if job["cancel_event"].is_set():
+                            raise asyncio.CancelledError
+                    result = asyncio.run(verify_jobs(self.store, self.settings, targets,
+                                                     progress=lambda message: self._progress(job_id, message),
+                                                     cancel=cancel_check))
+                    self.store.set_preference("last_reverify", datetime.now(timezone.utc).isoformat())
+                    self.rescore_jobs()
+                elif job["kind"] == "employer_discovery":
+                    from app.services.employer_discovery import EmployerDiscovery
+                    payload = job.get("payload") or {}
+                    result = asyncio.run(EmployerDiscovery(self.settings, self.store).run(
+                        request, topic=str(payload.get("topic") or "AI")[:40],
+                        search_calls=max(2, min(12, int(payload.get("search_calls") or 6))),
+                        progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
+                    self.store.link_jobs_to_employers()
                 elif job["kind"] == "auto_refresh":
                     engine = DiscoveryEngine(self.settings, self.store, preferences=self.discovery_preferences)
                     categories = (self.discovery_preferences.get("automation") or {}).get("categories") or ["jobs", "news"]
@@ -915,6 +984,12 @@ class Application:
                     return self.json(200, {"profile": app.store.profile()})
                 if path == "/api/resumes":
                     return self.json(200, {"resumes": app.store.resumes()})
+                if path == "/api/applications":
+                    return self.json(200, {"items": app.store.applications(),
+                                           "statuses": app.store.APPLICATION_STATUSES})
+                if path == "/api/employers":
+                    return self.json(200, {"employers": app.store.employers(limit=1000),
+                                           "signals": app.store.signals(limit=300)})
                 if path == "/api/tracker":
                     return self.json(200, {"items": app.store.tracker()})
                 if path == "/api/planning/today":
@@ -1046,6 +1121,25 @@ class Application:
                         return self.json(202, {"ok": True, "message": "Daily Intelligence is shutting down"})
                     if path.startswith("/api/resumes/") and path.endswith("/reprocess"):
                         return self.json(200, asyncio.run(app.reprocess_resume(int(path.split("/")[3]))))
+                    if path == "/api/jobs/reverify":
+                        job_id, active = app.start_job("reverify", "", {"job_ids": payload.get("job_ids"),
+                                                                        "limit": payload.get("limit")})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued"})
+                    if path == "/api/employers/discover":
+                        request = str(payload.get("request") or "Indian AI startups")[:300]
+                        job_id, active = app.start_job("employer_discovery", request,
+                                                       {"topic": payload.get("topic"), "search_calls": payload.get("search_calls")})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued"})
+                    if path == "/api/applications":
+                        app_id = payload.get("id")
+                        item = app.store.save_application(payload, int(app_id) if app_id else None)
+                        app.application_reminders()
+                        return self.json(200, {"application": item, "items": app.store.applications()})
+                    if path.startswith("/api/applications/") and path.endswith("/delete"):
+                        app.store.delete_application(int(path.split("/")[3]))
+                        return self.json(200, {"items": app.store.applications()})
                     if path == "/api/planning/interpret":
                         if app._active_job and app.job_state().get("status") in {"queued", "running"}:
                             return self.json(409, {"error": "Wait for the active request to finish (the local model is busy)"})
@@ -1124,8 +1218,15 @@ class Application:
                         app.store.set_item_state(kind, item_id, state,
                                                  resume_id=int(resume_id) if resume_id else None,
                                                  note=payload.get("note"))
+                        if kind == "job" and state in {"saved", "applied", "interview", "offer", "rejected"}:
+                            listing = next((item for item in app.store.jobs(limit=5000) if item["id"] == item_id), None)
+                            if listing:
+                                app.store.save_application({"job_id": item_id, "company": listing.get("employer"),
+                                                            "role": listing.get("title"), "job_url": listing.get("original_url"),
+                                                            "resume_id": resume_id or listing.get("best_resume_id"),
+                                                            "status": state})
                         if kind == "job" and state == "applied":
-                            listing = next((item for item in app.store.jobs(limit=2000) if item["id"] == item_id), None)
+                            listing = next((item for item in app.store.jobs(limit=5000) if item["id"] == item_id), None)
                             if listing:
                                 follow = (date.today() + timedelta(days=7)).isoformat()
                                 title = f"Follow up on application: {listing.get('title')}"
@@ -1155,6 +1256,23 @@ class Application:
         return Handler
 
     # ------------------------------------------------------------- scheduler
+    def maybe_reverify(self, now: datetime | None = None) -> str | None:
+        """Re-verify saved/shortlisted listings every `automation.reverify_hours` (0 disables)."""
+        hours = float((self.discovery_preferences.get("automation") or {}).get("reverify_hours", 24) or 0)
+        if hours <= 0 or not self.store.jobs(limit=1):
+            return None
+        now = now or datetime.now(timezone.utc)
+        last = self.store.get_preference("last_reverify")
+        try:
+            if last and (now - datetime.fromisoformat(last)).total_seconds() < hours * 3600:
+                return None
+        except ValueError:
+            pass
+        job_id, _ = self.start_job("reverify", "", {"limit": 40})
+        if job_id:
+            self.store.set_preference("last_reverify", now.isoformat())
+        return job_id
+
     def maybe_auto_refresh(self, now: datetime | None = None) -> str | None:
         """Start the scheduled refresh once per day after the configured time."""
         automation = self.discovery_preferences.get("automation") or {}
@@ -1174,7 +1292,7 @@ class Application:
         def loop():
             while True:
                 try:
-                    self.maybe_auto_refresh()
+                    self.maybe_auto_refresh() or self.maybe_reverify()
                 except Exception:
                     log.exception("scheduled refresh check failed")
                 time.sleep(interval)

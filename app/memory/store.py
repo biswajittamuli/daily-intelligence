@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -103,6 +104,29 @@ CREATE TABLE IF NOT EXISTS resumes (
     profile_json TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS employers (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, normalized_name TEXT NOT NULL, domain TEXT,
+    website TEXT, headquarters TEXT, locations_json TEXT, industry TEXT, description TEXT,
+    classification TEXT DEFAULT 'unknown', country TEXT, funding_json TEXT, career_url TEXT,
+    ats_provider TEXT, ats_slug TEXT, career_status TEXT, discovery_sources_json TEXT,
+    aliases_json TEXT, evidence_json TEXT, first_discovered TEXT NOT NULL, last_discovery TEXT NOT NULL,
+    last_career_check TEXT, open_jobs INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employers_domain ON employers(domain) WHERE domain IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_employers_name ON employers(normalized_name);
+CREATE TABLE IF NOT EXISTS employer_signals (
+    id INTEGER PRIMARY KEY, employer_id INTEGER, company_name TEXT NOT NULL, signal_type TEXT NOT NULL,
+    title TEXT, detail TEXT, amount TEXT, source_url TEXT NOT NULL, publisher TEXT, signal_date TEXT,
+    evidence TEXT, first_seen TEXT NOT NULL,
+    UNIQUE(source_url, signal_type, company_name)
+);
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY, job_id INTEGER, company TEXT, role TEXT NOT NULL, job_url TEXT,
+    resume_id INTEGER, status TEXT NOT NULL DEFAULT 'interested', applied_at TEXT,
+    recruiter_name TEXT, recruiter_contact TEXT, interview_dates_json TEXT, follow_up_date TEXT,
+    next_action TEXT, notes TEXT, history_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_job ON applications(job_id) WHERE job_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_jobs_last_seen ON job_listings(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_notices_last_seen ON recruitment_notices(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_exam_events_date ON exam_events(event_date);
@@ -112,7 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON search_sessions(created_at DE
 
 JSON_COLUMNS = {
     "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json",
-                     "sources_json", "eligibility_json"),
+                     "sources_json", "eligibility_json", "verify_history_json"),
+    "employers": ("locations_json", "funding_json", "discovery_sources_json", "aliases_json", "evidence_json"),
+    "applications": ("interview_dates_json", "history_json"),
     "recruitment_notices": ("evidence_json", "raw_json"),
     "exam_events": ("evidence_json", "raw_json"),
     "intel_items": ("evidence_json", "raw_json"),
@@ -140,7 +166,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 4  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 5  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -181,7 +207,6 @@ class Store:
     def _migrate(db: sqlite3.Connection) -> None:
         """Add columns introduced after a database was first created."""
         additions = {
-            "intel_items": {"region": "TEXT", "topic": "TEXT"},
             "tasks": {"due_time": "TEXT", "recurrence": "TEXT", "category": "TEXT",
                       "archived": "INTEGER NOT NULL DEFAULT 0", "original_text": "TEXT"},
             "saved_items": {"applied_at": "TEXT", "resume_id": "INTEGER", "note": "TEXT"},
@@ -189,13 +214,32 @@ class Store:
                         "error": "TEXT", "file_size": "INTEGER", "processed_at": "TEXT"},
             "job_listings": {"best_resume_id": "INTEGER", "best_resume_label": "TEXT",
                              "resume_scores_json": "TEXT", "sources_json": "TEXT",
-                             "eligibility_json": "TEXT", "discovered_via": "TEXT"},
+                             "eligibility_json": "TEXT", "discovered_via": "TEXT",
+                             "updated_date": "TEXT", "employer_url": "TEXT", "application_url": "TEXT",
+                             "requisition_id": "TEXT", "status_evidence": "TEXT", "repost_of": "INTEGER",
+                             "verify_history_json": "TEXT", "missing_count": "INTEGER DEFAULT 0",
+                             "employer_id": "INTEGER", "dedup_key": "TEXT"},
+            "intel_items": {"region": "TEXT", "topic": "TEXT", "updated_date": "TEXT"},
         }
         for table, columns in additions.items():
             existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
             for name, kind in columns.items():
                 if name not in existing:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        # Existing tracked jobs become application records once (history preserved).
+        if not db.execute("SELECT COUNT(*) AS n FROM applications").fetchone()["n"]:
+            state_map = {"saved": "saved", "applied": "applied", "interview": "interview", "offer": "offer",
+                         "rejected": "rejected", "follow_up": "applied"}
+            for row in db.execute("""SELECT s.item_id, s.state, s.applied_at, s.resume_id, s.note, s.created_at,
+                                     s.updated_at, j.title, j.employer, j.original_url FROM saved_items s
+                                     JOIN job_listings j ON j.id=s.item_id WHERE s.kind='job'""").fetchall():
+                if row["state"] in state_map:
+                    db.execute("""INSERT OR IGNORE INTO applications(job_id,company,role,job_url,resume_id,status,
+                                  applied_at,notes,history_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                               (row["item_id"], row["employer"], row["title"], row["original_url"], row["resume_id"],
+                                state_map[row["state"]], row["applied_at"], row["note"],
+                                _json([{"status": state_map[row["state"]], "at": row["updated_at"]}]),
+                                row["created_at"], row["updated_at"]))
         # Move the legacy single-row profile into the multi-resume table once.
         has_resumes = db.execute("SELECT COUNT(*) AS n FROM resumes").fetchone()["n"]
         legacy = db.execute("SELECT * FROM candidate_profile WHERE id=1").fetchone()
@@ -514,6 +558,14 @@ class Store:
 
     # ------------------------------------------------------------ job listings
     def upsert_jobs(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Insert or update listings.
+
+        Cross-source dedup: a listing with the same employer + normalized title + city (and
+        no conflicting requisition id) as an *open* stored listing is the same opening seen on
+        another source — its URL is added to that listing's sources instead of a new row.
+        Repost: the same key on a new URL while the stored listing is closed/expired creates a
+        new row linked via ``repost_of`` (history preserved).
+        """
         now = self.now()
         saved = []
         with self.connect() as db:
@@ -522,41 +574,108 @@ class Store:
                 if not url:
                     continue
                 original = str(record.get("original_url") or record.get("url") or url)
-                row = db.execute("SELECT id, first_seen, sources_json FROM job_listings WHERE canonical_url=?",
-                                 (url,)).fetchone()
+                key = dedup_key(record)
+                row = db.execute("SELECT id, first_seen, sources_json, verify_history_json, repost_of FROM job_listings "
+                                 "WHERE canonical_url=?", (url,)).fetchone()
+                repost_of = row["repost_of"] if row else None
+                if row is None and key:
+                    twin = db.execute("SELECT id, canonical_url, status, requisition_id, sources_json FROM job_listings "
+                                      "WHERE dedup_key=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+                    req = record.get("requisition_id")
+                    conflict = twin is not None and req and twin["requisition_id"] and req != twin["requisition_id"]
+                    if twin is not None and not conflict:
+                        if twin["status"] in {"closed", "expired"}:
+                            repost_of = twin["id"]
+                        else:
+                            merged = _merge_sources(_loads(twin["sources_json"], []),
+                                                    (record.get("sources") or []) + [{"platform": record.get("source_platform"),
+                                                                                      "url": original, "via": "duplicate"}])
+                            db.execute("UPDATE job_listings SET sources_json=?, last_seen=? WHERE id=?",
+                                       (_json(merged), now, twin["id"]))
+                            saved.append(self._row(db.execute("SELECT * FROM job_listings WHERE id=?",
+                                                              (twin["id"],)).fetchone(), "job_listings"))
+                            continue
                 first_seen = row["first_seen"] if row else now
                 sources = _merge_sources(_loads(row["sources_json"], []) if row else [],
-                                         record.get("sources") or [])
+                                         (record.get("sources") or []) or [{"platform": record.get("source_platform"),
+                                                                            "url": original, "via": record.get("discovered_via")}])
+                history = _loads(row["verify_history_json"], []) if row else []
+                if record.get("verification"):
+                    history = (history + [record["verification"]])[-20:]
                 db.execute("""INSERT INTO job_listings(
                     canonical_url,original_url,employer,title,location,remote,employment_type,
                     experience,skills_json,salary,posted_date,deadline,status,source_platform,
                     match_score,match_reason,evidence_json,raw_json,first_seen,last_seen,last_verified,
                     best_resume_id,best_resume_label,resume_scores_json,sources_json,eligibility_json,
-                    discovered_via)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    discovered_via,updated_date,employer_url,application_url,requisition_id,status_evidence,
+                    repost_of,verify_history_json,employer_id,dedup_key)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(canonical_url) DO UPDATE SET
-                    original_url=excluded.original_url, employer=excluded.employer, title=excluded.title,
-                    location=excluded.location, remote=excluded.remote, employment_type=excluded.employment_type,
+                    original_url=excluded.original_url, employer=COALESCE(excluded.employer, job_listings.employer),
+                    title=excluded.title, location=COALESCE(excluded.location, job_listings.location),
+                    remote=excluded.remote, employment_type=COALESCE(excluded.employment_type, job_listings.employment_type),
                     experience=excluded.experience, skills_json=excluded.skills_json, salary=excluded.salary,
-                    posted_date=excluded.posted_date, deadline=excluded.deadline, status=excluded.status,
+                    posted_date=COALESCE(excluded.posted_date, job_listings.posted_date),
+                    deadline=COALESCE(excluded.deadline, job_listings.deadline), status=excluded.status,
                     source_platform=excluded.source_platform, match_score=excluded.match_score,
                     match_reason=excluded.match_reason, evidence_json=excluded.evidence_json,
-                    raw_json=excluded.raw_json, last_seen=excluded.last_seen, last_verified=excluded.last_verified,
+                    raw_json=excluded.raw_json, last_seen=excluded.last_seen,
+                    last_verified=COALESCE(excluded.last_verified, job_listings.last_verified),
                     best_resume_id=excluded.best_resume_id, best_resume_label=excluded.best_resume_label,
                     resume_scores_json=excluded.resume_scores_json, sources_json=excluded.sources_json,
-                    eligibility_json=excluded.eligibility_json, discovered_via=excluded.discovered_via""",
+                    eligibility_json=excluded.eligibility_json, discovered_via=excluded.discovered_via,
+                    updated_date=COALESCE(excluded.updated_date, job_listings.updated_date),
+                    employer_url=COALESCE(excluded.employer_url, job_listings.employer_url),
+                    application_url=COALESCE(excluded.application_url, job_listings.application_url),
+                    requisition_id=COALESCE(excluded.requisition_id, job_listings.requisition_id),
+                    status_evidence=COALESCE(excluded.status_evidence, job_listings.status_evidence),
+                    verify_history_json=excluded.verify_history_json,
+                    employer_id=COALESCE(excluded.employer_id, job_listings.employer_id),
+                    dedup_key=excluded.dedup_key, missing_count=0""",
                     (url, original, record.get("employer"), record.get("title") or "Untitled role",
                      record.get("location"), record.get("remote"), record.get("employment_type"),
                      record.get("experience"), _json(record.get("skills") or []), record.get("salary"),
                      record.get("posted_date"), record.get("deadline"), record.get("status") or "unverified",
                      record.get("source_platform"), record.get("match_score"), record.get("match_reason"),
                      _json(record.get("evidence") or []), _json(record.get("raw")), first_seen, now,
-                     record.get("last_verified") or now, record.get("best_resume_id"),
+                     record.get("last_verified"), record.get("best_resume_id"),
                      record.get("best_resume_label"), _json(record.get("resume_scores")),
-                     _json(sources), _json(record.get("eligibility")), record.get("discovered_via")))
+                     _json(sources), _json(record.get("eligibility")), record.get("discovered_via"),
+                     record.get("updated_date"), record.get("employer_url"), record.get("application_url"),
+                     record.get("requisition_id"), record.get("status_evidence"), repost_of,
+                     _json(history), record.get("employer_id"), key))
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "job_listings"))
         return saved
+
+    def record_verification(self, job_id: int, *, status: str | None, evidence: str, outcome: str,
+                            missing: bool = False, posted_date: str | None = None,
+                            raw_text: str | None = None) -> dict[str, Any]:
+        """Store a re-verification result and its history (never deletes the listing)."""
+        now = self.now()
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM job_listings WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise ValueError("Listing not found")
+            history = _loads(row["verify_history_json"], [])
+            history = (history + [{"at": now, "outcome": outcome, "status": status or row["status"],
+                                   "evidence": evidence[:300]}])[-20:]
+            missing_count = (int(row["missing_count"] or 0) + 1) if missing else 0
+            fields = {"verify_history_json": _json(history), "missing_count": missing_count,
+                      "status_evidence": evidence[:500]}
+            if status:
+                fields["status"] = status
+            if outcome in {"verified_open", "closed", "expired"}:
+                fields["last_verified"] = now
+            if posted_date and not row["posted_date"]:
+                fields["posted_date"] = posted_date
+            if raw_text:
+                raw = _loads(row["raw_json"], {}) or {}
+                raw["raw_text"] = raw_text[:8000]
+                fields["raw_json"] = _json(raw)
+            db.execute(f"UPDATE job_listings SET {', '.join(k + '=?' for k in fields)} WHERE id=?",
+                       (*fields.values(), job_id))
+            return self._row(db.execute("SELECT * FROM job_listings WHERE id=?", (job_id,)).fetchone(), "job_listings")
 
     def jobs(self, *, query: str = "", status: str = "", limit: int = 100,
              fresh_only: bool = False, max_age_days: int = 45,
@@ -757,6 +876,189 @@ class Store:
                 db.execute("UPDATE intel_items SET region=?, topic=? WHERE id=?",
                            (update.get("region"), update.get("topic"), update["id"]))
 
+    # -------------------------------------------------------------- employers
+    @staticmethod
+    def _norm_company(name: str) -> str:
+        from app.services.employer_discovery import normalize_name
+        return normalize_name(name)
+
+    def find_employer(self, name: str = "", domain: str | None = None) -> dict[str, Any] | None:
+        norm = self._norm_company(name) if name else ""
+        with self.connect() as db:
+            row = None
+            if domain:
+                row = db.execute("SELECT * FROM employers WHERE domain=?", (domain,)).fetchone()
+            if row is None and norm:
+                row = db.execute("SELECT * FROM employers WHERE normalized_name=?", (norm,)).fetchone()
+            if row is None and norm:
+                for candidate in db.execute("SELECT * FROM employers WHERE aliases_json LIKE ?", (f"%{name}%",)).fetchall():
+                    if norm in {self._norm_company(a) for a in _loads(candidate["aliases_json"], [])}:
+                        row = candidate
+                        break
+        return self._row(row, "employers") if row else None
+
+    def upsert_employer(self, record: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Insert or merge an employer; dedup by registrable domain, normalized name, then aliases."""
+        from app.services.employer_discovery import _registrable
+        now = self.now()
+        name = " ".join(str(record.get("name") or "").split())[:80]
+        if not name:
+            raise ValueError("Employer needs a name")
+        domain = record.get("domain")
+        domain = _registrable(domain) if domain else None
+        existing = self.find_employer(name, domain)
+        with self.connect() as db:
+            if existing is None:
+                cur = db.execute("""INSERT INTO employers(name,normalized_name,domain,website,headquarters,locations_json,
+                    industry,description,classification,country,funding_json,career_url,ats_provider,ats_slug,
+                    career_status,discovery_sources_json,aliases_json,evidence_json,first_discovered,last_discovery,
+                    last_career_check,open_jobs) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (name, self._norm_company(name), domain, record.get("website"), record.get("headquarters"),
+                     _json(record.get("locations") or []), record.get("industry"), record.get("description"),
+                     record.get("classification") or "unknown", record.get("country"),
+                     _json(record.get("funding") or []), record.get("career_url"), record.get("ats_provider"),
+                     record.get("ats_slug"), record.get("career_status"), _json(record.get("discovery_sources") or []),
+                     _json([name]), _json(record.get("evidence") or []), now, now, record.get("last_career_check"),
+                     int(record.get("open_jobs") or 0)))
+                row = db.execute("SELECT * FROM employers WHERE id=?", (cur.lastrowid,)).fetchone()
+                return self._row(row, "employers"), True
+            aliases = list(dict.fromkeys((existing.get("aliases") or []) + [name]))[:10]
+            sources = list(dict.fromkeys((existing.get("discovery_sources") or []) + list(record.get("discovery_sources") or [])))[:20]
+            evidence = (list(record.get("evidence") or []) + (existing.get("evidence") or []))[:8]
+            funding = (list(record.get("funding") or []) + (existing.get("funding") or []))[:6]
+            classification = existing.get("classification") if existing.get("classification") not in {None, "unknown"} \
+                else record.get("classification") or "unknown"
+            db.execute("""UPDATE employers SET domain=COALESCE(domain, ?), website=COALESCE(website, ?),
+                country=COALESCE(country, ?), classification=?, career_url=COALESCE(?, career_url),
+                ats_provider=COALESCE(?, ats_provider), ats_slug=COALESCE(?, ats_slug),
+                career_status=COALESCE(?, career_status), discovery_sources_json=?, aliases_json=?, evidence_json=?,
+                funding_json=?, last_discovery=?, last_career_check=COALESCE(?, last_career_check),
+                open_jobs=CASE WHEN ? > 0 THEN ? ELSE open_jobs END WHERE id=?""",
+                (domain, record.get("website"), record.get("country"), classification, record.get("career_url"),
+                 record.get("ats_provider"), record.get("ats_slug"), record.get("career_status"), _json(sources),
+                 _json(aliases), _json(evidence), _json(funding), now, record.get("last_career_check"),
+                 int(record.get("open_jobs") or 0), int(record.get("open_jobs") or 0), existing["id"]))
+            row = db.execute("SELECT * FROM employers WHERE id=?", (existing["id"],)).fetchone()
+            return self._row(row, "employers"), False
+
+    def employers(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute("""SELECT e.*, (SELECT COUNT(*) FROM employer_signals s WHERE s.employer_id=e.id) AS signal_count,
+                                        (SELECT COUNT(*) FROM job_listings j WHERE j.employer_id=e.id
+                                         AND j.status NOT IN ('closed','expired')) AS stored_jobs
+                                 FROM employers e ORDER BY e.last_discovery DESC LIMIT ?""", (limit,)).fetchall()
+        return [self._row(row, "employers") for row in rows]
+
+    def add_signal(self, signal: dict[str, Any]) -> bool:
+        with self.connect() as db:
+            cur = db.execute("""INSERT OR IGNORE INTO employer_signals(employer_id,company_name,signal_type,title,detail,
+                                amount,source_url,publisher,signal_date,evidence,first_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                             (signal.get("employer_id"), signal["company_name"], signal["signal_type"],
+                              signal.get("title"), signal.get("detail"), signal.get("amount"), signal["source_url"],
+                              signal.get("publisher"), signal.get("signal_date"), signal.get("evidence"), self.now()))
+            return cur.rowcount > 0
+
+    def signals(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM employer_signals ORDER BY COALESCE(signal_date, first_seen) DESC LIMIT ?",
+                              (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def link_jobs_to_employers(self) -> int:
+        """Attach stored listings to employers by normalized employer name (no fuzzy guessing)."""
+        linked = 0
+        with self.connect() as db:
+            employers = {row["normalized_name"]: row["id"] for row in db.execute("SELECT id, normalized_name FROM employers")}
+            for row in db.execute("SELECT id, employer FROM job_listings WHERE employer_id IS NULL AND employer IS NOT NULL").fetchall():
+                employer_id = employers.get(self._norm_company(row["employer"]))
+                if employer_id:
+                    db.execute("UPDATE job_listings SET employer_id=? WHERE id=?", (employer_id, row["id"]))
+                    linked += 1
+        return linked
+
+    # ----------------------------------------------------------- applications
+    APPLICATION_STATUSES = ["interested", "saved", "preparing", "applied", "assessment", "interview",
+                            "offer", "rejected", "withdrawn", "closed"]
+
+    def applications(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute("""SELECT a.*, j.status AS job_status, j.match_score, j.location, j.posted_date,
+                                        j.deadline, j.last_verified, j.eligibility_json
+                                 FROM applications a LEFT JOIN job_listings j ON j.id=a.job_id
+                                 ORDER BY a.updated_at DESC""").fetchall()
+        output = []
+        for row in rows:
+            item = self._row(row, "applications")
+            item["eligibility"] = _loads(item.pop("eligibility_json", None), {})
+            output.append(item)
+        return output
+
+    def application(self, app_id: int) -> dict[str, Any] | None:
+        return next((item for item in self.applications() if item["id"] == app_id), None)
+
+    def save_application(self, values: dict[str, Any], app_id: int | None = None) -> dict[str, Any]:
+        """Create/update an application record; status changes are appended to history."""
+        now = self.now()
+        allowed = {"job_id", "company", "role", "job_url", "resume_id", "status", "applied_at", "recruiter_name",
+                   "recruiter_contact", "interview_dates", "follow_up_date", "next_action", "notes"}
+        clean = {key: value for key, value in values.items() if key in allowed}
+        if "status" in clean and clean["status"] not in self.APPLICATION_STATUSES:
+            raise ValueError("Unknown application status")
+        for key in ("company", "role", "job_url", "recruiter_name", "recruiter_contact", "next_action"):
+            if key in clean and clean[key] is not None:
+                clean[key] = " ".join(str(clean[key]).split())[:300] or None
+        if "notes" in clean and clean["notes"] is not None:
+            clean["notes"] = str(clean["notes"])[:4000]
+        for key in ("applied_at", "follow_up_date"):
+            if clean.get(key):
+                value = _iso_date(clean[key])
+                if value is None:
+                    raise ValueError(f"{key} must be a date (YYYY-MM-DD)")
+                clean[key] = value.isoformat()
+        if "interview_dates" in clean:
+            dates = []
+            for item in clean.pop("interview_dates") or []:
+                text = str(item.get("at") if isinstance(item, dict) else item)[:16]
+                try:
+                    datetime.fromisoformat(text)
+                except ValueError:
+                    raise ValueError("Interview dates must be YYYY-MM-DD or YYYY-MM-DDTHH:MM")
+                dates.append({"at": text, "note": (item.get("note") if isinstance(item, dict) else None)})
+            clean["interview_dates_json"] = _json(dates)
+        with self.connect() as db:
+            if app_id is None and clean.get("job_id"):
+                row = db.execute("SELECT id FROM applications WHERE job_id=?", (clean["job_id"],)).fetchone()
+                app_id = row["id"] if row else None
+            if app_id is None:
+                if not clean.get("role"):
+                    raise ValueError("An application needs a role")
+                status = clean.get("status") or "interested"
+                if status == "applied" and not clean.get("applied_at"):
+                    clean["applied_at"] = date.today().isoformat()
+                clean.update(status=status, history_json=_json([{"status": status, "at": now}]),
+                             created_at=now, updated_at=now)
+                columns = ", ".join(clean)
+                cur = db.execute(f"INSERT INTO applications({columns}) VALUES({', '.join('?' for _ in clean)})",
+                                 tuple(clean.values()))
+                app_id = int(cur.lastrowid)
+            else:
+                row = db.execute("SELECT status, history_json, applied_at FROM applications WHERE id=?", (app_id,)).fetchone()
+                if not row:
+                    raise ValueError("Application not found")
+                if clean.get("status") and clean["status"] != row["status"]:
+                    history = _loads(row["history_json"], []) + [{"status": clean["status"], "at": now}]
+                    clean["history_json"] = _json(history[-40:])
+                    if clean["status"] == "applied" and not row["applied_at"] and not clean.get("applied_at"):
+                        clean["applied_at"] = date.today().isoformat()
+                clean["updated_at"] = now
+                db.execute(f"UPDATE applications SET {', '.join(k + '=?' for k in clean)} WHERE id=?",
+                           (*clean.values(), app_id))
+        return self.application(app_id)
+
+    def delete_application(self, app_id: int) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM applications WHERE id=?", (app_id,))
+
     # ------------------------------------------------------------- item state
     ITEM_STATES = {"saved", "applied", "interview", "offer", "rejected", "dismissed",
                    "follow_up", "completed", "seen"}
@@ -897,9 +1199,29 @@ class Store:
             if column not in item:
                 continue
             key = column.removesuffix("_json")
-            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores",
-                                                               "sources"} else {})
+            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores", "sources",
+                                                               "verify_history", "locations", "discovery_sources",
+                                                               "aliases", "interview_dates", "history"} else {})
         return item
+
+
+_CITY_ALIASES = {"bangalore": "bengaluru", "gurgaon": "gurugram", "bombay": "mumbai", "new delhi": "delhi",
+                 "madras": "chennai", "calcutta": "kolkata", "cochin": "kochi"}
+
+
+def dedup_key(record: dict[str, Any]) -> str | None:
+    """employer|normalized title|city — None when employer or title is unknown (no risky merges)."""
+    employer = re.sub(r"[^a-z0-9]+", " ", str(record.get("employer") or "").casefold()).strip()
+    title = re.sub(r"\b(?:at|@)\s+.*$", "", str(record.get("title") or "").casefold())
+    title = re.sub(r"[^a-z0-9+#]+", " ", title).strip()
+    if not employer or not title or employer in {"none", "company hidden", "confidential"}:
+        return None
+    employer = re.sub(r"\b(private limited|pvt ltd|pvt|ltd|limited|inc|llc|technologies|technology|labs?|"
+                      r"careers|job board|india)\b", "", employer).strip()
+    city = str(record.get("location") or "").casefold().split(",")[0].strip()
+    city = re.sub(r"[^a-z ]+", "", city).strip()
+    city = _CITY_ALIASES.get(city, city)
+    return f"{employer}|{title}|{city}"
 
 
 def _merge_sources(existing: list[Any], new: list[Any]) -> list[dict[str, Any]]:

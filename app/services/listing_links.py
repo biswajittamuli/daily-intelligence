@@ -175,3 +175,30 @@ def harvest_listings(page_url: str, content: str, *, limit: int = 30,
             if len(found) >= limit:
                 break
     return list(found.values())[:limit]
+
+
+def harvest_career_page(page_url: str, content: str, employer: str, *, limit: int = 40) -> list[dict[str, Any]]:
+    """Job links on an employer's own career page: same-site links whose text reads as a role title."""
+    found: dict[str, dict[str, Any]] = {}
+    host = urlparse(page_url).netloc.lower().removeprefix("www.")
+    pairs = [(m.group(1), re.sub(r"<[^>]+>", " ", m.group(2))) for m in HTML_LINK.finditer(content or "")]
+    pairs += [(m.group(2), m.group(1)) for m in MARKDOWN_LINK.finditer(content or "")]
+    for href, text in pairs:
+        url = urljoin(page_url, href.strip()).split("#")[0]
+        link_host = urlparse(url).netloc.lower().removeprefix("www.")
+        if not url.startswith("http") or url.rstrip("/") == page_url.rstrip("/"):
+            continue
+        same_site = link_host == host or link_host.endswith("." + host.split(".", 1)[-1])
+        if not (same_site or is_listing_url(url)):
+            continue
+        title = _clean_title(text)
+        if not title or len(title) > 110 or NOISE_TITLES.match(title) or not ROLE_WORDS.search(title):
+            continue
+        if not (is_listing_url(url) or re.search(r"/(jobs?|careers?|openings?|positions?|roles?)/[^/]+", url, re.I)):
+            continue
+        found.setdefault(url.rstrip("/").casefold(), {"url": url, "title": title, "employer": employer,
+                                                      "context": "", "posted_date": None, "location": None,
+                                                      "skills": find_skills(title), "index_host": host})
+        if len(found) >= limit:
+            break
+    return list(found.values())

@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 import httpx
 
-USER_AGENT = "DailyIntelligence/3.1 (local personal job scanner)"
+USER_AGENT = "DailyIntelligence/3.2 (local personal job scanner)"
 
 # Verified on 2026-11-08 to return public boards. Users can add/remove in Settings.
 DEFAULT_COMPANIES: list[dict[str, str]] = [
@@ -53,7 +53,7 @@ DEFAULT_COMPANIES: list[dict[str, str]] = [
     {"name": "PostHog", "ats": "ashby", "slug": "posthog"},
 ]
 
-ATS_TYPES = {"greenhouse", "lever", "ashby"}
+ATS_TYPES = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
 _CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 CACHE_SECONDS = 3 * 3600
 
@@ -127,6 +127,32 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
                 "employment_type": item.get("employmentType"),
                 "remote": "remote" if item.get("isRemote") else item.get("workplaceType"),
             })
+    elif ats == "workable":
+        for item in (payload or {}).get("jobs", []):
+            location = ", ".join(part for part in (item.get("city"), item.get("state"), item.get("country")) if part)
+            jobs.append({
+                "title": item.get("title"), "employer": (payload or {}).get("name") or name, "location": location,
+                "url": item.get("url") or item.get("shortlink"), "application_url": item.get("application_url"),
+                "posted_date": _iso(item.get("published_on") or item.get("created_at")),
+                "description": _text(item.get("description"))[:12000],
+                "employment_type": item.get("employment_type"),
+                "remote": "remote" if item.get("telecommuting") else None,
+                "requisition_id": item.get("shortcode"),
+            })
+    elif ats == "smartrecruiters":
+        for item in (payload or {}).get("content", []):
+            loc = item.get("location") or {}
+            location = ", ".join(str(part) for part in (loc.get("city"), loc.get("region"),
+                                                         str(loc.get("country") or "").upper()) if part)
+            company_id = (item.get("company") or {}).get("identifier") or company_slug(company)
+            jobs.append({
+                "title": item.get("name"), "employer": (item.get("company") or {}).get("name") or name,
+                "location": location, "url": f"https://jobs.smartrecruiters.com/{company_id}/{item.get('id')}",
+                "posted_date": _iso(item.get("releasedDate")), "description": "",
+                "employment_type": (item.get("typeOfEmployment") or {}).get("label"),
+                "remote": "remote" if loc.get("remote") else None, "requisition_id": item.get("refNumber"),
+                "experience_level": (item.get("experienceLevel") or {}).get("label"),
+            })
     output = []
     for job in jobs:
         if job.get("title") and job.get("url"):
@@ -136,9 +162,15 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
     return output
 
 
+def company_slug(company: dict[str, str]) -> str:
+    return company.get("slug", "")
+
+
 def _endpoint(company: dict[str, str]) -> str:
     slug = company["slug"]
     return {
+        "workable": f"https://apply.workable.com/api/v1/widget/accounts/{slug}?details=true",
+        "smartrecruiters": f"https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit=100",
         "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
         "lever": f"https://api.lever.co/v0/postings/{slug}?mode=json",
         "ashby": f"https://api.ashbyhq.com/posting-api/job-board/{slug}",

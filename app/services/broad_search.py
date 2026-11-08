@@ -43,9 +43,52 @@ from app.services.resume import find_skills
 
 POOL_SIZES = (50, 100, 200)
 
+INDIAN_CITIES = ["Bengaluru", "Bangalore", "Hyderabad", "Pune", "Chennai", "Mumbai", "Delhi NCR", "Delhi", "Gurugram",
+                 "Gurgaon", "Noida", "Ahmedabad", "Kochi", "Kolkata", "Jaipur", "Chandigarh", "Indore", "Coimbatore",
+                 "Thiruvananthapuram", "Bhubaneswar", "Guwahati", "Mysuru", "Nagpur", "Vadodara", "Lucknow"]
+
+
+def parse_request(request: str) -> dict[str, Any]:
+    """Pull role, city, remote, early-career, startup/funded and company hints out of a free-text request."""
+    text = " ".join(str(request or "").split())
+    lowered = text.casefold()
+    city = next((c for c in INDIAN_CITIES if re.search(rf"\b{re.escape(c.casefold())}\b", lowered)), None)
+    remote = None
+    if re.search(r"\bremote\b", lowered):
+        remote = "Remote worldwide" if re.search(r"worldwide|global|anywhere", lowered) else "Remote India"
+    fresher = bool(re.search(r"\b(fresher|freshers|entry[- ]level|new grad|graduate|0-1|junior|intern(ship)?s?|trainee|"
+                             r"early[- ]career|campus)\b", lowered))
+    intern = bool(re.search(r"\bintern(ship)?s?\b", lowered))
+    startup = bool(re.search(r"\bstart-?ups?\b", lowered))
+    funded = bool(re.search(r"\b(recently )?funded|raised|funding\b", lowered))
+    company = None
+    match = re.search(r"\bat ([A-Z][\w&.\- ]{1,40}?)(?:\s+in\b|\s*$|,)", text)
+    if match and not re.search(r"\b(indian|startups?|companies)\b", match.group(1), re.I):
+        company = match.group(1).strip()
+    role = re.sub(r"\b(find|search|show|me|latest|current|new|open|jobs?|vacanc\w*|openings?|for|in|the|a|an|please|"
+                  r"roles?|positions?|at|indian|india|startups?|start-ups?|recently|funded|remote|worldwide|fresher|"
+                  r"freshers|entry[- ]level|early[- ]career|companies|public|listings?|with|of|and)\b", " ", text, flags=re.I)
+    if city:
+        role = re.sub(re.escape(city), " ", role, flags=re.I)
+    if company:
+        role = role.replace(company, " ")
+    role = " ".join(role.split())[:60]
+    return {"role": role, "city": city, "remote": remote, "fresher": fresher, "intern": intern, "startup": startup,
+            "funded": funded, "company": company}
+
+
 ROLE_VARIANTS: dict[str, list[str]] = {
-    "ai engineer": ["AI Engineer", "Machine Learning Engineer", "Applied AI Engineer", "LLM Engineer",
-                    "GenAI Engineer"],
+    "ai engineer": ["AI Engineer", "Applied AI Engineer", "Generative AI Engineer", "LLM Engineer",
+                    "AI Agent Engineer", "Machine Learning Engineer"],
+    "llm engineer": ["LLM Engineer", "Generative AI Engineer", "AI Engineer", "NLP Engineer"],
+    "ai agent engineer": ["AI Agent Engineer", "Agentic AI Developer", "LLM Engineer", "AI Engineer"],
+    "ai intern": ["AI Intern", "ML Intern", "Machine Learning Intern", "Data Science Intern"],
+    "ml intern": ["ML Intern", "AI Intern", "Machine Learning Intern"],
+    "nlp engineer": ["NLP Engineer", "LLM Engineer", "Machine Learning Engineer"],
+    "python backend developer": ["Python Backend Developer", "Python Developer", "Backend Engineer", "Django Developer",
+                                 "FastAPI Developer"],
+    "research engineer": ["Research Engineer", "Applied Scientist", "ML Research Engineer"],
+    "graduate engineer trainee": ["Graduate Engineer Trainee", "Associate Software Engineer", "Trainee Software Engineer"],
     "machine learning engineer": ["Machine Learning Engineer", "ML Engineer", "AI Engineer",
                                   "Data Scientist"],
     "backend developer": ["Backend Developer", "Backend Engineer", "Python Developer",
@@ -116,18 +159,29 @@ class BroadJobSearch:
         jobs = self.preferences.get("jobs", {})
         active = self.store.profile()
         profile = (active or {}).get("profile") or {}
-        request_role = " ".join(request.split())[:80]
+        intent = parse_request(request)
+        request_role = intent["role"]
+        # The request's role leads; the active resume only adds titles, it never blocks other searches.
         targets = ([request_role] if request_role else []) + list(jobs.get("roles") or [])
-        if profile:
+        if profile and not request_role:
             targets += infer_job_titles(profile)
+        if intent["intern"] and request_role and "intern" not in request_role.casefold():
+            targets.insert(0, f"{request_role} Intern")
         if not targets:
             targets = list(jobs.get("scan_roles") or ["Software Engineer"])
         variants = role_variants(targets)
-        locations = [item for item in jobs.get("locations") or [] if str(item).strip()][:2]
-        location = " ".join(locations) or "India"
+        if intent["city"]:
+            location = intent["city"]
+        elif intent["remote"]:
+            location = "remote India" if intent["remote"] == "Remote India" else "remote"
+        else:
+            locations = [item for item in jobs.get("locations") or [] if str(item).strip()
+                         and str(item).casefold() not in {"any", "anywhere"}][:2]
+            location = " ".join(locations) or "India"
         experience = str(jobs.get("experience") or "any")
-        level = {"fresher": "fresher entry level", "internship": "internship",
-                 "0-1 years": "entry level"}.get(experience, "")
+        level = "fresher entry level" if intent["fresher"] else {"fresher": "fresher entry level",
+                                                                 "internship": "internship",
+                                                                 "0-1 years": "entry level"}.get(experience, "")
         month = date.today().strftime("%B %Y")
         # Only titles and up to 3 generic skill keywords are sent externally.
         from app.services.resume import SKILL_VOCABULARY
@@ -154,7 +208,17 @@ class BroadJobSearch:
                             "queries": [f"{role} jobs {location} {month}",
                                         f"{role} {' '.join(skills)} hiring {location}".strip()]})
         ordered = self._interleave(batches)[:search_calls]
-        return {"targets": targets, "variants": variants, "location": location,
+        if intent["company"]:
+            batches.insert(0, {"platform": "Company careers", "method": "MCP web search", "group": "company",
+                               "queries": [f"{intent['company']} careers {variants[0] if variants else ''} jobs".strip(),
+                                           f"{intent['company']} official careers page"]})
+            ordered = ([batches[0]] + ordered)[:max(len(ordered), 1)]
+        if intent["startup"] or intent["funded"]:
+            ordered = ([{"platform": "Startup job boards", "method": "MCP site search", "group": "startup",
+                         "queries": [f"site:wellfound.com {variants[0] if variants else 'engineer'} {location}",
+                                     f"site:workatastartup.com {variants[0] if variants else 'engineer'} India"]}]
+                       + ordered)[:max(len(ordered), 1)]
+        return {"targets": targets, "variants": variants, "location": location, "intent": intent,
                 "search_calls": len(ordered), "batches": ordered, "pool_size": pool_size,
                 "resume": (active or {}).get("label"), "portals": portals,
                 "objective": (f"Find individual, currently open job listings for {', '.join(variants[:4])} "
@@ -185,6 +249,13 @@ class BroadJobSearch:
         pool_size = int(pool_size) if int(pool_size or 0) > 0 else 100
         pool_size = max(20, min(300, pool_size))
         plan = self.plan(request, pool_size)
+        intent_pre = plan["intent"]
+        if intent_pre["city"] or intent_pre["remote"]:
+            # A location named in the request overrides saved locations for this run only.
+            jobs_pref = dict(self.preferences.get("jobs", {}))
+            jobs_pref["locations"] = ([intent_pre["city"]] if intent_pre["city"]
+                                      else ["India"] if intent_pre["remote"] == "Remote India" else [])
+            self.preferences = {**self.preferences, "jobs": jobs_pref}
         session_id = self.store.start_search_session("jobs", request or f"Broad job search ({pool_size})")
         self.store.update_search_session(session_id, plan={k: v for k, v in plan.items() if k != "batches"}
                                          | {"queries": [q for b in plan["batches"] for q in b["queries"]]})
@@ -209,7 +280,29 @@ class BroadJobSearch:
                 else:
                     entry[key] = value
 
-        companies = self.preferences.get("jobs", {}).get("companies") or DEFAULT_COMPANIES
+        intent = plan["intent"]
+        # Employer stage: discover new employers when the request is about startups/funded companies/a company,
+        # or when enabled in preferences; then read every verified public job board we know of.
+        discovery_summary = None
+        if intent["startup"] or intent["funded"] or intent["company"] or \
+                self.preferences.get("jobs", {}).get("discover_employers"):
+            from app.services.employer_discovery import EmployerDiscovery
+            note("Discovering employers (startup publications, directories, VC portfolios, job platforms)")
+            try:
+                topic = intent["role"] or (plan["variants"][0] if plan["variants"] else "AI")
+                topic = "AI" if re.search(r"\b(ai|ml|llm|genai|machine learning)\b", topic, re.I) else topic
+                discovery_summary = await EmployerDiscovery(self.settings, self.store, retriever=self._retriever).run(
+                    request, topic=topic, search_calls=4 if pool_size <= 100 else 6,
+                    progress=lambda message: note(f"Employers: {message}"), cancel_event=cancel_event,
+                    use_llm=self._provider is not None or self._retriever is None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failures.append(f"employer discovery: {type(exc).__name__}: {str(exc)[:120]}")
+        from app.services.employer_discovery import readable_boards
+        base = self.preferences.get("jobs", {}).get("companies") or DEFAULT_COMPANIES
+        known = {(c["ats"], c["slug"]) for c in base}
+        companies = list(base) + [c for c in readable_boards(self.store) if (c["ats"], c["slug"]) not in known]
         ats_task = None
         if include_ats and companies:
             note(f"Reading {len(companies)} company career boards (Greenhouse/Lever/Ashby)")
@@ -337,6 +430,15 @@ class BroadJobSearch:
                 except Exception:
                     pass
 
+        if discovery_summary:
+            for item in discovery_summary.get("career_listings") or []:
+                item["_via"] = "Company career page"
+                item["employer"] = item.get("employer")
+                harvested.append(item)
+            for company in discovery_summary.get("companies") or []:
+                status = company.get("career_status") or "website not found"
+                cover(company["name"], "employer discovery", results=company.get("ats_jobs") or 0,
+                      status=status + (f" ({company['ats_provider']})" if company.get("ats_provider") else ""))
         ats_jobs: list[dict[str, Any]] = []
         if ats_task:
             try:
@@ -350,6 +452,9 @@ class BroadJobSearch:
 
         # ---------------------------------------------------------- Stage B
         check_cancel()
+        board_employers = {f"{c['ats']}:{c['slug']}": c.get("employer_id") for c in companies}
+        for job in ats_jobs:
+            job["employer_id"] = board_employers.get(str(job.get("source_platform") or ""))
         candidates = self._candidates(listings, harvested, ats_jobs)
         raw_total = len(mcp_results) + len(harvested) + len(ats_jobs)
         note(f"Ranking {len(candidates)} unique candidates against "
@@ -384,6 +489,7 @@ class BroadJobSearch:
         stretch = [job for job in ineligible if (job.get("match_score") or 0) >= 60][:max(10, pool_size // 5)]
         shortlist = ranked[:pool_size] + stretch
         saved = self.store.upsert_jobs([self._record(item) for item in shortlist])
+        self.store.link_jobs_to_employers()
         rescore_stored(self.store, self.preferences)  # keep older listings consistent with this ranking
         tiers = Counter((item.get("eligibility") or {}).get("tier") for item in shortlist)
 
@@ -400,6 +506,9 @@ class BroadJobSearch:
             "strong": tiers.get("strong", 0), "possible": tiers.get("possible", 0), "low": tiers.get("low", 0),
             "pages_fetched": fetched_pages, "sources_found": raw_total,
             "coverage": sorted(coverage.values(), key=lambda entry: (-entry.get("results", 0), entry["platform"])),
+            "intent": intent, "employer_discovery": {k: v for k, v in (discovery_summary or {}).items()
+                                                      if k not in {"companies", "career_listings"}} or None,
+            "employers_considered": len(companies),
             "failures": failures, "steps": steps,
             "duration_seconds": round(time.perf_counter() - started, 1),
         }
@@ -456,7 +565,8 @@ class BroadJobSearch:
                  "location": link.get("location"), "posted_date": link.get("posted_date"),
                  "skills": link.get("skills") or [], "raw_text": link.get("context") or "",
                  "source_platform": urlparse(link["url"]).hostname, "_via": link.get("_via"),
-                 "discovered_via": "index page", "source_kind": "harvested",
+                 "discovered_via": "company career page" if link.get("_via") == "Company career page" else "index page",
+                 "employer_id": link.get("employer_id"), "source_kind": "harvested",
                  "evidence": [{"text": link.get("context") or "", "source_url": link["url"]}]})
         for job in ats_jobs:
             text = str(job.get("description") or "")
@@ -466,7 +576,9 @@ class BroadJobSearch:
                  "skills": find_skills(f"{job['title']} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": job.get("source_platform"), "_via": "Company career board",
                  "discovered_via": "company career board", "source_kind": "job_listing",
-                 "status_hint": "open", "evidence": [{"text": text[:300], "source_url": job["url"]}]})
+                 "status_hint": "open", "employer_id": job.get("employer_id"),
+                 "application_url": job.get("application_url"), "requisition_id": job.get("requisition_id"),
+                 "evidence": [{"text": text[:300], "source_url": job["url"]}]})
         return list(by_url.values())
 
     async def _llm_enrich(self, items: list[dict[str, Any]]) -> None:
@@ -517,8 +629,12 @@ class BroadJobSearch:
             "evidence": item.get("evidence") or [],
             "raw": {"source_kind": item.get("source_kind") or "job_listing",
                     "raw_text": str(item.get("raw_text") or "")[:8000]},
-            "requisition_id": item.get("requisition_id"),
-            "last_verified": Store.now(),
+            "requisition_id": item.get("requisition_id") or (item.get("eligibility") or {}).get("requisition_id"),
+            "employer_id": item.get("employer_id"), "application_url": item.get("application_url"),
+            # Only a listing read from the employer's own job board counts as verified open.
+            "last_verified": Store.now() if item.get("discovered_via") == "company career board" else None,
+            "status_evidence": ("Listed on the employer's public job board" if item.get("discovered_via") ==
+                                "company career board" else None),
         }
 
 

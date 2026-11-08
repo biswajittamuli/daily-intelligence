@@ -52,6 +52,8 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "scan_role_suggestions": DEFAULT_SCAN_ROLES,
         "pool_size": 100,
         "companies": None,  # None = built-in verified list (app.services.ats_sources)
+        "work_authorization": ["India"],
+        "discover_employers": False,
     },
     "government": {
         "disciplines": ["Computer Science", "Information Technology"],
@@ -79,7 +81,11 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "daily_refresh": False,
         "refresh_time": "08:00",
         "categories": ["jobs", "news"],
+        "reverify_hours": 24,
     },
+    "skill_aliases": {},
+    "scoring": {"weights": {"role": 20, "mandatory_skills": 25, "preferred_skills": 15, "experience": 15,
+                            "education": 10, "location_employment": 10, "freshness": 5}},
 }
 
 PREFERENCE_KEY = "discovery_preferences"
@@ -135,6 +141,10 @@ def load_preferences(store: Store) -> dict[str, Any]:
             if category not in merged or not isinstance(values, dict):
                 continue
             merged[category].update(values)
+    if isinstance(stored, dict) and isinstance(stored.get("skill_aliases"), dict):
+        merged["skill_aliases"] = dict(stored["skill_aliases"])
+    from app.services.skills_taxonomy import configure
+    configure(merged.get("skill_aliases"))
     # New default portals appear even when older saved preferences predate them.
     merged["jobs"]["portals"] = _portals(merged["jobs"].get("portals"))
     return merged
@@ -165,6 +175,22 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "pool_size": _pool(jobs.get("pool_size")),
         "companies": _companies(jobs.get("companies")),
     })
+    scoring = payload.get("scoring") if isinstance(payload.get("scoring"), dict) else {}
+    weights = scoring.get("weights") if isinstance(scoring.get("weights"), dict) else {}
+    clean_weights = {}
+    for key, default in DEFAULT_PREFERENCES["scoring"]["weights"].items():
+        try:
+            clean_weights[key] = max(0, min(100, int(weights.get(key, default))))
+        except (TypeError, ValueError):
+            clean_weights[key] = default
+    if not any(clean_weights.values()):
+        clean_weights = dict(DEFAULT_PREFERENCES["scoring"]["weights"])
+    output["scoring"] = {"weights": clean_weights}
+    output["skill_aliases"] = {str(k)[:60]: str(v)[:60] for k, v in (payload.get("skill_aliases") or {}).items()
+                               if str(k).strip() and str(v).strip()} if isinstance(payload.get("skill_aliases"), dict) else {}
+    jobs_in = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
+    output["jobs"]["work_authorization"] = _strings(jobs_in.get("work_authorization"), 6) or ["India"]
+    output["jobs"]["discover_employers"] = bool(jobs_in.get("discover_employers", False))
     scan_all = payload.get("scan_all") if isinstance(payload.get("scan_all"), dict) else {}
     output["scan_all"] = {"categories": [item for item in _strings(scan_all.get("categories"), 5)
                                          if item in {"jobs", "government", "exams", "news", "papers"}]
@@ -192,6 +218,7 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
 
     automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
     output["automation"] = {
+        "reverify_hours": max(0.0, min(168.0, float(automation.get("reverify_hours", 24) or 0))),
         "daily_refresh": bool(automation.get("daily_refresh", False)),
         "refresh_time": _clock(automation.get("refresh_time")),
         "categories": [item for item in _strings(automation.get("categories"), 5)
