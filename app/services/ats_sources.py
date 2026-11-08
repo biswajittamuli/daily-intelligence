@@ -96,7 +96,7 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
                 "title": item.get("title"), "employer": item.get("company_name") or name,
                 "location": location, "url": item.get("absolute_url"),
                 "posted_date": _iso(item.get("first_published") or item.get("updated_at")),
-                "description": _text(item.get("content"))[:6000],
+                "description": _text(item.get("content"))[:12000],
                 "employment_type": None,
                 "remote": "remote" if "remote" in location.casefold() else None,
             })
@@ -107,8 +107,9 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
             jobs.append({
                 "title": item.get("text"), "employer": name, "location": location,
                 "url": item.get("hostedUrl"), "posted_date": _iso(item.get("createdAt")),
-                "description": _text(item.get("descriptionPlain") or item.get("description"))[:6000]
-                               + " " + " ".join(_text(part.get("content")) for part in item.get("lists") or [])[:3000],
+                "description": (_text(item.get("descriptionPlain") or item.get("description"))[:8000] + "\n"
+                                + "\n".join(f"{_text(part.get('text'))}:\n{_text(part.get('content'))}"
+                                             for part in item.get("lists") or [])[:6000]),
                 "employment_type": categories.get("commitment"),
                 "remote": item.get("workplaceType"),
                 "country": item.get("country"),
@@ -122,7 +123,7 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
             jobs.append({
                 "title": item.get("title"), "employer": name, "location": location,
                 "url": item.get("jobUrl"), "posted_date": _iso(item.get("publishedAt")),
-                "description": _text(item.get("descriptionPlain") or item.get("descriptionHtml"))[:6000],
+                "description": _text(item.get("descriptionPlain") or item.get("descriptionHtml"))[:12000],
                 "employment_type": item.get("employmentType"),
                 "remote": "remote" if item.get("isRemote") else item.get("workplaceType"),
             })

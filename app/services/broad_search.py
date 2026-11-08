@@ -360,18 +360,29 @@ class BroadJobSearch:
 
         resumes = self.store.resumes()
         today = date.today()
-        ranked, excluded = [], Counter()
+        from app.services.requirements import extract_requirements
+        ranked, ineligible, excluded, gate_counts = [], [], Counter(), Counter()
         for item in candidates:
+            item["_requirements"] = extract_requirements(str(item.get("raw_text") or ""), title=str(item.get("title") or ""))
             match = active_resume_match(item, self.preferences, resumes, targets=plan["variants"], today=today)
             eligibility = match["eligibility"]
             if eligibility["tier"] == "excluded":
                 excluded[eligibility["excluded_reason"].split(" (")[0].split(" you have")[0]] += 1
                 continue
             item.update(match)
-            ranked.append(item)
+            if eligibility["tier"] == "ineligible":
+                for gate in eligibility.get("gates") or []:
+                    gate_counts[gate.split(":")[0]] += 1
+                ineligible.append(item)
+            else:
+                ranked.append(item)
         excluded["Articles / hiring news (not vacancies)"] += len(articles)
-        ranked.sort(key=lambda job: (job.get("match_score") or 0, job.get("posted_date") or ""), reverse=True)
-        shortlist = ranked[:pool_size]
+        key = lambda job: ((job.get("eligibility") or {}).get("composite") or 0, job.get("posted_date") or "")
+        ranked.sort(key=key, reverse=True)
+        ineligible.sort(key=key, reverse=True)
+        # Keep a few high-match ineligible roles visible as "stretch" roles; never as strong matches.
+        stretch = [job for job in ineligible if (job.get("match_score") or 0) >= 60][:max(10, pool_size // 5)]
+        shortlist = ranked[:pool_size] + stretch
         saved = self.store.upsert_jobs([self._record(item) for item in shortlist])
         rescore_stored(self.store, self.preferences)  # keep older listings consistent with this ranking
         tiers = Counter((item.get("eligibility") or {}).get("tier") for item in shortlist)
@@ -384,6 +395,8 @@ class BroadJobSearch:
             "ats_openings": len(ats_jobs), "unique_candidates": len(candidates),
             "excluded": dict(excluded), "excluded_total": sum(excluded.values()),
             "ranked": len(ranked), "stored": len(saved), "records": len(saved),
+            "ineligible": len(ineligible), "ineligible_stored": len(stretch), "ineligible_reasons": dict(gate_counts),
+            "duplicates": max(0, raw_total - len(articles) - len(candidates) - len(index_pages)),
             "strong": tiers.get("strong", 0), "possible": tiers.get("possible", 0), "low": tiers.get("low", 0),
             "pages_fetched": fetched_pages, "sources_found": raw_total,
             "coverage": sorted(coverage.values(), key=lambda entry: (-entry.get("results", 0), entry["platform"])),
@@ -434,7 +447,7 @@ class BroadJobSearch:
             add({"title": title[:200] or "Untitled role", "url": result["url"], "employer": employer,
                  "location": location.group(0) if location else None,
                  "posted_date": posted.isoformat() if posted else None,
-                 "skills": find_skills(f"{title} {text}")[:14], "raw_text": text[:3000],
+                 "skills": find_skills(f"{title} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": result.get("domain"), "_via": result.get("_via"),
                  "discovered_via": "web search", "source_kind": "job_listing",
                  "_content": content, "evidence": result.get("evidence") or []})
@@ -450,7 +463,7 @@ class BroadJobSearch:
             add({"title": job["title"], "url": job["url"], "employer": job.get("employer"),
                  "location": job.get("location"), "posted_date": job.get("posted_date"),
                  "employment_type": job.get("employment_type"), "remote": job.get("remote"),
-                 "skills": find_skills(f"{job['title']} {text}")[:14], "raw_text": text[:3000],
+                 "skills": find_skills(f"{job['title']} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": job.get("source_platform"), "_via": "Company career board",
                  "discovered_via": "company career board", "source_kind": "job_listing",
                  "status_hint": "open", "evidence": [{"text": text[:300], "source_url": job["url"]}]})
@@ -503,7 +516,8 @@ class BroadJobSearch:
             "sources": item.get("sources"), "discovered_via": item.get("discovered_via"),
             "evidence": item.get("evidence") or [],
             "raw": {"source_kind": item.get("source_kind") or "job_listing",
-                    "raw_text": str(item.get("raw_text") or "")[:3000]},
+                    "raw_text": str(item.get("raw_text") or "")[:8000]},
+            "requisition_id": item.get("requisition_id"),
             "last_verified": Store.now(),
         }
 

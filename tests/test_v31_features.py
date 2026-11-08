@@ -91,15 +91,22 @@ class RankingTests(unittest.TestCase):
 
     def test_exclusions_are_explicit(self):
         cases = {
-            ("Senior Staff Engineer", "Bengaluru", ""): "Seniority too high for your experience",
             ("Account Executive - AI", "Mumbai, India", ""): "Not a technical role for your profile",
-            ("Software Engineer", "Bengaluru", "5+ years of experience in Java"): "Requires more experience than you have",
             ("1,200+ AI Engineer Jobs in India", "India", ""): "Job search page, not a single vacancy",
         }
         for (title, loc, text), reason in cases.items():
             result = rank_listing({"title": title, "location": loc, "raw_text": text}, AI_PROFILE, PREFS)
             self.assertEqual(result["tier"], "excluded", title)
             self.assertEqual(result["excluded_reason"], reason)
+        # Seniority and experience are visible eligibility gates, not silent exclusions.
+        gates = {
+            ("Senior Staff Engineer", "Bengaluru", ""): "Seniority",
+            ("Software Engineer", "Bengaluru", "Requirements: 5+ years of experience in Java"): "Experience",
+        }
+        for (title, loc, text), gate in gates.items():
+            result = rank_listing({"title": title, "location": loc, "raw_text": text}, AI_PROFILE, PREFS)
+            self.assertEqual(result["tier"], "ineligible", title)
+            self.assertTrue(any(g.startswith(gate) for g in result["assessment"]["gates"]), result["assessment"]["gates"])
 
     def test_active_resume_changes_ranking(self):
         backend = {"title": "Python Backend Developer", "location": "Pune, India", "raw_text": "Python FastAPI PostgreSQL"}
@@ -141,7 +148,7 @@ class BroadSearchTests(unittest.TestCase):
             excluded = summary["excluded"]
             self.assertEqual(excluded["Articles / hiring news (not vacancies)"], 1)
             self.assertGreaterEqual(excluded.get("Not a technical role for your profile", 0), 1)
-            self.assertGreaterEqual(excluded.get("Seniority too high for your experience", 0), 1)
+            self.assertGreaterEqual(summary["ineligible_reasons"].get("Seniority", 0), 1)
             self.assertGreaterEqual(excluded.get("Remote role restricted to another country or region", 0), 1)
             jobs = {job["title"]: job for job in store.jobs()}
             self.assertNotIn("Account Executive", jobs)

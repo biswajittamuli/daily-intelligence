@@ -75,8 +75,9 @@ def _find_skills(text: str) -> list[str]:
 
 
 def find_skills(text: str) -> list[str]:
-    """Public deterministic skill scan shared by resumes and job listings."""
-    return _find_skills(text or "")
+    """Public deterministic skill scan shared by resumes and job listings (canonical names)."""
+    from app.services.skills_taxonomy import detect_skills
+    return detect_skills(text or "")
 
 
 def _sections(text: str, headings: list[str]) -> str:

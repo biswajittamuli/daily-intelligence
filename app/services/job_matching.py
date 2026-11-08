@@ -345,151 +345,99 @@ def _required_years(text: str) -> int | None:
 def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,
                  preferences: dict[str, Any], *, targets: list[str] | None = None,
                  today: date | None = None) -> dict[str, Any]:
-    """Score one listing against the ACTIVE resume profile (or preferences when none).
+    """Relevance filter + four-dimension assessment against the ACTIVE resume.
 
-    Returns score (0-100), tier (strong/possible/low/excluded), reasons, warnings,
-    excluded_reason, matched and missing skills. Deterministic and explainable.
+    Irrelevant listings (search pages, non-technical roles, roles unrelated to the targets,
+    jobs outside preferred locations) are *excluded*. Everything else is assessed by
+    app.services.assessment: eligibility gates (experience, degree, batch, authorization,
+    seniority, deadline) make a listing *ineligible* — visible, but never a strong match.
     """
+    from app.services.assessment import assess
+    from app.services.listing_links import is_listing_url, looks_like_index
+
     today = today or date.today()
     profile = profile or {}
     jobs_pref = preferences.get("jobs", {})
     title = str(listing.get("title") or "")
-    body = " ".join(str(listing.get(key) or "") for key in ("raw_text", "description", "experience"))
-    if not body.strip() and isinstance(listing.get("raw"), dict):
-        body = str(listing["raw"].get("raw_text") or "")
-    years_have = int(profile.get("experience_years") or 0) if str(profile.get("experience_years") or "0").isdigit() else 0
-    experience_pref = str(jobs_pref.get("experience") or "any").casefold()
-    fresher = years_have <= 1 or experience_pref in {"fresher", "internship", "0-1 years"}
-    reasons: list[str] = []
-    warnings: list[str] = []
-    excluded = None
-
-    from app.services.listing_links import is_listing_url, looks_like_index
     url = str(listing.get("original_url") or listing.get("url") or "")
-    if (looks_like_index(url, title) and not is_listing_url(url)) or _re.search(
-            r"^\s*[\d,]+\+?\s+.*\bjobs\b", title, _re.I):
+    excluded = None
+    if (looks_like_index(url, title) and not is_listing_url(url)) or _re.search(r"^\s*[\d,]+\+?\s+.*\bjobs\b", title, _re.I):
         excluded = "Job search page, not a single vacancy"
     elif NON_TECH_TITLE.search(title) and not STRONG_TECH.search(title):
         excluded = "Not a technical role for your profile"
-    elif fresher and SENIOR_HARD.search(title) and not _re.search(r"\bintern|graduate|trainee|junior\b", title, _re.I):
-        excluded = "Seniority too high for your experience"
-
-    required = _required_years(body) if not excluded else None
-    if required is not None and not excluded:
-        if required > years_have + 2:
-            excluded = "Requires more experience than you have"
-            warnings.append(f"Asks for {required}+ years of experience; you have {years_have}.")
-        elif required > years_have:
-            warnings.append(f"Asks for {required} years of experience; you have {years_have}.")
-    if not excluded and fresher and SENIOR_SOFT.search(title):
-        warnings.append("Title suggests a mid-level role; check the experience requirement.")
 
     location = str(listing.get("location") or "")
-    remote = str(listing.get("remote") or "").casefold()
     locations = [str(item) for item in jobs_pref.get("locations") or [] if str(item).strip()]
-    location_ok, location_reason = location_fit(location, remote, locations)
+    location_ok, location_reason = location_fit(location, str(listing.get("remote") or ""), locations)
     if location_ok is False and not excluded:
         excluded = location_reason
-    elif location_ok is None and locations and not location:
-        warnings.append("Location not stated; check it on the listing.")
 
-    # Role relevance against target titles (from active resume + preferences + request).
     target_titles = list(targets or []) + list(jobs_pref.get("roles") or []) + infer_job_titles(profile)
-    target_terms = terms(target_titles) - {"engineer", "developer", "senior", "junior"}
-    title_terms = terms(title)
-    role_hits = target_terms & title_terms
+    target_terms = terms(target_titles) - {"engineer", "developer", "senior", "junior", "intern"}
+    role_hits = target_terms & terms(title)
     from app.services.insights import role_family
     listing_family = role_family(title)
     family_match = listing_family != "Other" and listing_family in {role_family(item) for item in target_titles}
-    role_score = 1.0 if role_hits or family_match else (0.4 if TECH_TITLE.search(title) else 0.0)
     if role_hits:
-        reasons.append(f"Title matches your target roles ({', '.join(sorted(role_hits)[:3])}).")
+        role_score, role_reason = 1.0, f"Title matches your target roles ({', '.join(sorted(role_hits)[:3])})."
     elif family_match:
-        reasons.append(f"Same role family as your targets ({listing_family}).")
-    elif not excluded and not TECH_TITLE.search(title):
-        excluded = "Role does not match your target roles"
-
-    fit = resume_fit({**listing, "skills": listing.get("skills") or []}, profile) if profile else \
-        {"score": None, "matched": [], "missing": []}
-    display = {" ".join(str(item).split()).casefold(): " ".join(str(item).split())
-               for key in ("skills", "frameworks", "languages") for item in profile.get(key) or []}
-    resume_skills = set(display)
-    if not (listing.get("skills") or []) and body and resume_skills:
-        lowered_body = body.casefold()
-        mentioned = [skill for skill in resume_skills
-                     if len(skill) > 2 and _re.search(r"(?<![a-z0-9])" + _re.escape(skill) + r"(?![a-z0-9])", lowered_body)]
-        skill_score = min(1.0, len(mentioned) / 5)
-        matched = sorted(display[skill] for skill in mentioned)[:8]
-        missing: list[str] = []
+        role_score, role_reason = 0.8, f"Same role family as your targets ({listing_family})."
+    elif TECH_TITLE.search(title):
+        role_score, role_reason = 0.3, "Technical role outside your target titles."
     else:
-        listing_skills = listing.get("skills") or []
-        skill_score = (len(fit["matched"]) / max(4, len(listing_skills))) if listing_skills else 0.3
-        matched, missing = fit["matched"], fit["missing"]
-    if matched:
-        reasons.append(f"Your resume covers {', '.join(matched[:5])}.")
-    if missing:
-        warnings.append(f"Not on your resume: {', '.join(missing[:4])}.")
+        role_score, role_reason = 0.0, ""
+        if not excluded:
+            excluded = "Role does not match your target roles"
 
-    experience_score = 1.0 if required is None or required <= years_have else (0.5 if required <= years_have + 2 else 0)
-    if required is not None and required <= years_have:
-        reasons.append(f"Experience requirement ({required} yrs) fits.")
-    location_score = 1.0 if location_ok or not locations else 0.5 if location_ok is None else 0.0
-    if location_ok:
-        reasons.append(f"Location fits ({location}).")
-    employment = [str(item).casefold() for item in jobs_pref.get("employment_types") or []]
-    employment_score = 1.0 if not employment or any(item in str(listing.get("employment_type") or "").casefold()
-                                                     for item in employment) else 0.5
-    posted = parse_date(listing.get("posted_date"))
-    age = (today - posted).days if posted else None
-    freshness_score = 0.4 if age is None else (1.0 if age <= 7 else 0.8 if age <= 21 else 0.5 if age <= 45 else 0.1)
-    if age is not None and age <= 7:
-        reasons.append("Posted this week.")
-    elif age is not None and age > 45:
-        warnings.append(f"Posted {age} days ago; it may be filled.")
-
-    score = round(100 * (0.30 * role_score + 0.30 * skill_score + 0.15 * experience_score
-                         + 0.10 * location_score + 0.05 * employment_score + 0.10 * freshness_score))
-    if excluded:
-        tier = "excluded"
-    elif score >= 70:
-        tier = "strong"
-    elif score >= 50:
-        tier = "possible"
-    else:
-        tier = "low"
-    return {"score": score, "tier": tier, "reasons": reasons, "warnings": warnings,
-            "excluded_reason": excluded, "matched": matched[:10], "missing": missing[:10],
-            "required_years": required}
+    result = assess(listing, profile, preferences, role_score=role_score, role_reason=role_reason,
+                    location_ok=location_ok, location_reason=location_reason, today=today)
+    tier = "excluded" if excluded else result["tier"]
+    return {"score": result["match"], "tier": tier, "reasons": [result["why"]] if result["why"] else [],
+            "warnings": result["gates"] + result["warnings"], "excluded_reason": excluded,
+            "matched": result["matched"], "missing": result["missing_mandatory"] + result["missing_preferred"],
+            "required_years": result["experience"]["required_min"], "assessment": result}
 
 
 def active_resume_match(listing: dict[str, Any], preferences: dict[str, Any],
                         resumes: list[dict[str, Any]], *, targets: list[str] | None = None,
                         today: date | None = None) -> dict[str, Any]:
-    """Rank against the active resume; record other resumes' scores for comparison."""
+    """Assess against the active resume; record other resumes' match for comparison."""
     usable = [resume for resume in resumes if resume.get("status", "processed") == "processed"]
     active = next((resume for resume in usable if resume.get("is_default")), None)
+    if "_requirements" not in listing:
+        from app.services.requirements import extract_requirements
+        listing = {**listing, "_requirements": extract_requirements(
+            str(listing.get("raw_text") or listing.get("description") or ""), title=str(listing.get("title") or ""))}
     result = rank_listing(listing, (active or {}).get("profile"), preferences, targets=targets, today=today)
+    a = result["assessment"]
     others = []
     for resume in usable:
         if active and resume.get("id") == active.get("id"):
             continue
         other = rank_listing(listing, resume.get("profile"), preferences, targets=targets, today=today)
         others.append({"resume_id": resume.get("id"), "label": resume.get("label"), "score": other["score"],
-                       "tier": other["tier"]})
-    reason = " ".join(result["reasons"]) or "Limited evidence; open the listing to review."
+                       "tier": other["tier"], "eligibility": other["assessment"]["eligibility"]})
+    reason = a["why"] or "Limited evidence; open the listing to review."
     if result["excluded_reason"]:
         reason = f"Excluded: {result['excluded_reason']}. " + reason
+    elif a["gates"]:
+        reason = "Not eligible: " + "; ".join(a["gates"]) + ". " + reason
     return {
-        "match_score": None if result["tier"] == "excluded" else result["score"],
+        "match_score": None if result["tier"] == "excluded" else a["match"],
         "match_reason": reason.strip(),
         "best_resume_id": (active or {}).get("id"),
         "best_resume_label": (active or {}).get("label"),
         "resume_scores": ([{"resume_id": (active or {}).get("id"), "label": (active or {}).get("label"),
-                            "score": result["score"], "tier": result["tier"],
-                            "matched": result["matched"], "missing": result["missing"], "active": True}]
-                          if active else []) + others,
-        "eligibility": {"tier": result["tier"], "warnings": result["warnings"],
-                        "excluded_reason": result["excluded_reason"],
-                        "required_years": result["required_years"],
-                        "resume": (active or {}).get("label")},
+                            "score": a["match"], "tier": result["tier"], "matched": a["matched"],
+                            "missing": a["missing_mandatory"], "active": True}] if active else []) + others,
+        "eligibility": {"tier": result["tier"], "status": a["eligibility"], "gates": a["gates"],
+                        "warnings": a["gates"] + a["warnings"], "excluded_reason": result["excluded_reason"],
+                        "required_years": a["experience"]["required_min"], "resume": (active or {}).get("label"),
+                        "composite": a["composite"], "freshness": a["freshness"], "confidence": a["confidence"],
+                        "confidence_label": a["confidence_label"], "confidence_notes": a["confidence_notes"],
+                        "requirements": a["requirements"], "breakdown": a["breakdown"],
+                        "matched": a["matched"], "partial": a["partial"],
+                        "missing_mandatory": a["missing_mandatory"], "missing_preferred": a["missing_preferred"],
+                        "experience": a["experience"], "why": a["why"], "structured": a["structured"]},
+        "requisition_id": a.get("requisition_id"),
     }
