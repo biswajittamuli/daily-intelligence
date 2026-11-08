@@ -11,6 +11,30 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 3.0
+
+- **Fresher, more jobs.** A *market scan* runs one bounded search per role family
+  (configurable in Settings → Market scan roles). Job-board and career index pages
+  are expanded into the individual listings they link to, with relative posting
+  dates ("3 days ago") parsed, so the Jobs page shows newest-first, dated listings
+  instead of a few undated search pages. Stale, expired and closed listings are hidden.
+- **Skills Market page.** Infographics of the most-requested skills, your skill gap,
+  skills × role family, job boards vs company career pages, a 12-week hiring trend,
+  top employers and resume fit by role family.
+- **Multiple resumes, best one picked per job.** Upload a resume per direction (SDE,
+  AI/ML, Backend…). Every job shows the best-fitting resume, which skills it covers
+  and which it misses, plus optional tailoring hints from the local model.
+- **Regional, topical AI news.** Region (India, US, Europe/UK, China, Asia-Pacific,
+  Middle East, Global) and topic chips; searches target that region's publishers;
+  each story's region is detected from its content and publisher.
+- **Planning that understands notes.** "i want to walk my dog every evening" becomes
+  the task *Walk my dog* (daily, 18:00, health). Notes are the source of truth (edit
+  or delete a line and the task follows), notes can be edited in the app, and a
+  *Today's plan* merges tasks, deadlines and suggested job/learning actions.
+- **Applications tracker** (kanban), follow-up reminders, `.ics` calendar export,
+  CSV job export, "new since last visit" badges, optional scheduled daily refresh.
+- **Mid-century modern UI** in light (cream) and dark (walnut) themes.
+
 ## Requirements
 
 - Fedora Linux, Python 3.14 and `uv`.
@@ -173,6 +197,19 @@ JSON accepts an array or an object with a `tasks` array. Each task can use `text
 | POST | `/api/briefings`, `/api/research` | Briefing and arbitrary research jobs |
 | POST | `/api/diagnostics/mcp` | Live MCP diagnostic job |
 | POST | `/api/jobs/{id}/cancel` | Cancel a running job |
+| POST | `/api/intel/search` with `scan: true` | Multi-role job market scan |
+| GET | `/api/insights/jobs` | Skills-market aggregates |
+| GET | `/api/resumes` | All stored resumes |
+| POST | `/api/resumes/{id}/default\|label\|profile\|delete` | Manage a resume (jobs are re-scored) |
+| POST | `/api/listings/{id}/tailor` | Resume tailoring hints for one listing |
+| POST | `/api/jobs/rescore` | Re-score every job against all resumes |
+| GET | `/api/tracker` | Application pipeline |
+| GET | `/api/planning/today` | Today's plan |
+| GET, PUT | `/api/notes`, `/api/notes/{name}` | List / read / write `.txt`/`.md` notes |
+| POST | `/api/planning/interpret` | Local-model note interpretation (suggestions) |
+| POST | `/api/tasks/{id}/delete` | Delete a manual task |
+| GET | `/api/export/calendar.ics`, `/api/export/jobs.csv` | Calendar and CSV exports |
+| POST | `/api/visit` | Record a visit for "new since last visit" |
 
 ## Data
 
@@ -221,8 +258,11 @@ fetch, and prints per-stage timing. Credentials are never printed.
 
 ## Current limitations
 
-- Discovery quality depends on the local model and on what MCP returns; some pages
-  are index/aggregator pages and are honestly stored as `unverified`.
+- Discovery quality depends on the local model and on what MCP returns. Index pages
+  are expanded into individual listings where their links are recognisable; pages
+  that cannot be expanded are kept in a collapsed "Search pages to check" group.
+- A market scan of 6 roles takes roughly 3–6 minutes (one search, two fetches and up
+  to three small model calls per role) and may stop early on MCP rate limits.
 - The MCP service performs remote fetches; the client cannot enforce DNS/redirect
   policy at that remote hop.
 - Cross-source contradiction analysis is not implemented.

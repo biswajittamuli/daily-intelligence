@@ -1,6 +1,18 @@
 # Implementation Status
 
-Updated: 2026-11-08
+Updated: 2026-11-08 (v3.0.0)
+
+## V3 summary
+
+See `CHANGELOG.md` for the full list. Live verification on this host (scratch copy of
+the local database):
+
+| Flow | Result |
+| --- | --- |
+| Market scan, 2 roles (Backend Developer, AI Engineer) | 72 s; 20 sources, 16 records, 2 harvested from index pages; 7 listings posted in the last 30 days (previously 1–2 dated listings in total) |
+| AI news, region India, topic Funding & startups | 11 s; 4 records, 3 detected as India (Antler India, ₹ rounds), 1 China; legacy stories relabelled by content |
+| UI | All views render in light and dark themes and at 400 px width; no console errors |
+| Tests | `./.venv/bin/python -m unittest discover -q`: 97 tests pass |
 
 ## V2 summary
 
