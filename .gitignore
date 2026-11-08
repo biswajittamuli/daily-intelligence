@@ -1,0 +1,17 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Personal local data: SQLite DB, resume profiles, logs, planning notes
+data/
+logs/
+notes/
+*.sqlite3
+.env
+
+# Credentials / agent tool state
+.aws/
+.codex/
+.agents/

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Daily Intelligence</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#daily-briefing" aria-label="Daily Intelligence home">
+        <span class="brand-mark">DI</span><span><strong>Daily Intelligence</strong><small>PERSONAL DESK</small></span>
+      </a>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav id="navigation" aria-label="Primary navigation"></nav>
+      <div class="sidebar-bottom">
+        <div class="local-indicator"><i></i><span><b>Local workspace</b><small>Private by default</small></span></div>
+        <button class="profile-button" data-view="settings"><span class="avatar">B</span><span><b>Personal assistant</b><small>Preferences & models</small></span><span class="chevron">↗</span></button>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <button id="mobile-menu" class="icon-button mobile-only" aria-label="Toggle navigation">☰</button>
+        <div class="breadcrumbs"><span>Workspace</span><span class="crumb-sep">/</span><b id="page-crumb">Daily briefing</b></div>
+        <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local services</span><button class="icon-button" id="theme-toggle" title="Toggle theme">◐</button></div>
+      </header>
+      <div class="page-wrap" id="page-content" aria-live="polite"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

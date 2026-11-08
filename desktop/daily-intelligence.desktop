@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Daily Intelligence
+GenericName=Personal AI Assistant
+Comment=Open your local AI briefing and research assistant
+Exec=/home/biswajittamuli/projects/daily-intelligence/scripts/start-desktop.sh
+Icon=applications-internet
+Terminal=false
+Categories=Utility;
+StartupNotify=true
