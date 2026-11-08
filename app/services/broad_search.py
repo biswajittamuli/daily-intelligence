@@ -83,6 +83,13 @@ def _platform(domain: str) -> str:
     return domain or "unknown"
 
 
+def _site_query(domain: str, role: str, location: str) -> str:
+    """site: must be a bare domain (MCP tool contract); a path becomes plain keywords."""
+    host, _, path = domain.partition("/")
+    extra = " ".join(part for part in path.split("/") if part)
+    return " ".join(part for part in (f"site:{host}", role, extra, location) if part)
+
+
 def role_variants(targets: list[str], limit: int = 8) -> list[str]:
     output: list[str] = []
     for target in targets:
@@ -123,23 +130,27 @@ class BroadJobSearch:
                  "0-1 years": "entry level"}.get(experience, "")
         month = date.today().strftime("%B %Y")
         # Only titles and up to 3 generic skill keywords are sent externally.
+        from app.services.resume import SKILL_VOCABULARY
+        known = {item.casefold() for item in SKILL_VOCABULARY}
         skills = [skill for skill in (profile.get("skills") or jobs.get("skills") or [])
-                  if len(str(skill)) <= 20][:3]
+                  if str(skill).casefold() in known][:3]
         portals = [domain for domain in portal_domains(self.preferences) if domain]
         search_calls = {50: 3, 100: 6, 200: 10}.get(pool_size, max(2, min(12, math.ceil(pool_size / 20))))
         batches: list[dict[str, Any]] = []
-        # 1) portal site: queries, rotated across role variants
-        for index, domain in enumerate(portals):
-            role = variants[index % len(variants)] if variants else "software engineer"
-            batches.append({"platform": _platform(domain), "method": "MCP site search",
-                            "queries": [f"site:{domain} {role} {location}",
-                                        f"site:{domain} {variants[(index + 1) % len(variants)] if variants else role} {level}".strip()]})
+        # 1) portal site: queries — two portals per call, rotated across role variants
+        for index in range(0, len(portals), 2):
+            pair = portals[index:index + 2]
+            role = variants[(index // 2) % len(variants)] if variants else "software engineer"
+            batches.append({"platform": " + ".join(_platform(domain) for domain in pair),
+                            "platforms": [_platform(domain) for domain in pair], "domains": pair,
+                            "group": "portal", "method": "MCP site search",
+                            "queries": [_site_query(domain, role, location) for domain in pair]})
         # 2) company career pages + unrestricted discovery, per role variant
         for role in variants:
-            batches.append({"platform": "Company career pages", "method": "MCP web search",
+            batches.append({"platform": "Company career pages", "method": "MCP web search", "group": "career",
                             "queries": [f"{role} careers apply {location} {month}",
                                         f"{role} {level} job opening {location}".strip()]})
-            batches.append({"platform": "Open web", "method": "MCP web search",
+            batches.append({"platform": "Open web", "method": "MCP web search", "group": "web",
                             "queries": [f"{role} jobs {location} {month}",
                                         f"{role} {' '.join(skills)} hiring {location}".strip()]})
         ordered = self._interleave(batches)[:search_calls]
@@ -155,8 +166,7 @@ class BroadJobSearch:
         """Alternate portal / career / open-web batches so a small budget still covers each kind."""
         groups: dict[str, list[dict[str, Any]]] = {}
         for batch in batches:
-            groups.setdefault(batch["method"] + batch["platform"] if batch["method"] == "MCP site search"
-                              else batch["platform"], []).append(batch)
+            groups.setdefault(batch.get("group") or batch["platform"], []).append(batch)
         keys = list(groups)
         output = []
         while any(groups.values()):
@@ -216,8 +226,8 @@ class BroadJobSearch:
         try:
             if retriever is None:
                 retriever = ParallelWebRetriever(settings=replace(
-                    self.settings, max_tool_calls=plan["search_calls"] + 4, max_search_queries=8,
-                    max_fetch_urls=20))
+                    self.settings, max_tool_calls=plan["search_calls"] + 6, max_search_queries=8,
+                    max_fetch_urls=20, mcp_timeout=max(self.settings.mcp_timeout, 45.0)))
                 await retriever.__aenter__()
             for index, batch in enumerate(plan["batches"], 1):
                 check_cancel()
@@ -234,12 +244,19 @@ class BroadJobSearch:
                         note("Search provider rate limit reached; continuing with results so far")
                         break
                     continue
-                cover(batch["platform"], batch["method"], queries=len(batch["queries"]), results=len(results))
+                if batch.get("platforms"):
+                    for platform in batch["platforms"]:
+                        hits = sum(1 for item in results if _platform(str(item.get("domain") or "")) == platform)
+                        cover(platform, batch["method"], queries=1, results=hits,
+                              status="ok" if hits else "no results returned")
+                else:
+                    cover(batch["platform"], batch["method"], queries=len(batch["queries"]), results=len(results),
+                          status="ok" if results else "no results returned")
                 for item in results:
-                    item["_via"] = batch["platform"]
                     platform = _platform(str(item.get("domain") or ""))
-                    if platform != batch["platform"] and platform in PLATFORM_NAMES.values():
-                        cover(platform, "found via other searches", results=1)
+                    item["_via"] = platform if batch.get("platforms") else batch["platform"]
+                    if not batch.get("platforms") and platform in PLATFORM_NAMES.values():
+                        cover(platform, "found via open/career searches", results=1)
                 mcp_results.extend(results)
                 if index < plan["search_calls"]:
                     await asyncio.sleep(0.6)
@@ -271,16 +288,20 @@ class BroadJobSearch:
             if fetch_urls:
                 check_cancel()
                 note(f"Fetching {len(to_fetch)} index pages and {len(detail_candidates)} listing pages")
-                try:
-                    fetched = await retriever.fetch(fetch_urls, plan["objective"], search_queries=plan["batches"][0]["queries"],
-                                                    full_content=True)
-                    for page in fetched:
-                        content = str(page.get("full_content") or page.get("content") or "")
-                        if content:
-                            pages[canonicalize_url(str(page.get("url") or ""))] = content
-                    fetched_pages = len(pages)
-                except RetrievalError as exc:
-                    failures.append(f"fetch: {exc}")
+                for start in range(0, len(fetch_urls), 5):
+                    chunk = fetch_urls[start:start + 5]
+                    try:
+                        fetched = await retriever.fetch(chunk, plan["objective"],
+                                                        search_queries=plan["batches"][0]["queries"],
+                                                        full_content=True)
+                        for page in fetched:
+                            content = str(page.get("full_content") or page.get("content") or "")
+                            if content:
+                                pages[canonicalize_url(str(page.get("url") or ""))] = content
+                    except RetrievalError as exc:
+                        message = str(exc).strip() or "timed out"
+                        failures.append(f"page fetch ({len(chunk)} URLs): {message[:120]}")
+                fetched_pages = len(pages)
             for item in to_fetch:
                 content = pages.get(canonicalize_url(item["url"]))
                 platform = _platform(str(item.get("domain") or ""))

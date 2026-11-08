@@ -120,7 +120,9 @@ def _job_plan(request: str, preferences: dict[str, Any], max_queries: int,
     remaining = max(0, max_queries - len(_dedupe(queries, max_queries)))
     selected_domains = [domain for domain in domains if domain][:max(2, remaining)]
     for domain in selected_domains:
-        queries.append(f"site:{domain} {site_base} {location} {month}".strip())
+        host, _, path = domain.partition("/")
+        queries.append(" ".join(part for part in (f"site:{host}", site_base, path.replace("/", " "), location, month)
+                                if part).strip())
     return QueryPlan(
         category="jobs",
         objective=(f"Find currently verifiable job listings for: {base or ', '.join(role_bases[:3])}. "

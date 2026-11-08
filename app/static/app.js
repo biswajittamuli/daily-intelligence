@@ -1,17 +1,39 @@
+const ICONS={
+  home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  briefcase:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
+  file:'<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h6"/>',
+  check:'<path d="M9 11l3 3 8-8"/><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h11"/>',
+  chart:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  building:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  news:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 8h10M7 12h10M7 16h6"/>',
+  book:'<path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4zM20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  list:'<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+};
+function icon(name){return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]||''}</svg>`;}
 const NAV=[
-  {id:'daily-briefing',label:'Daily Briefing',icon:'◷',group:'main'},
-  {id:'ask-intelligence',label:'Ask Intelligence',icon:'✳',group:'main'},
-  {id:'research',label:'Research',icon:'⌕',group:'main'},
-  {id:'jobs',label:'Jobs',icon:'▤',group:'intel'},
-  {id:'job-market',label:'Skills Market',icon:'◫',group:'intel'},
-  {id:'tracker',label:'Applications',icon:'✓',group:'intel'},
-  {id:'government',label:'Government & PSU',icon:'⌂',group:'intel'},
-  {id:'exams',label:'Exams',icon:'▧',group:'intel'},
-  {id:'ai-news',label:'AI News',icon:'◈',group:'intel'},
-  {id:'papers',label:'Research Papers',icon:'▱',group:'intel'},
-  {id:'planning',label:'Planning',icon:'☷',group:'personal'},
-  {id:'history',label:'History',icon:'↺',group:'personal'},
-  {id:'settings',label:'Settings',icon:'⚙',group:'personal'},
+  {id:'daily-briefing',label:'Daily Briefing',icon:'home',group:'main'},
+  {id:'jobs',label:'Jobs',icon:'briefcase',group:'jobs'},
+  {id:'resumes',label:'Resumes',icon:'file',group:'jobs'},
+  {id:'tracker',label:'Applications',icon:'check',group:'jobs'},
+  {id:'job-market',label:'Skills Market',icon:'chart',group:'jobs'},
+  {id:'government',label:'Government & PSU',icon:'building',group:'intel'},
+  {id:'exams',label:'Exams',icon:'calendar',group:'intel'},
+  {id:'ai-news',label:'AI News',icon:'news',group:'intel'},
+  {id:'papers',label:'Research Papers',icon:'book',group:'intel'},
+  {id:'research',label:'Research',icon:'search',group:'intel'},
+  {id:'planning',label:'Planning',icon:'list',group:'personal'},
+  {id:'history',label:'History',icon:'clock',group:'personal'},
+  {id:'settings',label:'Settings',icon:'settings',group:'personal'},
+];
+const HIDDEN_VIEWS=['ask-intelligence'];
+const THEMES=[
+  {id:'minimal-light',label:'Minimal Light',swatch:['#fafafa','#ffffff','#18181b','#2563eb']},
+  {id:'minimal-dark',label:'Minimal Dark',swatch:['#111113','#18181b','#e4e4e7','#60a5fa']},
+  {id:'soft-neutral',label:'Soft Neutral',swatch:['#f3f1ed','#faf9f6','#292524','#0f766e']},
 ];
 const CATEGORY_META={
   jobs:{label:'Jobs',endpoint:'jobs'},
@@ -23,9 +45,10 @@ const CATEGORY_META={
 const state={
   data:null,view:'daily-briefing',activeJob:null,pollTimer:null,toastTimer:null,
   models:[],lastJob:null,tailor:{},note:null,suggestions:null,editResume:null,replaceResume:null,confirmDelete:null,
+  expanded:{},
   lastQuery:{jobs:'',government:'',exams:'',news:'',papers:''},
   filters:{
-    jobs:{status:'all',q:'',freshness:'30d',recency:'month',role:'',resume:'',sort:'newest',layout:'cards',undated:true},
+    jobs:{status:'all',q:'',freshness:'30d',recency:'all',role:'',resume:'',sort:'match',layout:'list',undated:true},
     government:{eligibility:'all',doc:'all',q:'',freshness:'90d'},
     exams:{q:'',freshness:'365d'},
     news:{q:'',freshness:'7d',region:'',topic:''},
@@ -115,12 +138,17 @@ function activeJob(){
   const s=D().status;
   return s&&['queued','running'].includes(s.status)?s:null;
 }
+function stepLog(steps){
+  steps=(steps||[]).slice(-14);
+  if(!steps.length)return '';
+  return `<ul class="step-log">${steps.map(s=>`<li><span>${esc(s.at!=null?s.at+'s':'')}</span>${esc(s.message||s)}</li>`).join('')}</ul>`;
+}
 function progressBox(){
   const job=activeJob();if(!job)return '';
   return `<div class="progress-box visible">
-    <div class="progress-top"><span>${esc(job.message||'Working')} <span class="view-note">${esc(job.kind||'')}</span></span><span>${job.elapsed_seconds!=null?esc(job.elapsed_seconds)+'s':''}</span></div>
+    <div class="progress-top"><span>${esc(job.message||'Working')}</span><span class="view-note">${job.elapsed_seconds!=null?esc(job.elapsed_seconds)+'s':''} <button class="link-button danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button></span></div>
     <div class="progress-track"><span></span></div>
-    <div class="item-actions"><button class="link-button danger" data-action="cancel-job" data-id="${esc(job.id)}">Cancel</button></div>
+    ${stepLog(job.steps)}
   </div>`;
 }
 async function pollJob(id){
@@ -173,9 +201,13 @@ function renderNav(){
   nav.innerHTML=NAV.map(n=>{
     const sep=n.group!==last&&last?'<div class="nav-divider"></div>':'';last=n.group;
     const count=navCount(n.id);
-    return sep+`<button class="nav-item ${state.view===n.id?'active':''}" data-view="${n.id}"><span class="nav-icon">${n.icon}</span><span>${n.label}</span>${count?`<span class="nav-count" title="New since your last visit">${count}</span>`:''}</button>`;
+    return sep+`<button class="nav-item ${state.view===n.id?'active':''}" data-view="${n.id}">${icon(n.icon)}<span>${n.label}</span>${count?`<span class="nav-count" title="New since your last visit">${count}</span>`:''}</button>`;
   }).join('');
+  const active=activeResume();
+  const side=$('#side-resume');
+  if(side)side.innerHTML=`<span>Active resume</span><b title="${esc(active?active.filename||active.label:'')}">${esc(active?active.label:'None selected')}</b>`;
 }
+function activeResume(){return (D().resumes||[]).find(r=>r.is_active||r.is_default)||null;}
 function navCount(id){
   if(!state.data)return 0;
   if(id==='jobs')return (D().jobs||[]).filter(j=>!SEARCH_KINDS.has(j.source_kind)&&isNew(j)).length;
@@ -186,15 +218,15 @@ function navCount(id){
 function heading(eyebrow,title,desc,actions){
   return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${desc||''}</p></div><div class="item-actions">${actions||''}</div></div>`;
 }
-function statCard(label,value,icon){
-  return `<div class="panel stat-card"><div class="stat-icon">${icon}</div><div><div class="stat-value">${esc(value)}</div><div class="stat-label">${esc(label)}</div></div></div>`;
+function statCard(label,value){
+  return `<div class="panel stat-card"><div class="stat-value">${esc(value??0)}</div><div class="stat-label">${esc(label)}</div></div>`;
 }
 function emptyRich(title,text,actions){
   return `<div class="empty-rich"><h3>${esc(title)}</h3><p>${esc(text)}</p><div class="item-actions" style="justify-content:center">${actions||''}</div></div>`;
 }
 function render(){
   renderNav();
-  const meta=NAV.find(n=>n.id===state.view)||NAV[0];
+  const meta=NAV.find(n=>n.id===state.view)||{label:state.view==='ask-intelligence'?'Ask':'Daily Briefing'};
   const crumb=$('#page-crumb');if(crumb)crumb.textContent=meta.label;
   const content=$('#page-content');if(!content)return;
   if(!state.data){content.innerHTML='<div class="empty-state"><strong>Loading workspace</strong>Connecting to local services…</div>';return;}
@@ -202,7 +234,7 @@ function render(){
   content.innerHTML=view();
 }
 function setView(view){
-  if(!NAV.some(n=>n.id===view))view='daily-briefing';
+  if(!NAV.some(n=>n.id===view)&&!HIDDEN_VIEWS.includes(view))view='daily-briefing';
   state.view=view;
   if(location.hash!=='#'+view)history.replaceState(null,'','#'+view);
   $('#sidebar')?.classList.remove('open');
@@ -211,21 +243,48 @@ function setView(view){
 }
 
 /* --------------------------------------------------------------- dashboard */
+function centralSearch(){
+  const last=(state.lastJob&&['universal','scan_all'].includes(state.lastJob.kind))?state.lastJob:null;
+  return `<div class="panel">
+    <form data-form="universal" class="search-hero">
+      <input class="input" name="request" placeholder="Search anything: “backend developer jobs in Pune”, “GATE 2027 dates”, “AI policy India news”, “papers on RAG evaluation”…" autocomplete="off">
+      <button class="primary-button" type="submit">${icon('search')} Search</button>
+      <button class="quiet-button" type="button" data-action="scan-all" title="Run every enabled section with your saved preferences">Scan all</button>
+    </form>
+    <div class="view-note" style="margin-top:6px">One search detects the relevant sections (jobs, government, exams, news, papers or general research), runs the shared search engine for each, and updates those sections.</div>
+    ${last&&last.result?universalResult(last.result):''}
+  </div>`;
+}
+function universalResult(result){
+  const labels={jobs:'Jobs',government:'Government & PSU',exams:'Exams',news:'AI News',papers:'Research Papers',research:'Research'};
+  const views={jobs:'jobs',government:'government',exams:'exams',news:'ai-news',papers:'papers',research:'research'};
+  const intent=result.intent||{};
+  const rows=Object.entries(result.results||{});
+  return `<div class="section-space">
+    <div class="view-note">Detected: ${(intent.categories||[]).map(c=>esc(labels[c]||c)).join(', ')||'—'} (${esc(intent.source||'rules')})${intent.query?` · query “${esc(intent.query)}”`:''}</div>
+    <div class="table-wrap section-space"><table class="data-table"><thead><tr><th>Section</th><th>Status</th><th class="num">Discovered</th><th class="num">Pages fetched</th><th class="num">Saved</th><th>Notes</th></tr></thead><tbody>
+    ${rows.map(([cat,r])=>`<tr><td><a href="#${views[cat]||cat}" data-view="${views[cat]||cat}">${esc(labels[cat]||cat)}</a></td><td>${badge(r.status||'—')}</td>
+      <td class="num">${esc(r.raw_results??r.sources_found??'—')}</td><td class="num">${esc(r.pages_fetched??'—')}</td>
+      <td class="num">${esc(r.stored??r.records??'—')}${r.strong!=null?` <span class="view-note">(${esc(r.strong)} strong)</span>`:''}</td>
+      <td class="view-note">${esc(r.error||r.reason||(r.failures||r.errors||[]).slice(0,2).join('; ')||(r.answer?String(r.answer).slice(0,140)+'…':''))}</td></tr>`).join('')}
+    </tbody></table></div></div>`;
+}
 function viewBriefing(){
   const d=D(),briefing=(d.briefings||[])[0];
   const c=counts();
   const content=briefing?briefing.content||{}:{};
+  const tiers=(d.jobs||[]).reduce((m,j)=>{const t=(j.eligibility||{}).tier;if(t)m[t]=(m[t]||0)+1;return m;},{});
   return heading('Workspace','Daily briefing',
-    `Personalized intelligence for ${esc(d.date||'today')}. Stored findings are assembled locally; live search runs only when no intelligence exists.`,
-    `<button class="primary-button" data-action="briefing">Generate briefing</button>`) +
-    progressBox() +
+    `${esc(d.date||'today')} · everything below is assembled from your local data.`,
+    `<button class="quiet-button" data-action="briefing">Generate briefing</button>`) +
+    progressBox() + centralSearch() +
     `<div class="grid grid-3 section-space">
-      ${statCard('Fresh job listings',d.fresh_job_count??c.jobs,'▤')}
-      ${statCard('Recruitment notices',c.notices,'⌂')}
-      ${statCard('Exam events',c.exams,'▧')}
-      ${statCard('AI news items',c.news,'◈')}
-      ${statCard('Papers & resources',c.papers,'▱')}
-      ${statCard('Saved / tracked',Object.values(d.item_states||{}).reduce((n,m)=>n+Object.keys(m).length,0),'✓')}
+      ${statCard('Strong job matches',tiers.strong||0)}
+      ${statCard('Possible matches',tiers.possible||0)}
+      ${statCard('Recruitment notices',c.notices)}
+      ${statCard('Exam events',c.exams)}
+      ${statCard('AI news',c.news)}
+      ${statCard('Papers',c.papers)}
     </div>
     <div class="section-space">${todayPlanPanel(d.today_plan,{compact:true})}</div>` +
     (briefing?briefingBody(content,briefing):emptyBriefing());
@@ -289,135 +348,146 @@ function ageLabel(value){
   if(days==null)return '';
   if(days<=0)return 'today';
   if(days===1)return 'yesterday';
-  return days+' days ago';
+  if(days<60)return days+'d ago';
+  return Math.round(days/30)+' mo ago';
 }
-function filteredJobs(){
-  const jobs=D().jobs||[];
+function tierOf(job){return (job.eligibility||{}).tier||(job.match_score==null?'low':job.match_score>=70?'strong':job.match_score>=50?'possible':'low');}
+function feedJobs(){
   const f=state.filters.jobs;
-  const days={'week':7,'month':30,'quarter':90,'all':null}[f.recency||'month'];
   const q=(f.q||'').toLowerCase();
-  const listings=[],searchPages=[];
-  for(const job of jobs){
-    if(SEARCH_KINDS.has(job.source_kind)){searchPages.push(job);continue;}
-    if(days!=null){
-      const age=daysAgo(job.posted_date);
-      if(age==null){if(!f.undated)continue;}
-      else if(age>days)continue;
-    }
-    if(f.status!=='all'&&job.status!==f.status)continue;
-    if(f.status==='all'&&!f.showExpired&&['expired','closed'].includes(job.status))continue;
-    if(f.role&&job.role_family!==f.role)continue;
-    if(f.resume&&job.best_resume_label!==f.resume)continue;
-    if(q&&!`${job.title} ${job.employer||''} ${job.location||''} ${(job.skills||[]).join(' ')}`.toLowerCase().includes(q))continue;
-    listings.push(job);
-  }
-  const sorters={
-    newest:(a,b)=>String(b.posted_date||'').localeCompare(String(a.posted_date||''))||String(b.first_seen||'').localeCompare(String(a.first_seen||'')),
-    match:(a,b)=>(b.match_score??-1)-(a.match_score??-1),
-  };
-  listings.sort(sorters[f.sort||'newest']);
-  return {listings,searchPages};
+  const days={'week':7,'month':30,'quarter':90,'all':null}[f.recency||'all'];
+  return (D().jobs||[]).filter(job=>{
+    if(SEARCH_KINDS.has(job.source_kind))return false;
+    if(tierOf(job)==='excluded')return false;
+    if(['expired','closed'].includes(job.status)&&!f.showExpired)return false;
+    if(days!=null){const age=daysAgo(job.posted_date);if(age==null?!f.undated:age>days)return false;}
+    if(f.role&&job.role_family!==f.role)return false;
+    if(q&&!`${job.title} ${job.employer||''} ${job.location||''} ${(job.skills||[]).join(' ')}`.toLowerCase().includes(q))return false;
+    return true;
+  });
+}
+function sortJobs(list,key){
+  const by={match:(a,b)=>(b.match_score??-1)-(a.match_score??-1)||String(b.posted_date||'').localeCompare(String(a.posted_date||'')),
+    newest:(a,b)=>String(b.first_seen||'').localeCompare(String(a.first_seen||''))||(b.match_score??-1)-(a.match_score??-1)};
+  return list.slice().sort(by[key]||by.match);
+}
+function activeResumeBar(){
+  const resumes=(D().resumes||[]).filter(r=>r.status==='processed');
+  const active=activeResume();
+  if(!resumes.length)return `<div class="active-resume"><span class="label">No resume selected — ranking uses your job preferences only.</span><a class="primary-button" href="#resumes" data-view="resumes">Upload a resume</a></div>`;
+  const titles=((active||{}).profile||{}).job_titles||[];
+  return `<div class="active-resume">
+    <span class="label">Ranking for</span>
+    <select class="select" data-action="switch-resume" aria-label="Active resume">${resumes.map(r=>`<option value="${r.id}" ${active&&r.id===active.id?'selected':''}>${esc(r.label)}${r.filename?' — '+esc(r.filename):''}</option>`).join('')}</select>
+    ${titles.length?`<span class="view-note">Targets: ${titles.map(esc).join(', ')}</span>`:''}
+    <a class="link-button" href="#resumes" data-view="resumes" style="margin-left:auto">Manage resumes</a>
+  </div>`;
 }
 function viewJobs(){
-  const jobs=D().jobs||[];
   const f=state.filters.jobs;
-  const {listings,searchPages}=filteredJobs();
-  const families=Array.from(new Set(jobs.filter(j=>!SEARCH_KINDS.has(j.source_kind)).map(j=>j.role_family).filter(Boolean))).sort();
-  const resumes=Array.from(new Set(jobs.map(j=>j.best_resume_label).filter(Boolean)));
-  const tabs=[['all','All'],['open','Open'],['unverified','Unverified'],['expired','Expired']];
-  const recency=[['week','This week'],['month','30 days'],['quarter','90 days'],['all','Any date']];
-  const fresh=D().fresh_job_count??listings.length;
-  const roles=D().scan_roles||[];
-  return heading('Intelligence','Jobs',
-    `Individual listings from job boards and company career pages, newest first. Index pages are expanded into the roles they list; ${esc(fresh)} listings are fresh (seen in the last 3 weeks, not expired).`,
-    `<button class="primary-button" data-action="market-scan">Scan ${esc(roles.length)} roles</button><a class="quiet-button" href="/api/export/jobs.csv?fresh=1">Export CSV</a>`) +
-    progressBox() +
-    `<div class="toolbar"><form data-form="discover" data-category="jobs">
-      <input class="input" name="query" placeholder="Search a specific role, e.g. “Data Engineer Pune” — blank searches your configured roles" value="${esc(state.lastQuery.jobs||'')}">
-      <select class="select" name="freshness">${freshnessOptions(f.freshness)}</select>
-      <button class="quiet-button" type="submit">Search one role</button>
-    </form>
-    <div class="view-note" style="margin-top:8px">Market scan roles: ${roles.map(r=>`<span class="meta">${esc(r)}</span>`).join(' ')} <a href="#settings" data-view="settings">edit</a></div></div>
-    <div class="sticky-filters"><div class="filter-row">
-      ${tabs.map(([value,label])=>`<button class="chip ${f.status===value?'active':''}" data-action="job-filter" data-value="${value}">${label}</button>`).join('')}
-      <span class="filter-gap"></span>
-      ${recency.map(([value,label])=>`<button class="chip ${(f.recency||'month')===value?'active':''}" data-action="job-recency" data-value="${value}">${label}</button>`).join('')}
-      <label class="chip"><input type="checkbox" data-action="job-undated" ${f.undated?'checked':''}> undated</label>
-    </div>
-    <div class="filter-row">
-      <span class="filter-label">Role</span>
-      <button class="chip ${!f.role?'active':''}" data-action="job-role" data-value="">All</button>
-      ${families.map(name=>`<button class="chip ${f.role===name?'active':''}" data-action="job-role" data-value="${esc(name)}">${esc(name)}</button>`).join('')}
-    </div>
-    <div class="filter-row">
-      ${resumes.length?`<span class="filter-label">Best resume</span><button class="chip ${!f.resume?'active':''}" data-action="job-resume" data-value="">Any</button>${resumes.map(name=>`<button class="chip ${f.resume===name?'active':''}" data-action="job-resume" data-value="${esc(name)}">${esc(name)}</button>`).join('')}`:''}
-      <span class="filter-gap"></span>
-      <input class="input" style="width:200px" data-action="job-q" placeholder="Filter…" value="${esc(f.q||'')}">
-      <select class="select" style="width:auto" data-action="job-sort"><option value="newest" ${f.sort!=='match'?'selected':''}>Newest</option><option value="match" ${f.sort==='match'?'selected':''}>Best match</option></select>
-      <button class="chip ${f.layout==='table'?'active':''}" data-action="job-layout" data-value="${f.layout==='table'?'cards':'table'}">${f.layout==='table'?'Cards':'Table'}</button>
-    </div></div>
-    <div class="banner">${listings.length} listing${listings.length===1?'':'s'} shown${isNewCount(listings)?` · <b>${isNewCount(listings)} new since your last visit</b>`:''}</div>` +
-    (listings.length
-      ?(f.layout==='table'?jobsTable(listings):`<div class="list-grid section-space">${listings.map(jobCard).join('')}</div>`)
-      :emptyRich('No listings match these filters',
-        'Widen the date range, include undated listings, or run a market scan. The scan searches each role family on job boards and company career pages, then expands index pages into individual listings.',
-        `<button class="primary-button" data-action="market-scan">Scan the market</button>`)) +
-    (searchPages.length?`<details class="collapsible"><summary>Search pages to check <span class="badge unverified">${searchPages.length}</span></summary>
-      <div class="view-note">These are search/index pages that could not be expanded into individual listings. Open them to browse manually.</div>
-      <div class="source-list section-space">${searchPages.slice(0,40).map(job=>`<div class="source-card"><a class="source-title" href="${esc(job.original_url)}" target="_blank" rel="noopener">${esc(job.title)}</a><div class="item-meta">${meta(job.source_platform||'')}${job.posted_date?meta(fmtDate(job.posted_date)):''}</div></div>`).join('')}</div>
-    </details>`:'');
+  const all=feedJobs();
+  const strong=sortJobs(all.filter(j=>tierOf(j)==='strong'),f.sort);
+  const possible=sortJobs(all.filter(j=>tierOf(j)==='possible'),f.sort);
+  const recent=sortJobs(all.filter(j=>isNew(j)||daysAgo(j.first_seen)!=null&&daysAgo(j.first_seen)<=2),'newest').slice(0,15);
+  const states=(D().item_states||{}).job||{};
+  const saved=(D().jobs||[]).filter(j=>states[j.id]==='saved');
+  const families=Array.from(new Set((D().jobs||[]).filter(j=>!SEARCH_KINDS.has(j.source_kind)&&tierOf(j)!=='excluded').map(j=>j.role_family).filter(Boolean))).sort();
+  const excludedCount=(D().jobs||[]).filter(j=>tierOf(j)==='excluded').length;
+  const pool=((D().preferences||{}).jobs||{}).pool_size||100;
+  return heading('Jobs','Job shortlist',
+    'Broad discovery across job portals, company career boards and the open web, ranked against your active resume. Only relevant vacancies are listed; articles, senior roles and out-of-region jobs are filtered out with reasons.',
+    `<a class="quiet-button" href="/api/export/jobs.csv?fresh=1">Export CSV</a>`) +
+    activeResumeBar() + progressBox() +
+    `<div class="toolbar section-space"><form data-form="jobsearch">
+      <input class="input" name="query" placeholder="Optional role or focus, e.g. “Python backend”, “ML intern Bengaluru” — blank uses your resume and preferences" value="${esc(state.lastQuery.jobs||'')}">
+      <select class="select" name="pool_size" title="Candidate pool size">${[50,100,200].map(n=>`<option value="${n}" ${Number(pool)===n?'selected':''}>Pool ${n}</option>`).join('')}</select>
+      <button class="primary-button" type="submit">${icon('search')} Discover jobs</button>
+    </form></div>
+    ${coveragePanel()}
+    <details class="collapsible" ${state.expanded.filters?'open':''} data-details="filters"><summary>Filters and view</summary>
+      <div class="filter-row"><span class="filter-label">Posted</span>
+        ${[['week','7 days'],['month','30 days'],['quarter','90 days'],['all','Any time']].map(([v,l])=>`<button class="chip ${(f.recency||'all')===v?'active':''}" data-action="job-recency" data-value="${v}">${l}</button>`).join('')}
+        <label class="chip"><input type="checkbox" data-action="job-undated" ${f.undated?'checked':''}> include undated</label>
+        <label class="chip"><input type="checkbox" data-action="job-expired" ${f.showExpired?'checked':''}> show expired</label>
+      </div>
+      <div class="filter-row"><span class="filter-label">Role</span>
+        <button class="chip ${!f.role?'active':''}" data-action="job-role" data-value="">All</button>
+        ${families.map(n=>`<button class="chip ${f.role===n?'active':''}" data-action="job-role" data-value="${esc(n)}">${esc(n)}</button>`).join('')}
+      </div>
+      <div class="filter-row">
+        <input class="input" style="width:220px" data-action="job-q" placeholder="Filter by text…" value="${esc(f.q||'')}">
+        <select class="select" style="width:auto" data-action="job-sort"><option value="match" ${f.sort!=='newest'?'selected':''}>Best match first</option><option value="newest" ${f.sort==='newest'?'selected':''}>Newest first</option></select>
+        <span class="filter-gap"></span><span class="view-note">${excludedCount} stored listings hidden as not eligible/relevant</span>
+      </div>
+    </details>` +
+    jobSection('Strong matches','Score 70+, eligible, relevant to your resume',strong,'strong') +
+    jobSection('Possible matches','Score 50–69, or with eligibility warnings',possible,'possible') +
+    jobSection('Recently discovered','New since your last visit or in the last 2 days',recent,'recent') +
+    jobSection('Saved jobs','Saved from any list',saved,'saved') +
+    (!strong.length&&!possible.length?emptyRich('No ranked jobs yet','Run “Discover jobs”. Discovery searches several portals and company career boards, then ranks the pool against your active resume.',`<button class="primary-button" data-action="discover-jobs">Discover jobs</button>`):'');
 }
-function isNewCount(items){return items.filter(isNew).length;}
-function resumeLine(job){
-  const scores=(job.resume_scores||[]).filter(s=>s&&s.score!=null);
-  if(!job.best_resume_label)return '';
-  const others=scores.filter(s=>s.label!==job.best_resume_label).slice(0,3)
-    .map(s=>`${esc(s.label)} ${esc(s.score)}%`).join(' · ');
-  const best=scores.find(s=>s.label===job.best_resume_label)||{};
-  return `<div class="resume-line"><span class="resume-pill">Best resume: ${esc(job.best_resume_label)}${best.score!=null?' · '+esc(best.score)+'%':''}</span>${others?`<span class="view-note">${others}</span>`:''}</div>
-    ${(best.matched||[]).length||(best.missing||[]).length?`<div class="item-meta">${(best.matched||[]).slice(0,6).map(s=>`<span class="meta skill-have">✓ ${esc(s)}</span>`).join('')}${(best.missing||[]).slice(0,5).map(s=>`<span class="meta skill-miss">+ ${esc(s)}</span>`).join('')}</div>`:''}`;
+function jobSection(title,note,list,key){
+  if(!list.length)return '';
+  const limit=state.expanded['section-'+key]?list.length:8;
+  return `<section class="job-section"><h2>${esc(title)} <span>${list.length} · ${esc(note)}</span></h2>
+    <div class="job-list">${list.slice(0,limit).map(jobRow).join('')}</div>
+    ${list.length>limit?`<button class="link-button section-space" data-action="expand" data-key="section-${key}">Show all ${list.length}</button>`:''}</section>`;
 }
-function jobCard(job){
+function jobRow(job){
+  const tier=tierOf(job);
   const current=stateOf('job',job.id);
-  const age=daysAgo(job.posted_date);
-  const tailor=state.tailor[job.id];
-  const match=job.match_score!=null
-    ?`<div class="match"><span class="match-score">${esc(job.match_score)}% match</span><span>${esc(job.match_reason||'')}</span></div>`
-    :`<div class="match"><span>${esc(job.match_reason||'Needs review — insufficient evidence to score.')}</span></div>`;
-  return `<article class="item-card ${isNew(job)?'is-new':''}">
-    <div class="item-head">
-      <div><h3 class="item-title"><a href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a></h3>
-        <div class="item-sub">${esc(job.employer||'Employer not stated')} · ${esc(job.location||'Location not stated')}${job.remote?' · '+esc(job.remote):''}</div></div>
-      <div class="chips">${isNew(job)?'<span class="badge new">new</span>':''}${age!=null&&age<=7?'<span class="badge open">this week</span>':''}${badge(job.status||'unverified')}${job.source_kind==='harvested'?'<span class="badge harvested">from index</span>':''}</div>
+  const elig=job.eligibility||{};
+  const active=(job.resume_scores||[]).find(s=>s.active)||{};
+  const others=(job.resume_scores||[]).filter(s=>!s.active&&s.score!=null);
+  const better=others.find(s=>s.score>(job.match_score||0)+8);
+  const open=state.expanded['job-'+job.id];
+  const sources=(job.sources||[]).length;
+  return `<div class="job-row">
+    <span class="score ${tier}" title="Match score against your active resume">${job.match_score??'—'}</span>
+    <div class="job-main">
+      <div class="item-title"><a href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a> ${isNew(job)?'<span class="badge new">new</span>':''}</div>
+      <div class="item-meta">${meta(job.employer||'Employer not stated')}${meta(job.location||'Location not stated')}${job.posted_date?meta('posted '+ageLabel(job.posted_date)):meta('date not stated')}${meta(job.discovered_via||job.source_platform||'')}${sources>1?meta(sources+' sources'):''}</div>
+      ${(active.matched||[]).length||(active.missing||[]).length?`<div class="item-meta">${(active.matched||[]).slice(0,6).map(s=>`<span class="tag have">${esc(s)}</span>`).join('')}${(active.missing||[]).slice(0,4).map(s=>`<span class="tag miss" title="Not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
+      ${(elig.warnings||[]).length?`<div class="warning-line">⚠ ${elig.warnings.map(esc).join(' ')}</div>`:''}
+      ${better?`<div class="view-note">Your “${esc(better.label)}” resume scores ${esc(better.score)} for this role.</div>`:''}
+      ${open?`<div class="reason">${esc(job.match_reason||'')}</div>${(job.sources||[]).length?`<div class="item-meta">${job.sources.map(s=>`<a class="meta" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.platform||s.via||'source')}</a>`).join('')}</div>`:''}${state.tailor[job.id]?tailorBox(state.tailor[job.id]):''}`:''}
     </div>
-    ${match}
-    ${resumeLine(job)}
-    <div class="item-meta">
-      ${job.role_family?meta(job.role_family):''}
-      ${job.employment_type?meta(job.employment_type):''}
-      ${job.experience?meta('Experience: '+job.experience):''}
-      ${job.salary?meta(job.salary):''}
-      ${job.posted_date?meta('Posted '+fmtDate(job.posted_date)+' ('+ageLabel(job.posted_date)+')'):meta('Posting date not stated')}
-      ${job.deadline?meta('Deadline '+fmtDate(job.deadline)):''}
-      ${job.source_platform?meta(job.source_platform):''}
-    </div>
-    ${(job.skills||[]).length&&!((job.resume_scores||[]).find(s=>s.label===job.best_resume_label)||{}).matched?.length&&!((job.resume_scores||[]).find(s=>s.label===job.best_resume_label)||{}).missing?.length?`<div class="item-meta">${job.skills.slice(0,10).map(skill=>meta(skill)).join('')}</div>`:''}
-    ${evidence(job)}
-    ${tailor?tailorBox(tailor):''}
     <div class="item-actions">
-      <a class="link-button primary" href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">Open listing</a>
+      <button class="link-button" data-action="expand" data-key="job-${job.id}">${open?'Less':'Why'}</button>
       ${trackButtons(job.id,current)}
-      ${(D().resumes||[]).length?`<button class="link-button" data-action="tailor" data-id="${job.id}">Tailoring hints</button>`:''}
+      ${open&&activeResume()?`<button class="link-button" data-action="tailor" data-id="${job.id}">Tailor</button>`:''}
     </div>
-  </article>`;
+  </div>`;
+}
+function coveragePanel(){
+  const s=D().job_search;
+  if(!s)return '';
+  const cov=s.coverage||[];
+  const excluded=Object.entries(s.excluded||{}).sort((a,b)=>b[1]-a[1]);
+  return `<details class="collapsible" ${state.expanded.coverage?'open':''} data-details="coverage"><summary>Last discovery: ${esc(s.raw_results)} results from ${esc(cov.filter(c=>c.results>0||c.listings>0).length)} sources → ${esc(s.unique_candidates)} unique → ${esc(s.strong)} strong, ${esc(s.possible)} possible <span class="view-note">· ${esc(fmtDateTime(s.created_at))} · ${esc(s.duration_seconds)}s · resume ${esc(s.resume||'none')}</span></summary>
+    <div class="grid grid-2">
+      <div>
+        <div class="section-title">Sources searched</div>
+        <div class="table-wrap"><table class="data-table coverage-table"><thead><tr><th>Platform</th><th>Method</th><th>Queries</th><th>Results</th><th>Status</th></tr></thead><tbody>
+        ${cov.map(c=>`<tr><td>${esc(c.platform)}</td><td class="view-note">${esc(c.method)}</td><td>${esc(c.queries||'')}</td><td>${esc((c.results||0)+(c.listings?` (+${c.listings} listings)`:''))}</td><td class="${/^ok/.test(c.status)?(c.results||c.listings?'status-ok':'status-warn'):'status-bad'}">${esc(c.results===0&&!c.listings&&/^ok/.test(c.status)?'no results':c.status)}</td></tr>`).join('')}
+        </tbody></table></div>
+      </div>
+      <div>
+        <div class="section-title">How the pool was narrowed</div>
+        <div class="kv-grid">${kv('Raw results',s.raw_results)}${kv('Web search results',s.mcp_results)}${kv('Expanded from index pages',s.harvested)}${kv('Company board openings',s.ats_openings)}${kv('Unique candidates',s.unique_candidates)}${kv('Ranked as relevant',s.ranked)}${kv('Stored (pool size)',`${s.stored} / ${s.pool_size}`)}${kv('Search calls · pages fetched',`${s.search_calls} · ${s.pages_fetched}`)}</div>
+        <div class="section-title section-space">Excluded (${esc(s.excluded_total)})</div>
+        ${barList(excluded.map(([name,count])=>({name,count})),{unit:'listing',series:2,limit:8})}
+        ${(s.failures||[]).length?`<div class="banner warn section-space">${s.failures.map(esc).join('<br>')}</div>`:''}
+      </div>
+    </div></details>`;
 }
 function tailorBox(t){
   if(t.loading)return '<div class="reason">Preparing tailoring hints with the local model…</div>';
-  return `<div class="reason"><b>Tailor your “${esc(t.resume)}” resume</b> (fit ${esc(t.fit??'—')}%)
-    ${(t.missing||[]).length?`<div>Not evidenced in this resume: ${t.missing.map(esc).join(', ')} — add them only if you genuinely have them.</div>`:''}
+  return `<div class="reason"><b>Tailoring “${esc(t.resume)}”</b> (skill fit ${esc(t.fit??'—')}%)
+    ${(t.missing||[]).length?`<div>Not evidenced: ${t.missing.map(esc).join(', ')} — add only if you genuinely have them.</div>`:''}
     ${(t.matched||[]).length?`<div>Emphasise: ${t.matched.map(esc).join(', ')}</div>`:''}
     ${(t.bullets||[]).length?`<ul>${t.bullets.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>`:''}
-    <div class="view-note">${t.source==='local_model'?'Bullet suggestions from your local model; review before use.':'Deterministic hints (local model unavailable).'}</div></div>`;
+    <div class="view-note">${t.source==='local_model'?'Suggestions from your local model; review before use.':'Deterministic hints (local model unavailable).'}</div></div>`;
 }
 const TRACK_STATES=[['saved','Save'],['applied','Applied'],['interview','Interview'],['offer','Offer'],['rejected','Rejected'],['dismissed','Hide']];
 function trackButtons(id,current){
@@ -426,17 +496,6 @@ function trackButtons(id,current){
     :TRACK_STATES.filter(([v])=>['saved','applied','dismissed'].includes(v));
   return visible.map(([value,label])=>
     `<button class="link-button ${current===value?'active':''}" data-action="item-state" data-kind="job" data-id="${id}" data-state="${current===value?'none':value}">${current===value?'✓ ':''}${label}</button>`).join('');
-}
-function jobsTable(listings){
-  return `<div class="table-wrap section-space"><table class="data-table">
-    <thead><tr><th>Role</th><th>Employer</th><th>Location</th><th>Posted</th><th class="num">Match</th><th>Best resume</th><th>Status</th><th>Source</th></tr></thead>
-    <tbody>${listings.map(job=>`<tr>
-      <td><a href="${esc(job.original_url||'#')}" target="_blank" rel="noopener"><b>${esc(job.title)}</b></a>${isNew(job)?' <span class="badge new">new</span>':''}<div class="view-note">${esc(job.role_family||'')}</div></td>
-      <td>${esc(job.employer||'—')}</td><td>${esc(job.location||'—')}</td>
-      <td>${job.posted_date?esc(ageLabel(job.posted_date)):'—'}</td>
-      <td class="num">${job.match_score!=null?esc(job.match_score)+'%':'—'}</td>
-      <td>${esc(job.best_resume_label||'—')}</td><td>${badge(job.status||'unverified')}</td>
-      <td>${esc(job.source_platform||'')}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 /* ------------------------------------------------------------- tracker */
@@ -974,12 +1033,11 @@ function viewSettings(){
     `<label class="portal-card"><input type="checkbox" name="portal:${esc(name)}" ${portal.enabled?'checked':''}><span>${esc(name)}</span><small>${esc(portal.domain||'custom')}</small></label>`).join('');
   const profile=D().profile;
   return heading('Personal','Settings','Preferences are stored locally and applied to future searches, matching and briefings.','') +
-    `<div class="panel">
+    appearancePanel() + `<div class="panel section-space">
       <div class="panel-head"><h3 class="panel-title">Local model & resources</h3><span class="panel-kicker">Ollama</span></div>
       <form data-form="settings">
         <div class="settings-grid">
           <div class="field"><label>Installed Ollama model</label><select class="select" name="ollama_model">${modelOptions()}</select><small>Only installed models are accepted. Nothing is pulled automatically.</small></div>
-          <div class="field"><label>Theme</label><select class="select" name="theme"><option value="light" ${settings.theme!=='dark'?'selected':''}>Light (cream)</option><option value="dark" ${settings.theme==='dark'?'selected':''}>Dark (walnut)</option></select></div>
           <div class="field"><label>Max search queries</label><input class="input" name="max_search_queries" type="number" min="1" max="8" value="${esc(settings.max_search_queries||6)}"></div>
           <div class="field"><label>Max fetch URLs</label><input class="input" name="max_fetch_urls" type="number" min="1" max="8" value="${esc(settings.max_fetch_urls||4)}"></div>
           <div class="field"><label>Max content characters</label><input class="input" name="max_content_chars" type="number" min="2000" max="120000" value="${esc(settings.max_content_chars||120000)}"></div>
@@ -1050,7 +1108,8 @@ function viewSettings(){
       </div>
     </div>
 
-    ${resumesPanel()}
+    <div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Resumes</h3><a class="link-button" href="#resumes" data-view="resumes">Open resume manager</a></div><div class="view-note">Active resume: <b>${esc((activeResume()||{}).label||'none')}</b></div></div>
+    ${sourcesPanel(prefs)}
 
     <div class="panel section-space">
       <div class="panel-head"><h3 class="panel-title">Automation & exports</h3><span class="panel-kicker">optional</span></div>
@@ -1080,37 +1139,9 @@ function modelOptions(){
   if(!models.length)return '<option value="">No installed model detected</option>';
   return models.map(model=>`<option value="${esc(model)}" ${model===current?'selected':''}>${esc(model)}</option>`).join('');
 }
-function resumesPanel(){
-  const resumes=D().resumes||[];
-  const editing=resumes.find(r=>r.id===state.editResume)||null;
-  return `<div class="panel section-space" id="resumes">
-      <div class="panel-head"><h3 class="panel-title">Resumes</h3><span class="panel-kicker">${resumes.length} stored · local only</span></div>
-      <div class="view-note">Upload one resume per target direction (e.g. “SDE”, “AI/ML”, “Backend”). Every job is scored against all of them and shows the best fit, with the skills it covers and misses. Resume text never leaves this machine.</div>
-      <div class="resume-list section-space">${resumes.length?resumes.map(r=>{
-        const skills=(r.profile||{}).skills||[];
-        return `<div class="resume-card ${r.is_default?'default':''}">
-          <div><b>${esc(r.label)}</b> ${r.is_default?'<span class="badge open">default</span>':''}
-            <div class="view-note">${esc(r.filename||'manual')} · updated ${esc(fmtDateTime(r.updated_at))} · ${skills.length} skills</div>
-            <div class="item-meta">${skills.slice(0,10).map(s=>meta(s)).join('')}</div></div>
-          <div class="item-actions" style="margin-top:0">
-            ${r.is_default?'':`<button class="link-button" data-action="resume-default" data-id="${r.id}">Make default</button>`}
-            <button class="link-button" data-action="resume-rename" data-id="${r.id}" data-label="${esc(r.label)}">Rename</button>
-            <button class="link-button" data-action="resume-edit" data-id="${r.id}">${editing&&editing.id===r.id?'Close editor':'Edit profile'}</button>
-            <button class="link-button" data-action="resume-replace" data-id="${r.id}">Replace file</button>
-            <button class="link-button danger" data-action="resume-delete" data-id="${r.id}" data-label="${esc(r.label)}">Delete</button>
-          </div></div>`;}).join(''):'<div class="empty-state">No resume uploaded yet. Jobs are matched against your preferences only.</div>'}</div>
-      <div class="upload-box section-space">
-        <div class="inline-form" style="width:min(520px,100%)"><input class="input" id="resume-label" placeholder="Label, e.g. AI/ML or Backend SDE"><label class="check-row"><input type="checkbox" id="resume-default"> make default</label></div>
-        <div class="item-actions" style="justify-content:center"><button class="primary-button" type="button" data-action="resume-pick">Upload PDF / DOCX</button><input id="resume-file" type="file" accept=".pdf,.docx,.txt,.md" onchange="handleResumeFile(event)"></div>
-        <div class="view-note">After upload, all stored jobs are re-scored automatically.</div>
-      </div>
-      ${editing?`<div class="settings-section"><h3>Edit “${esc(editing.label)}”</h3>${profileEditor(editing)}</div>`:''}
-    </div>`;
-}
-
 function profileEditor(profile){
   const prof=profile?profile.profile||{}:{};
-  const fields=['education','skills','languages','frameworks','projects','certifications','keywords'];
+  const fields=['job_titles','education','skills','languages','frameworks','projects','certifications','keywords'];
   return `<div class="profile-editor section-space" id="profile-editor" data-resume-id="${esc(profile&&profile.id||'')}">
     <div class="field-grid">
       <div class="field"><label>Graduation year</label><input class="input" name="graduation_year" type="number" min="1980" max="2100" value="${esc(prof.graduation_year??'')}"></div>
@@ -1121,6 +1152,74 @@ function profileEditor(profile){
   </div>`;
 }
 
+/* ----------------------------------------------------------------- resumes */
+function viewResumes(){
+  const resumes=D().resumes||[];
+  const active=activeResume();
+  const editing=resumes.find(r=>r.id===state.editResume)||null;
+  return heading('Jobs','Resumes',
+    'Upload one resume per direction. The active resume drives job ranking everywhere. Files and extracted profiles stay on this computer; only short role titles and a few skill keywords are used in web searches.',
+    `<button class="primary-button" data-action="resume-pick">Upload resume</button><input id="resume-file" type="file" accept=".pdf,.docx,.txt,.md" onchange="handleResumeFile(event)" hidden>`) +
+    progressBox() +
+    `<div class="panel">
+      <div class="panel-head"><h3 class="panel-title">Active resume</h3><span class="panel-kicker">${active?esc(active.filename||''):''}</span></div>
+      ${active?`<div><b style="font-size:15px">${esc(active.label)}</b> <span class="badge active">active</span></div>
+        <div class="item-meta">${meta('Target titles: '+((active.profile||{}).job_titles||[]).join(', '))}${meta((((active.profile||{}).skills)||[]).length+' skills')}${meta('Experience: '+((active.profile||{}).experience_years??0)+' yrs')}${meta('Graduation: '+((active.profile||{}).graduation_year||'—'))}</div>`
+        :'<div class="banner warn">No active resume. Upload one below; job ranking currently uses your job preferences only.</div>'}
+    </div>
+    <div class="panel section-space">
+      <div class="panel-head"><h3 class="panel-title">All resumes</h3><span class="panel-kicker">${resumes.length} uploaded</span></div>
+      ${resumes.length?`<div class="resume-list">${resumes.map(r=>{
+        const prof=r.profile||{};
+        return `<div class="resume-row">
+          <input type="radio" name="active-resume" data-action="activate-resume" data-id="${r.id}" ${r.is_active?'checked':''} ${r.status!=='processed'?'disabled':''} aria-label="Make ${esc(r.label)} active">
+          <div style="min-width:0"><b>${esc(r.label)}</b> ${r.is_active?'<span class="badge active">active</span>':''} ${badge(r.status||'processed')}
+            <div class="item-meta">${meta(r.filename||'no file')}${meta('uploaded '+fmtDate(r.created_at))}${r.file_size?meta(Math.round(r.file_size/1024)+' KB'):''}${meta((prof.skills||[]).length+' skills')}${(prof.job_titles||[]).length?meta(prof.job_titles.join(', ')):''}</div>
+            ${r.error?`<div class="warning-line">Extraction error: ${esc(r.error)}</div>`:''}
+          </div>
+          <div class="item-actions">
+            <button class="link-button" data-action="resume-edit" data-id="${r.id}">${editing&&editing.id===r.id?'Close':'Edit profile'}</button>
+            <button class="link-button" data-action="resume-rename" data-id="${r.id}" data-label="${esc(r.label)}">Rename</button>
+            <button class="link-button" data-action="resume-reprocess" data-id="${r.id}" title="Re-extract from the stored file">Reprocess</button>
+            <button class="link-button" data-action="resume-replace" data-id="${r.id}">Replace file</button>
+            <button class="link-button danger" data-action="resume-delete" data-id="${r.id}" data-label="${esc(r.label)}">Delete</button>
+          </div></div>`;}).join('')}</div>`:'<div class="empty-state">No resumes yet.</div>'}
+      <div class="upload-box section-space">
+        <div class="inline-form" style="width:min(560px,100%)"><input class="input" id="resume-label" placeholder="Label for the next upload or rename, e.g. “AI Engineer” or “Backend SDE”"><label class="check-row"><input type="checkbox" id="resume-default" checked> make active</label></div>
+        <button class="quiet-button" type="button" data-action="resume-pick">Choose PDF or DOCX…</button>
+        <div class="view-note">Extraction uses your local Ollama model when available and a deterministic parser otherwise. Errors are shown here, never hidden.</div>
+      </div>
+    </div>
+    ${editing?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Edit extracted profile — ${esc(editing.label)}</h3><span class="panel-kicker">one item per line</span></div>${profileEditor(editing)}</div>`:''}`;
+}
+
+function appearancePanel(){
+  const current=document.documentElement.dataset.theme||'minimal-light';
+  return `<div class="panel">
+    <div class="panel-head"><h3 class="panel-title">Appearance</h3><span class="panel-kicker">saved across restarts</span></div>
+    <div class="theme-options">${THEMES.map(t=>`<button class="theme-option ${current===t.id?'active':''}" data-action="set-theme" data-theme="${t.id}" aria-pressed="${current===t.id}">
+      <span class="theme-swatch">${t.swatch.map(c=>`<i style="background:${c}"></i>`).join('')}</span><b>${esc(t.label)}</b></button>`).join('')}</div>
+  </div>`;
+}
+function sourcesPanel(prefs){
+  const jobs=prefs.jobs||{};
+  const companies=D().companies||[];
+  const scanAll=((prefs.scan_all||{}).categories)||['jobs','government','exams','news','papers'];
+  return `<div class="panel section-space">
+    <div class="panel-head"><h3 class="panel-title">Search sources & coverage</h3><span class="panel-kicker">jobs discovery</span></div>
+    <form data-form="sources">
+      <div class="settings-grid">
+        <div class="field"><label>Default candidate pool</label><select class="select" name="pool_size">${[50,100,200].map(n=>`<option value="${n}" ${Number(jobs.pool_size||100)===n?'selected':''}>${n} candidates</option>`).join('')}</select><small>About 3, 6 or 10 web searches plus company boards. Larger pools take longer.</small></div>
+        <div class="field"><label>Scan all includes</label><div class="chips">${['jobs','government','exams','news','papers'].map(c=>`<label class="chip"><input type="checkbox" name="scan:${c}" ${scanAll.includes(c)?'checked':''}> ${c}</label>`).join('')}</div></div>
+        <div class="field full"><label>Company career boards (one per line: ats slug Display name)</label>
+          <textarea class="textarea mono" name="companies" rows="8">${esc(companies.map(c=>`${c.ats} ${c.slug} ${c.name}`).join('\n'))}</textarea>
+          <small>Supported: greenhouse, lever, ashby. Public job-board APIs are read directly (idea from the MIT-licensed Career-Ops project); only the company identifier is sent.</small></div>
+      </div>
+      <div class="field-actions"><button class="primary-button" type="submit">Save sources</button></div>
+    </form>
+  </div>`;
+}
+
 const VIEWS={
   'daily-briefing':viewBriefing,
   'ask-intelligence':viewAsk,
@@ -1128,6 +1227,7 @@ const VIEWS={
   jobs:viewJobs,
   'job-market':viewMarket,
   tracker:viewTracker,
+  resumes:viewResumes,
   government:viewGovernment,
   exams:viewExams,
   'ai-news':viewNews,
@@ -1146,6 +1246,16 @@ document.addEventListener('click',async event=>{
   const action=button.dataset.action;
   try{
     if(action==='briefing'){await startJobRequest('/api/briefings',{},'Briefing started');}
+    else if(action==='scan-all'){await startJobRequest('/api/search/scan-all',{},'Scanning all enabled sections');}
+    else if(action==='discover-jobs'){await startJobRequest('/api/intel/search',{category:'jobs',query:state.lastQuery.jobs||'',pool_size:((D().preferences||{}).jobs||{}).pool_size||100},'Discovering jobs');}
+    else if(action==='expand'){const k=button.dataset.key;state.expanded[k]=!state.expanded[k];render();}
+    else if(action==='set-theme'){await setTheme(button.dataset.theme);render();}
+    else if(action==='resume-reprocess'){
+      toast('Re-extracting resume locally…');
+      await api(`/api/resumes/${button.dataset.id}/reprocess`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      await refresh();render();toast('Resume reprocessed; jobs re-ranked');
+    }
+
     else if(action==='cancel-job'){await cancelJob(button.dataset.id);}
     else if(action==='refresh'){await refresh();render();toast('Workspace refreshed');}
     else if(action==='item-state'){
@@ -1172,7 +1282,7 @@ document.addEventListener('click',async event=>{
     }
     else if(action==='market-scan'){
       state.lastQuery.jobs='';
-      await startJobRequest('/api/intel/search',{category:'jobs',query:'',scan:true,freshness:(state.filters.jobs||{}).freshness},'Scanning the job market role by role');
+      await startJobRequest('/api/intel/search',{category:'jobs',query:'',scan:true,pool_size:200},'Scanning the job market across your scan roles');
     }
     else if(action==='news-search'){
       const f=state.filters.news;
@@ -1208,6 +1318,10 @@ document.addEventListener('click',async event=>{
       await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});
       state.suggestions.items.splice(Number(button.dataset.index),1);
       await refresh();render();toast('Task added');
+    }
+    else if(action==='activate-resume'){
+      await api(`/api/resumes/${button.dataset.id}/activate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      await refresh();render();toast('Active resume changed; jobs re-ranked');
     }
     else if(action==='resume-default'||action==='resume-delete'||action==='resume-rename'){
       const id=button.dataset.id;let body={};let verb=action.replace('resume-','');
@@ -1306,6 +1420,25 @@ document.addEventListener('submit',async event=>{
       await api('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,due_date:data.get('due_date')||null})});
       await refresh();render();
     }
+    else if(kind==='universal'){
+      const request=String(data.get('request')||'').trim();
+      if(!request){toast('Type what you are looking for',true);return;}
+      await startJobRequest('/api/search/universal',{request},'Searching across sections');
+    }
+    else if(kind==='jobsearch'){
+      const query=String(data.get('query')||'').trim();
+      state.lastQuery.jobs=query;
+      await startJobRequest('/api/intel/search',{category:'jobs',query,pool_size:Number(data.get('pool_size')||100)},'Discovering jobs');
+    }
+    else if(kind==='sources'){
+      const prefs=JSON.parse(JSON.stringify(D().preferences||{}));
+      const companies=String(data.get('companies')||'').split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
+        const [ats,slug,...name]=line.split(/\s+/);return {ats,slug,name:name.join(' ')||slug};});
+      prefs.jobs={...(prefs.jobs||{}),pool_size:Number(data.get('pool_size')||100),companies};
+      prefs.scan_all={categories:['jobs','government','exams','news','papers'].filter(c=>data.has('scan:'+c))};
+      await api('/api/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
+      await refresh();render();toast('Search sources saved');
+    }
     else if(kind==='note'){
       const name=String(data.get('name')||form.dataset.name||'').trim();
       const res=await api('/api/notes/'+encodeURIComponent(name),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:String(data.get('content')||'')})});
@@ -1337,7 +1470,7 @@ document.addEventListener('submit',async event=>{
         mcp_timeout:Number(data.get('mcp_timeout')),
         notes_dir:String(data.get('notes_dir')||''),
         briefing_preferences:String(data.get('briefing_preferences')||''),
-        theme:String(data.get('theme')||'light'),
+        theme:document.documentElement.dataset.theme||'minimal-light',
         location:(D().settings||{}).location||'',
       };
       await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -1388,13 +1521,18 @@ document.addEventListener('change',event=>{
   if(target.dataset.action==='gov-eligibility'){state.filters.government.eligibility=target.value;render();}
   if(target.dataset.action==='gov-doc'){state.filters.government.doc=target.value;render();}
   if(target.dataset.action==='job-sort'){state.filters.jobs.sort=target.value;render();}
+  if(target.dataset.action==='job-expired'){state.filters.jobs.showExpired=target.checked;render();}
+  if(target.dataset.action==='switch-resume'){
+    api(`/api/resumes/${target.value}/activate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(refresh).then(()=>{render();toast('Ranking now uses '+((activeResume()||{}).label||'this resume'));}).catch(err=>toast(err.message,true));
+  }
   if(target.dataset.action==='job-undated'){state.filters.jobs.undated=target.checked;render();}
 });
 
 async function saveProfile(){
   const root=$('#profile-editor');if(!root)return;
   const profile={};
-  ['education','skills','languages','frameworks','projects','certifications','keywords'].forEach(field=>{
+  ['job_titles','education','skills','languages','frameworks','projects','certifications','keywords'].forEach(field=>{
     const area=root.querySelector(`textarea[name="${field}"]`);
     profile[field]=area?splitList(area.value.replace(/\n/g,',')):[];
   });
@@ -1435,8 +1573,16 @@ async function handleResumeFile(event){
 window.handleResumeFile=handleResumeFile;
 
 function applyTheme(){
-  const theme=((D().settings||{}).theme)||'light';
+  const theme=((D().settings||{}).theme)||'minimal-light';
   document.documentElement.dataset.theme=theme;
+  try{localStorage.setItem('di-theme',theme);}catch(e){}
+}
+async function setTheme(theme){
+  document.documentElement.dataset.theme=theme;
+  try{localStorage.setItem('di-theme',theme);}catch(e){}
+  await api('/api/theme',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({theme})});
+  if(state.data&&state.data.settings)state.data.settings.theme=theme;
+  toast('Theme: '+(THEMES.find(t=>t.id===theme)||{}).label);
 }
 async function boot(){
   try{
@@ -1446,30 +1592,38 @@ async function boot(){
     return;
   }
   applyTheme();
-  const tag=$('#version-tag');if(tag&&D().version)tag.textContent='Version '+D().version;
+  const tag=$('#version-tag');if(tag&&D().version)tag.textContent='v'+D().version;
   api('/api/visit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});
   const hash=location.hash.replace('#','');
-  if(hash&&NAV.some(item=>item.id===hash))state.view=hash;
+  if(hash&&(NAV.some(item=>item.id===hash)||HIDDEN_VIEWS.includes(hash)))state.view=hash;
   render();
   if(!state.models.length){
-    api('/api/models').then(data=>{
-      state.models=data.models||[];
-      if(state.view==='settings')render();
-    }).catch(()=>{});
+    api('/api/models').then(data=>{state.models=data.models||[];if(state.view==='settings')render();}).catch(()=>{});
   }
   const status=D().status;
   if(status&&['queued','running'].includes(status.status)&&status.id){state.activeJob=status;pollJob(status.id);}
+  setInterval(()=>{api('/api/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(()=>{
+    const c=$('#connection');if(c)c.innerHTML='<i></i>Local';}).catch(()=>{const c=$('#connection');if(c)c.textContent='Offline';});},60000);
 }
 window.addEventListener('hashchange',()=>{
   const hash=location.hash.replace('#','');
-  if(hash&&NAV.some(item=>item.id===hash)&&hash!==state.view){state.view=hash;render();}
+  if(hash&&(NAV.some(item=>item.id===hash)||HIDDEN_VIEWS.includes(hash))&&hash!==state.view){state.view=hash;render();}
 });
 $('#theme-toggle')?.addEventListener('click',async()=>{
-  const next=document.documentElement.dataset.theme==='light'?'dark':'light';
-  document.documentElement.dataset.theme=next;
-  try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({theme:next})});state.data.settings.theme=next;}
-  catch(err){toast(err.message,true);}
+  const ids=THEMES.map(t=>t.id);
+  const next=ids[(ids.indexOf(document.documentElement.dataset.theme)+1)%ids.length];
+  try{await setTheme(next);if(state.view==='settings')render();}catch(err){toast(err.message,true);}
+});
+$('#quit-app')?.addEventListener('click',async()=>{
+  const busy=activeJob();
+  if(busy&&state.confirmQuit!==true){state.confirmQuit=true;toast('A search is running. Click Quit again to stop it and exit.');setTimeout(()=>{state.confirmQuit=false;},5000);return;}
+  try{
+    await api('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({force:!!busy})});
+    document.body.innerHTML='<div class="empty-rich" style="margin:20vh auto;max-width:460px"><h3>Daily Intelligence has stopped</h3><p>The local server has shut down. You can close this window and start the app again from the application menu.</p></div>';
+    setTimeout(()=>{try{window.close();}catch(e){}},800);
+  }catch(err){toast(err.message,true);}
 });
 $('#mobile-menu')?.addEventListener('click',()=>$('#sidebar')?.classList.toggle('open'));
+document.addEventListener('toggle',event=>{const d=event.target;if(d.dataset&&d.dataset.details)state.expanded[d.dataset.details]=d.open;},true);
 
 boot();

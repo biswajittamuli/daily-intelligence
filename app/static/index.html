@@ -1,47 +1,34 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="minimal-light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Daily Intelligence</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/app.css">
+  <script>try{var t=localStorage.getItem('di-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar" id="sidebar">
-      <a class="brand" href="#daily-briefing" aria-label="Daily Intelligence home">
-        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
-          <circle cx="24" cy="24" r="22" fill="#d9a21b"/>
-          <g stroke="#2b2019" stroke-width="2.2" stroke-linecap="round">
-            <path d="M24 9v30M9 24h30M13.4 13.4l21.2 21.2M34.6 13.4 13.4 34.6"/>
-          </g>
-          <circle cx="24" cy="24" r="6.5" fill="#00897b" stroke="#2b2019" stroke-width="2"/>
-          <circle cx="24" cy="9" r="2.6" fill="#c75a1f"/>
-          <circle cx="39" cy="24" r="2.6" fill="#c75a1f"/>
-          <circle cx="24" cy="39" r="2.6" fill="#c75a1f"/>
-          <circle cx="9" cy="24" r="2.6" fill="#c75a1f"/>
-        </svg>
-        <span><strong>Daily Intelligence</strong><small>Personal desk</small></span>
-      </a>
-      <div class="nav-caption">Workspace</div>
-      <nav id="navigation" aria-label="Primary navigation"></nav>
-      <div class="sidebar-bottom">
-        <div class="local-indicator"><i></i><span><b>Local workspace</b><small>Private by default</small></span></div>
-        <button class="profile-button" data-view="settings"><span class="avatar">B</span><span><b>Personal assistant</b><small>Resumes, preferences & models</small></span><span class="chevron">↗</span></button>
-        <div class="version-tag" id="version-tag"></div>
-      </div>
-    </aside>
-
-    <main class="main-shell">
-      <header class="topbar">
-        <button id="mobile-menu" class="icon-button mobile-only" aria-label="Toggle navigation">☰</button>
-        <div class="breadcrumbs"><span>Workspace</span><span class="crumb-sep">/</span><b id="page-crumb">Daily briefing</b></div>
-        <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local services</span><button class="icon-button" id="theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">◐</button></div>
-      </header>
-      <div class="page-wrap" id="page-content" aria-live="polite"></div>
-    </main>
-  </div>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#daily-briefing" aria-label="Daily Intelligence home">
+      <img class="brand-mark" src="/icon.svg" alt="">
+      <span><strong>Daily Intelligence</strong><small>Local workspace</small></span>
+    </a>
+    <nav id="navigation" aria-label="Primary navigation"></nav>
+    <div class="sidebar-bottom">
+      <a class="side-resume" href="#resumes" data-view="resumes" id="side-resume"><span>Active resume</span><b>—</b></a>
+      <div class="side-footer"><span id="version-tag"></span><button class="link-button" id="quit-app" title="Stop the local server">Quit</button></div>
+    </div>
+  </aside>
+  <main class="main-shell">
+    <header class="topbar">
+      <button id="mobile-menu" class="icon-button mobile-only" aria-label="Toggle navigation">☰</button>
+      <div class="breadcrumbs"><span>Workspace</span><span class="crumb-sep">/</span><b id="page-crumb">Daily briefing</b></div>
+      <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local</span><button class="icon-button" id="theme-toggle" title="Switch theme" aria-label="Switch theme">◐</button></div>
+    </header>
+    <div class="page-wrap" id="page-content" aria-live="polite"></div>
+  </main>
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js" defer></script>
 </body>

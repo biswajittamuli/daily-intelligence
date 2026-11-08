@@ -71,6 +71,11 @@ async def classify(request: str, settings: Settings, *, use_model: bool = True) 
         merged = list(dict.fromkeys(rules + [item for item in model_categories if item != "research"]))
         if not merged:
             merged = ["research"]
+        request_tokens = set(re.findall(r"[a-z0-9]+", request.casefold()))
+        query_tokens = re.findall(r"[a-z0-9]+", query.casefold())
+        grounded = query and all(token in request_tokens for token in query_tokens)
+        if len(merged) > 1 or not grounded:
+            query = request.strip()
         return {"categories": merged[:4], "query": query or request.strip(),
                 "source": "rules+local_model" if model_categories else "rules"}
     return result if rules else {**result, "categories": ["research"]}
@@ -90,6 +95,14 @@ async def run_universal(request: str, *, settings: Settings, store: Store, prefe
     else:
         intent = {"categories": categories, "query": request, "source": "scan_all"}
     query = intent["query"]
+    clauses = [part.strip() for part in re.split(r"\s+(?:and|also|plus)\s+|[;,]", request) if part.strip()]
+
+    def query_for(category: str) -> str:
+        """Give each section the part of a multi-part request that concerns it."""
+        if len(intent["categories"]) <= 1:
+            return query
+        own = [clause for clause in clauses if category in classify_rules(clause)]
+        return " ".join(own) or query
     pool = int(pool_size or preferences.get("jobs", {}).get("pool_size") or 100)
     results: dict[str, Any] = {}
     for index, category in enumerate(intent["categories"], 1):
@@ -101,7 +114,7 @@ async def run_universal(request: str, *, settings: Settings, store: Store, prefe
         try:
             if category == "jobs":
                 summary = await BroadJobSearch(settings, store, preferences).run(
-                    _strip_job_words(query) if categories is None else "", pool_size=pool,
+                    _strip_job_words(query_for("jobs")) if categories is None else "", pool_size=pool,
                     progress=step, cancel_event=cancel_event)
             elif category == "research":
                 if research is None:
@@ -112,7 +125,8 @@ async def run_universal(request: str, *, settings: Settings, store: Store, prefe
                                "sources": len(getattr(answer, "sources", []) or [])}
             else:
                 summary = await DiscoveryEngine(settings, store, preferences=preferences).run(
-                    category, query if categories is None else "", progress=step, cancel_event=cancel_event)
+                    category, query_for(category) if categories is None else "", progress=step,
+                    cancel_event=cancel_event)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # one failing category never hides the others

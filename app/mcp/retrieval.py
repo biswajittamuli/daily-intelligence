@@ -164,7 +164,7 @@ class ParallelWebRetriever:
             log.info("mcp tool=%s status=complete elapsed=%.2fs", name, time.perf_counter()-started)
         except Exception as exc:
             log.warning("mcp tool=%s status=failed error_type=%s", name, type(exc).__name__)
-            raise RetrievalError(f"MCP tool '{name}' failed: {exc}") from exc
+            raise RetrievalError(f"MCP tool '{name}' failed: {type(exc).__name__}{(': ' + str(exc)) if str(exc) else ''}") from exc
         if getattr(result, "is_error", False):
             raise RetrievalError(f"MCP tool '{name}' returned an error")
         return result

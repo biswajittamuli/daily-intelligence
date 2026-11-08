@@ -398,6 +398,9 @@ class Store:
         item["profile"] = _loads(item.pop("profile_json"), {})
         item["is_default"] = bool(item.get("is_default"))
         item["is_active"] = item["is_default"]
+        if isinstance(item["profile"], dict) and item["profile"] and not item["profile"].get("job_titles"):
+            from app.services.job_matching import infer_job_titles
+            item["profile"]["job_titles"] = infer_job_titles(item["profile"])
         # Compatibility with the single-profile API.
         item["resume_filename"] = item.get("filename")
         item["extracted_at"] = item.get("created_at")

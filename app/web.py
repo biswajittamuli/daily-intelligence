@@ -816,7 +816,7 @@ class Application:
             raise ValueError("Profile must be an object")
         clean = {}
         for key in ("education", "skills", "languages", "frameworks", "projects",
-                    "certifications", "keywords"):
+                    "certifications", "keywords", "job_titles"):
             value = profile.get(key)
             if isinstance(value, list):
                 clean[key] = [" ".join(str(item).split())[:160] for item in value
@@ -868,6 +868,10 @@ class Application:
                 params = self.query()
                 if path == "/":
                     return self.send(200, app.page(), "text/html; charset=utf-8")
+                if path in {"/icon.svg", "/favicon.ico"}:
+                    icon = Path(__file__).resolve().parent.parent / "desktop" / "daily-intelligence.svg"
+                    try: return self.send(200, icon.read_bytes(), "image/svg+xml")
+                    except OSError: return self.send(404, "Not found", "text/plain; charset=utf-8")
                 if path in {"/app.css", "/app.js"}:
                     name = path[1:]
                     typ = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
@@ -1001,7 +1005,9 @@ class Application:
                                                        {"category": category, "query": request,
                                                         "freshness": freshness,
                                                         "region": str(payload.get("region") or "").strip(),
-                                                        "topic": str(payload.get("topic") or "").strip()})
+                                                        "topic": str(payload.get("topic") or "").strip(),
+                                                        "pool_size": payload.get("pool_size"),
+                                                        "scan": bool(payload.get("scan"))})
                         if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
                         return self.json(202, {"id": job_id, "status": "queued", "category": category})
                     if path == "/api/planning/refresh":
@@ -1227,6 +1233,15 @@ def serve(open_browser=True, *, idle_timeout: float | None = None, pid_file: Pat
         server.shutdown()
 
     threading.Thread(target=watchdog, name="daily-intel-watchdog", daemon=True).start()
+    import signal
+    def _terminate(signum, frame):
+        log.info("signal %s received; shutting down", signum)
+        app.shutdown_requested.set()
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _terminate)
+        except (ValueError, OSError):
+            pass
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
