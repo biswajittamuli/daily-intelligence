@@ -106,20 +106,21 @@ def _job_plan(request: str, preferences: dict[str, Any], max_queries: int,
         queries.append(" ".join(part for part in (
             " ".join(role_bases[:2]), " ".join(skills[:3]), qualifier, "jobs") if part))
 
-    domains = portal_domains(preferences)
-    selected_domains = domains[:5]
+    custom = [str(site).strip().lower().removeprefix("https://").removeprefix("http://").strip("/")
+              for site in jobs.get("custom_sites") or []]
+    domains = list(dict.fromkeys([site for site in custom if site] + portal_domains(preferences)))
     site_base = role_bases[0] if role_bases else (base or "software")
-    for domain in selected_domains:
-        if domain:
-            queries.append(f"site:{domain} {site_base} {location}".strip())
-    # One unrestricted discovery query keeps the engine open to new sources,
-    # including individual company career pages.
-    queries.append(f"latest {base or site_base} job openings {qualifier} official careers apply".strip())
+    # Company career pages and one unrestricted query come before portal site:
+    # queries so truncation to max_queries never drops them.
     queries.append(f"{site_base} company career page apply {location} {recency}".strip())
-
+    queries.append(f"latest {base or site_base} job openings {qualifier} official careers apply".strip())
     employment = jobs.get("employment_types") or []
     if employment:
         queries.append(f"{site_base} {' '.join(employment[:2])} {location}".strip())
+    remaining = max(0, max_queries - len(_dedupe(queries, max_queries)))
+    selected_domains = [domain for domain in domains if domain][:max(2, remaining)]
+    for domain in selected_domains:
+        queries.append(f"site:{domain} {site_base} {location} {month}".strip())
     return QueryPlan(
         category="jobs",
         objective=(f"Find currently verifiable job listings for: {base or ', '.join(role_bases[:3])}. "
@@ -190,30 +191,47 @@ def _exam_plan(request: str, preferences: dict[str, Any], max_queries: int,
 
 
 def _topic_plan(category: str, request: str, preferences: dict[str, Any],
-                max_queries: int, freshness_days: int | None) -> QueryPlan:
+                max_queries: int, freshness_days: int | None,
+                region: str | None = None, topic: str = "") -> QueryPlan:
+    from app.services.news_taxonomy import region_query, region_sources, topic_query
+
     interests = interests_for(preferences, category)
-    base = _clean(request) or " ".join(interests[:3])
+    topic_terms = topic_query(topic) if topic else ""
+    base = _clean(request) or (topic_terms if category == "news" and topic_terms else "") \
+        or " ".join(interests[:2])
     if not base:
         base = "artificial intelligence" if category == "news" else "machine learning research"
     sources = [str(item).strip() for item in preferences.get(category, {}).get("sources", []) if str(item).strip()]
-    region = str(preferences.get(category, {}).get("region") or "").strip()
-    region_clause = region if region and region.casefold() not in base.casefold() else ""
+    if region is None:
+        region = str(preferences.get(category, {}).get("region") or "").strip()
+    region = "" if region.casefold() in {"global", "all", "any"} else region
+    region_clause = region_query(region) if region and region.casefold() not in base.casefold() else ""
     month = date.today().strftime("%B %Y")
     if category == "papers":
         queries = [base, f"{base} arXiv", f"{base} paper benchmark dataset", f"site:arxiv.org {base}"]
+    elif region_clause:
+        # Regional news: every query carries the region so results are not generic.
+        queries = [f"{base} {region_clause} news {month}",
+                   f"{region_clause} AI {topic_terms or 'startups government industry'} {month}",
+                   f"latest {base} {region_clause} announcement"]
+        for source in region_sources(region)[:3]:
+            queries.append(f"site:{source} {topic_terms or 'AI'}")
+        if region == "India":
+            queries.append(f"IndiaAI mission MeitY {topic_terms or 'AI'} {month}")
     else:
         queries = [base, f"{base} {month}", f"latest {base} announcement"]
-        if region_clause:
-            queries.append(f"{base} {region_clause}")
-            queries.append(f"{base} {region_clause} policy industry adoption")
+        if topic_terms and topic_terms not in base:
+            queries.append(f"{topic_terms} {month}")
         queries.append(f"{base} official blog")
     for source in sources[:2]:
         queries.append(f"site:{source} {base}")
     return QueryPlan(
         category=category,
         objective=(f"Find recent, substantive {CATEGORY_LABELS.get(category, category).lower()} about: {base}"
-                   f"{(' in ' + region) if region_clause else ''}. "
-                   "Prefer original announcements, papers and documentation over aggregators."),
+                   f"{(' in or about ' + region) if region_clause else ''}"
+                   f"{(' — topic: ' + topic) if topic else ''}. "
+                   "Prefer specific, dated stories from original publishers over listicles, "
+                   "explainers, vendor marketing and aggregators."),
         queries=_dedupe(queries, max_queries),
         freshness_days=freshness_days,
         source_guidance="Original publishers and repositories; exclude promotional duplicates.",
@@ -224,7 +242,8 @@ def _topic_plan(category: str, request: str, preferences: dict[str, Any],
 def build_plan(category: str, request: str, preferences: dict[str, Any], *,
                max_queries: int = 6, freshness_days: int | None = None,
                organizations: list[str] | None = None,
-               exams: list[str] | None = None) -> QueryPlan:
+               exams: list[str] | None = None,
+               region: str | None = None, topic: str = "") -> QueryPlan:
     if category == "jobs":
         return _job_plan(request, preferences, max_queries, freshness_days)
     if category == "government":
@@ -232,7 +251,8 @@ def build_plan(category: str, request: str, preferences: dict[str, Any], *,
     if category == "exams":
         return _exam_plan(request, preferences, max_queries, freshness_days, exams or [])
     if category in {"news", "papers"}:
-        return _topic_plan(category, request, preferences, max_queries, freshness_days)
+        return _topic_plan(category, request, preferences, max_queries, freshness_days,
+                           region=region, topic=topic)
     raise ValueError(f"Unknown discovery category: {category}")
 
 

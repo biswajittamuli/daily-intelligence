@@ -98,6 +98,11 @@ CREATE TABLE IF NOT EXISTS candidate_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1), profile_json TEXT NOT NULL,
     resume_filename TEXT, extracted_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS resumes (
+    id INTEGER PRIMARY KEY, label TEXT NOT NULL, filename TEXT,
+    profile_json TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_jobs_last_seen ON job_listings(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_notices_last_seen ON recruitment_notices(last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_exam_events_date ON exam_events(event_date);
@@ -106,11 +111,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON search_sessions(created_at DE
 """
 
 JSON_COLUMNS = {
-    "job_listings": ("skills_json", "evidence_json", "raw_json"),
+    "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json"),
     "recruitment_notices": ("evidence_json", "raw_json"),
     "exam_events": ("evidence_json", "raw_json"),
     "intel_items": ("evidence_json", "raw_json"),
 }
+
+
+def _resume_label(filename: str | None) -> str:
+    stem = Path(str(filename or "Resume")).stem
+    clean = " ".join(stem.replace("_", " ").replace("-", " ").split())
+    return clean[:60] or "Resume"
 
 
 def _json(value: Any) -> str | None:
@@ -141,12 +152,26 @@ class Store:
         """Add columns introduced after a database was first created."""
         additions = {
             "intel_items": {"region": "TEXT", "topic": "TEXT"},
+            "job_listings": {"best_resume_id": "INTEGER", "best_resume_label": "TEXT",
+                             "resume_scores_json": "TEXT"},
+            "tasks": {"due_time": "TEXT", "recurrence": "TEXT", "category": "TEXT",
+                      "archived": "INTEGER NOT NULL DEFAULT 0", "original_text": "TEXT"},
+            "saved_items": {"applied_at": "TEXT", "resume_id": "INTEGER", "note": "TEXT"},
         }
         for table, columns in additions.items():
             existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
             for name, kind in columns.items():
                 if name not in existing:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        # Move the legacy single-row profile into the multi-resume table once.
+        has_resumes = db.execute("SELECT COUNT(*) AS n FROM resumes").fetchone()["n"]
+        legacy = db.execute("SELECT * FROM candidate_profile WHERE id=1").fetchone()
+        if not has_resumes and legacy:
+            label = _resume_label(legacy["resume_filename"])
+            db.execute("""INSERT INTO resumes(label,filename,profile_json,is_default,created_at,updated_at)
+                          VALUES(?,?,?,1,?,?)""",
+                       (label, legacy["resume_filename"], legacy["profile_json"],
+                        legacy["extracted_at"], legacy["updated_at"]))
 
     @contextmanager
     def connect(self):
@@ -166,11 +191,18 @@ class Store:
         return datetime.now(timezone.utc).isoformat()
 
     # ------------------------------------------------------------------ tasks
-    def add_task(self, text: str, due_date: str | None = None, source: str = "user") -> int:
+    def add_task(self, text: str, due_date: str | None = None, source: str = "user", *,
+                 due_time: str | None = None, recurrence: str | None = None,
+                 category: str | None = None) -> int:
         with self.connect() as db:
-            cur = db.execute("INSERT INTO tasks(text,due_date,status,source,updated_at) VALUES(?,?,'pending',?,?)",
-                             (text.strip(), due_date, source, self.now()))
+            cur = db.execute("""INSERT INTO tasks(text,due_date,status,source,updated_at,due_time,recurrence,category)
+                                VALUES(?,?,'pending',?,?,?,?,?)""",
+                             (text.strip(), due_date, source, self.now(), due_time, recurrence, category))
             return int(cur.lastrowid)
+
+    def delete_task(self, task_id: int) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM tasks WHERE id=?", (task_id,))
 
     def set_task_status(self, task_id: int, status: str) -> None:
         if status not in {"pending", "completed"}:
@@ -178,17 +210,52 @@ class Store:
         with self.connect() as db:
             db.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", (status, self.now(), task_id))
 
-    def tasks(self) -> list[dict[str, Any]]:
+    def tasks(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_archived else "WHERE COALESCE(archived,0)=0"
         with self.connect() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM tasks ORDER BY COALESCE(due_date,'9999'), id")]
+            return [dict(row) for row in db.execute(
+                f"SELECT * FROM tasks {where} ORDER BY COALESCE(due_date,'9999'), COALESCE(due_time,'99'), id")]
 
-    def import_tasks(self, tasks: list[dict[str, Any]]) -> None:
+    def import_tasks(self, tasks: list[dict[str, Any]], *, sync_sources: list[str] | None = None) -> dict[str, int]:
+        """Import note tasks. Notes are the source of truth for their own tasks:
+
+        - a task already imported from the same file is updated (date, time, category);
+        - a task whose line disappeared from a file listed in ``sync_sources`` is archived;
+        - completion toggled in the app is kept unless the note itself marks it done.
+        """
+        stats = {"added": 0, "updated": 0, "archived": 0}
+        now = self.now()
         with self.connect() as db:
+            seen: dict[str, set[int]] = {}
             for task in tasks:
-                exists = db.execute("SELECT 1 FROM tasks WHERE text=? AND source=?", (task["text"], task["source"])).fetchone()
-                if not exists:
-                    db.execute("INSERT INTO tasks(text,due_date,status,source,updated_at) VALUES(?,?,?,?,?)",
-                               (task["text"], task.get("due_date"), task["status"], task["source"], self.now()))
+                row = db.execute("SELECT id,status FROM tasks WHERE text=? AND source=?",
+                                 (task["text"], task["source"])).fetchone()
+                if row:
+                    status = "completed" if task["status"] == "completed" else row["status"]
+                    db.execute("""UPDATE tasks SET due_date=?, due_time=?, recurrence=?, category=?,
+                                  original_text=?, status=?, archived=0, updated_at=? WHERE id=?""",
+                               (task.get("due_date"), task.get("due_time"), task.get("recurrence"),
+                                task.get("category"), task.get("original_text"), status, now, row["id"]))
+                    stats["updated"] += 1
+                    task_id = int(row["id"])
+                else:
+                    cur = db.execute("""INSERT INTO tasks(text,due_date,status,source,updated_at,due_time,
+                                        recurrence,category,original_text,archived) VALUES(?,?,?,?,?,?,?,?,?,0)""",
+                                     (task["text"], task.get("due_date"), task["status"], task["source"], now,
+                                      task.get("due_time"), task.get("recurrence"), task.get("category"),
+                                      task.get("original_text")))
+                    stats["added"] += 1
+                    task_id = int(cur.lastrowid)
+                seen.setdefault(task["source"], set()).add(task_id)
+            for source in sync_sources or []:
+                keep = seen.get(source, set())
+                rows = db.execute("SELECT id FROM tasks WHERE source=? AND COALESCE(archived,0)=0",
+                                  (source,)).fetchall()
+                for row in rows:
+                    if int(row["id"]) not in keep:
+                        db.execute("UPDATE tasks SET archived=1, updated_at=? WHERE id=?", (now, row["id"]))
+                        stats["archived"] += 1
+        return stats
 
     # ---------------------------------------------------------------- history
     def start_history(self, kind: str, request: str) -> int:
@@ -292,23 +359,103 @@ class Store:
             db.execute(f"DELETE FROM {table} WHERE name=?", (name,))
 
     # ---------------------------------------------------------------- profile
-    def profile(self) -> dict[str, Any] | None:
-        with self.connect() as db:
-            row = db.execute("SELECT * FROM candidate_profile WHERE id=1").fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _resume_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
         item["profile"] = _loads(item.pop("profile_json"), {})
+        item["is_default"] = bool(item.get("is_default"))
+        # Compatibility with the single-profile API.
+        item["resume_filename"] = item.get("filename")
+        item["extracted_at"] = item.get("created_at")
         return item
 
-    def save_profile(self, profile: dict[str, Any], filename: str | None = None) -> None:
+    def resumes(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute("SELECT * FROM resumes ORDER BY is_default DESC, id").fetchall()
+        return [self._resume_row(row) for row in rows]
+
+    def resume(self, resume_id: int) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM resumes WHERE id=?", (resume_id,)).fetchone()
+        return self._resume_row(row) if row else None
+
+    def add_resume(self, profile: dict[str, Any], filename: str | None = None,
+                   label: str | None = None, *, make_default: bool = False) -> int:
+        now = self.now()
+        clean_label = " ".join(str(label or "").split())[:60] or _resume_label(filename)
+        with self.connect() as db:
+            first = db.execute("SELECT COUNT(*) AS n FROM resumes").fetchone()["n"] == 0
+            if make_default or first:
+                db.execute("UPDATE resumes SET is_default=0")
+            cur = db.execute("""INSERT INTO resumes(label,filename,profile_json,is_default,created_at,updated_at)
+                                VALUES(?,?,?,?,?,?)""",
+                             (clean_label, filename, _json(profile), 1 if (make_default or first) else 0, now, now))
+            resume_id = int(cur.lastrowid)
+            if make_default or first:
+                self._sync_legacy_profile(db, profile, filename, now)
+            return resume_id
+
+    def update_resume(self, resume_id: int, *, profile: dict[str, Any] | None = None,
+                      label: str | None = None) -> None:
         now = self.now()
         with self.connect() as db:
-            db.execute("""INSERT INTO candidate_profile(id,profile_json,resume_filename,extracted_at,updated_at)
-                          VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-                          profile_json=excluded.profile_json, resume_filename=excluded.resume_filename,
-                          updated_at=excluded.updated_at""",
-                       (_json(profile), filename, now, now))
+            if profile is not None:
+                db.execute("UPDATE resumes SET profile_json=?, updated_at=? WHERE id=?",
+                           (_json(profile), now, resume_id))
+            if label is not None and " ".join(label.split()):
+                db.execute("UPDATE resumes SET label=?, updated_at=? WHERE id=?",
+                           (" ".join(label.split())[:60], now, resume_id))
+            row = db.execute("SELECT * FROM resumes WHERE id=?", (resume_id,)).fetchone()
+            if row and row["is_default"]:
+                self._sync_legacy_profile(db, _loads(row["profile_json"], {}), row["filename"], now)
+
+    def set_default_resume(self, resume_id: int) -> None:
+        now = self.now()
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM resumes WHERE id=?", (resume_id,)).fetchone()
+            if not row:
+                raise ValueError("Resume not found")
+            db.execute("UPDATE resumes SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END", (resume_id,))
+            self._sync_legacy_profile(db, _loads(row["profile_json"], {}), row["filename"], now)
+
+    def delete_resume(self, resume_id: int) -> None:
+        now = self.now()
+        with self.connect() as db:
+            row = db.execute("SELECT is_default FROM resumes WHERE id=?", (resume_id,)).fetchone()
+            db.execute("DELETE FROM resumes WHERE id=?", (resume_id,))
+            if row and row["is_default"]:
+                nxt = db.execute("SELECT * FROM resumes ORDER BY id LIMIT 1").fetchone()
+                if nxt:
+                    db.execute("UPDATE resumes SET is_default=1 WHERE id=?", (nxt["id"],))
+                    self._sync_legacy_profile(db, _loads(nxt["profile_json"], {}), nxt["filename"], now)
+                else:
+                    db.execute("DELETE FROM candidate_profile WHERE id=1")
+
+    @staticmethod
+    def _sync_legacy_profile(db: sqlite3.Connection, profile: dict[str, Any],
+                             filename: str | None, now: str) -> None:
+        db.execute("""INSERT INTO candidate_profile(id,profile_json,resume_filename,extracted_at,updated_at)
+                      VALUES(1,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                      profile_json=excluded.profile_json, resume_filename=excluded.resume_filename,
+                      updated_at=excluded.updated_at""",
+                   (_json(profile), filename, now, now))
+
+    def profile(self) -> dict[str, Any] | None:
+        """The default resume profile (single-profile compatibility)."""
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM resumes WHERE is_default=1 ORDER BY id LIMIT 1").fetchone()
+        return self._resume_row(row) if row else None
+
+    def save_profile(self, profile: dict[str, Any], filename: str | None = None) -> None:
+        """Replace the default resume's profile, creating one if none exists."""
+        current = self.profile()
+        if current:
+            with self.connect() as db:
+                db.execute("UPDATE resumes SET profile_json=?, filename=COALESCE(?, filename), updated_at=? WHERE id=?",
+                           (_json(profile), filename, self.now(), current["id"]))
+                self._sync_legacy_profile(db, profile, filename or current.get("filename"), self.now())
+        else:
+            self.add_resume(profile, filename, make_default=True)
 
     # ------------------------------------------------------------ job listings
     def upsert_jobs(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -325,8 +472,9 @@ class Store:
                 db.execute("""INSERT INTO job_listings(
                     canonical_url,original_url,employer,title,location,remote,employment_type,
                     experience,skills_json,salary,posted_date,deadline,status,source_platform,
-                    match_score,match_reason,evidence_json,raw_json,first_seen,last_seen,last_verified)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    match_score,match_reason,evidence_json,raw_json,first_seen,last_seen,last_verified,
+                    best_resume_id,best_resume_label,resume_scores_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(canonical_url) DO UPDATE SET
                     original_url=excluded.original_url, employer=excluded.employer, title=excluded.title,
                     location=excluded.location, remote=excluded.remote, employment_type=excluded.employment_type,
@@ -334,23 +482,42 @@ class Store:
                     posted_date=excluded.posted_date, deadline=excluded.deadline, status=excluded.status,
                     source_platform=excluded.source_platform, match_score=excluded.match_score,
                     match_reason=excluded.match_reason, evidence_json=excluded.evidence_json,
-                    raw_json=excluded.raw_json, last_seen=excluded.last_seen, last_verified=excluded.last_verified""",
+                    raw_json=excluded.raw_json, last_seen=excluded.last_seen, last_verified=excluded.last_verified,
+                    best_resume_id=excluded.best_resume_id, best_resume_label=excluded.best_resume_label,
+                    resume_scores_json=excluded.resume_scores_json""",
                     (url, original, record.get("employer"), record.get("title") or "Untitled role",
                      record.get("location"), record.get("remote"), record.get("employment_type"),
                      record.get("experience"), _json(record.get("skills") or []), record.get("salary"),
                      record.get("posted_date"), record.get("deadline"), record.get("status") or "unverified",
                      record.get("source_platform"), record.get("match_score"), record.get("match_reason"),
                      _json(record.get("evidence") or []), _json(record.get("raw")), first_seen, now,
-                     record.get("last_verified") or now))
+                     record.get("last_verified") or now, record.get("best_resume_id"),
+                     record.get("best_resume_label"), _json(record.get("resume_scores"))))
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "job_listings"))
         return saved
 
-    def jobs(self, *, query: str = "", status: str = "", limit: int = 100) -> list[dict[str, Any]]:
+    def jobs(self, *, query: str = "", status: str = "", limit: int = 100,
+             fresh_only: bool = False, max_age_days: int = 45,
+             stale_after_days: int = 21) -> list[dict[str, Any]]:
         with self.connect() as db:
             rows = db.execute("SELECT * FROM job_listings ORDER BY COALESCE(posted_date,'') DESC, last_seen DESC LIMIT ?",
-                              (max(1, min(limit, 500)),)).fetchall()
+                              (max(1, min(limit, 2000)),)).fetchall()
         items = [self._row(row, "job_listings") for row in rows]
+        if fresh_only:
+            today = date.today()
+            fresh = []
+            for item in items:
+                if item.get("status") in {"expired", "closed"}:
+                    continue
+                posted = _iso_date(item.get("posted_date"))
+                if posted and (today - posted).days > max_age_days:
+                    continue
+                seen = _iso_date(str(item.get("last_seen") or "")[:10])
+                if seen and (today - seen).days > stale_after_days:
+                    continue
+                fresh.append(item)
+            items = fresh
         if query:
             needle = query.casefold()
             items = [item for item in items
@@ -524,15 +691,37 @@ class Store:
         return items
 
     # ------------------------------------------------------------- item state
-    def set_item_state(self, kind: str, item_id: int, state: str) -> None:
-        if state not in {"saved", "applied", "dismissed", "follow_up", "completed", "seen"}:
+    ITEM_STATES = {"saved", "applied", "interview", "offer", "rejected", "dismissed",
+                   "follow_up", "completed", "seen"}
+
+    def set_item_state(self, kind: str, item_id: int, state: str, *,
+                       resume_id: int | None = None, note: str | None = None) -> None:
+        if state not in self.ITEM_STATES:
             raise ValueError("Unsupported item state")
         now = self.now()
         with self.connect() as db:
-            db.execute("""INSERT INTO saved_items(kind,item_id,state,created_at,updated_at) VALUES(?,?,?,?,?)
+            db.execute("""INSERT INTO saved_items(kind,item_id,state,created_at,updated_at,applied_at,resume_id,note)
+                          VALUES(?,?,?,?,?,?,?,?)
                           ON CONFLICT(kind,item_id) DO UPDATE SET state=excluded.state,
-                          updated_at=excluded.updated_at""",
-                       (kind, int(item_id), state, now, now))
+                          updated_at=excluded.updated_at,
+                          applied_at=COALESCE(saved_items.applied_at, excluded.applied_at),
+                          resume_id=COALESCE(excluded.resume_id, saved_items.resume_id),
+                          note=COALESCE(excluded.note, saved_items.note)""",
+                       (kind, int(item_id), state, now, now, now if state == "applied" else None,
+                        resume_id, (note or None) and " ".join(note.split())[:500]))
+
+    def clear_item_state(self, kind: str, item_id: int) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM saved_items WHERE kind=? AND item_id=?", (kind, int(item_id)))
+
+    def tracker(self) -> list[dict[str, Any]]:
+        """Jobs in the application pipeline, joined with their listing."""
+        with self.connect() as db:
+            rows = db.execute("""SELECT s.state, s.applied_at, s.resume_id, s.note, s.updated_at AS state_updated_at,
+                                        j.* FROM saved_items s JOIN job_listings j ON j.id=s.item_id
+                                 WHERE s.kind='job' AND s.state NOT IN ('dismissed','seen')
+                                 ORDER BY s.updated_at DESC""").fetchall()
+        return [self._row(row, "job_listings") for row in rows]
 
     def item_states(self) -> dict[str, dict[int, str]]:
         with self.connect() as db:
@@ -599,7 +788,7 @@ class Store:
             for table in ("tasks", "history", "briefings", "preferences",
                           "job_listings", "recruitment_notices", "exam_events",
                           "intel_items", "exam_watchlist", "organization_watchlist",
-                          "saved_items", "search_sessions", "candidate_profile"):
+                          "saved_items", "search_sessions", "candidate_profile", "resumes"):
                 rows = [dict(row) for row in db.execute(f"SELECT * FROM {table}")]
                 for row in rows:
                     for key in list(row):
@@ -624,9 +813,27 @@ class Store:
                 "papers": int(db.execute("SELECT COUNT(*) AS n FROM intel_items WHERE category='papers'").fetchone()["n"]),
             }
 
+    def update_job_matches(self, updates: list[dict[str, Any]]) -> None:
+        with self.connect() as db:
+            for update in updates:
+                db.execute("""UPDATE job_listings SET match_score=?, match_reason=?, best_resume_id=?,
+                              best_resume_label=?, resume_scores_json=? WHERE id=?""",
+                           (update.get("match_score"), update.get("match_reason"),
+                            update.get("best_resume_id"), update.get("best_resume_label"),
+                            _json(update.get("resume_scores")), update["id"]))
+
     def _row(self, row: sqlite3.Row, table: str) -> dict[str, Any]:
         item = dict(row)
         for column in JSON_COLUMNS.get(table, ()):
+            if column not in item:
+                continue
             key = column.removesuffix("_json")
-            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence"} else {})
+            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores"} else {})
         return item
+
+
+def _iso_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:
+        return None

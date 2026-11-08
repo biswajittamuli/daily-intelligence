@@ -26,7 +26,9 @@ ROLE_FAMILIES: list[tuple[str, re.Pattern[str] | None]] = [
     ("Mobile", re.compile(r"\b(android|ios|mobile|flutter|react native)\b", re.I)),
     ("Security", re.compile(r"\b(security|cyber|soc analyst|penetration)\b", re.I)),
     ("Research", re.compile(r"\b(research|phd|postdoc)\b", re.I)),
+    ("QA / Testing", re.compile(r"\b(qa|sdet|test(?:ing)? engineer|quality assurance|automation tester)\b", re.I)),
     ("Product / Program", re.compile(r"\b(product manager|program manager|project manager|scrum)\b", re.I)),
+    ("Software (general)", re.compile(r"\b(software (?:engineer|developer)|sde|programmer|swe)\b", re.I)),
 ]
 
 SKILL_ALIASES = {
@@ -91,6 +93,10 @@ def _job_skills(job: dict[str, Any]) -> set[str]:
     return skills
 
 
+def role_family(title: str) -> str:
+    return _role_family(title)
+
+
 def _role_family(title: str) -> str:
     for name, pattern in ROLE_FAMILIES:
         if pattern and pattern.search(title):
@@ -138,8 +144,14 @@ def _top(counter: Counter[str], limit: int = 12) -> list[dict[str, Any]]:
             for name, count in counter.most_common(limit) if name and count]
 
 
-def job_market(jobs: list[dict[str, Any]], *, today: date | None = None) -> dict[str, Any]:
+def _week_start(value: date) -> date:
+    return value.fromordinal(value.toordinal() - value.weekday())
+
+
+def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
+               resumes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     today = today or date.today()
+    resumes = resumes or []
     skills: Counter[str] = Counter()
     roles: Counter[str] = Counter()
     portals: Counter[str] = Counter()
@@ -147,18 +159,31 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None) -> dict
     freshness: Counter[str] = Counter()
     status: Counter[str] = Counter()
     skill_by_portal: dict[str, Counter[str]] = {}
+    skill_by_role: dict[str, Counter[str]] = {}
+    skill_by_kind: dict[str, Counter[str]] = {"Job board": Counter(), "Company / other": Counter()}
+    employers: Counter[str] = Counter()
+    weekly: Counter[str] = Counter()
 
     for job in jobs:
         title = str(job.get("title") or "")
-        roles[_role_family(title)] += 1
+        family = _role_family(title)
+        roles[family] += 1
         portal = _portal_name(job)
         portals[portal] += 1
+        kind = _portal_kind(portal)
+        if job.get("employer"):
+            employers[" ".join(str(job["employer"]).split())[:60]] += 1
+        seen_on = parse_date(job.get("posted_date")) or parse_date(str(job.get("first_seen") or "")[:10])
+        if seen_on and 0 <= (today - seen_on).days <= 84:
+            weekly[_week_start(seen_on).isoformat()] += 1
         locations[_location(str(job.get("location") or ""))] += 1
         freshness[_freshness_bucket(job.get("posted_date"), today)] += 1
         status[str(job.get("status") or "unverified")] += 1
         job_skills = _job_skills(job)
         skills.update(job_skills)
         skill_by_portal.setdefault(portal, Counter()).update(job_skills)
+        skill_by_role.setdefault(family, Counter()).update(job_skills)
+        skill_by_kind[kind].update(job_skills)
 
     top_skills = _top(skills, 12)
     top_portals = _top(portals, 8)
@@ -166,6 +191,44 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None) -> dict
     portal_names = [item["name"] for item in top_portals[:6]]
     matrix = [[skill_by_portal.get(portal, Counter()).get(skill, 0) for skill in skill_names]
               for portal in portal_names]
+
+    role_names = [item["name"] for item in _top(roles, 8) if item["name"] != "Other"][:7]
+    role_matrix = [[skill_by_role.get(role, Counter()).get(skill, 0) for skill in skill_names]
+                   for role in role_names]
+    board_vs_company = [{"name": skill,
+                         "board": skill_by_kind["Job board"].get(skill, 0),
+                         "company": skill_by_kind["Company / other"].get(skill, 0)}
+                        for skill in [item["name"] for item in top_skills[:10]]]
+    weeks = []
+    start = _week_start(today)
+    for offset in range(11, -1, -1):
+        week = start.fromordinal(start.toordinal() - 7 * offset)
+        weeks.append({"name": week.isoformat(), "count": weekly.get(week.isoformat(), 0)})
+
+    resume_skills: set[str] = set()
+    for resume in resumes:
+        profile = resume.get("profile") or {}
+        for key in ("skills", "frameworks", "languages", "keywords"):
+            resume_skills.update(" ".join(str(item).split()).casefold() for item in profile.get(key) or [])
+    gap = [{"name": item["name"], "count": item["count"]} for item in _top(skills, 30)
+           if resumes and item["name"].casefold() not in resume_skills][:10]
+    have = [{"name": item["name"], "count": item["count"]} for item in _top(skills, 30)
+            if resumes and item["name"].casefold() in resume_skills][:10]
+
+    resume_fit: list[dict[str, Any]] = []
+    if resumes:
+        by_resume: dict[Any, dict[str, list[int]]] = {}
+        for job in jobs:
+            family = _role_family(str(job.get("title") or ""))
+            for entry in job.get("resume_scores") or []:
+                if isinstance(entry, dict) and entry.get("score") is not None:
+                    by_resume.setdefault(entry.get("label"), {}).setdefault(family, []).append(int(entry["score"]))
+        for label, families in by_resume.items():
+            resume_fit.append({"label": label, "families": {
+                family: round(sum(values) / len(values)) for family, values in families.items()}})
+
+    best_resume_counts: Counter[str] = Counter(
+        str(job.get("best_resume_label")) for job in jobs if job.get("best_resume_label"))
 
     total = len(jobs)
     recent = sum(count for label, count in freshness.items()
@@ -192,6 +255,14 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None) -> dict
                                    "Future-dated", "Undated")],
         "status": [{"name": name, "count": count} for name, count in status.most_common()],
         "skills_by_portal": {"portals": portal_names, "skills": skill_names, "matrix": matrix},
+        "skills_by_role": {"roles": role_names, "skills": skill_names, "matrix": role_matrix},
+        "board_vs_company": board_vs_company,
+        "weekly": weeks,
+        "employers": _top(employers, 10),
+        "skill_gap": gap,
+        "skill_strengths": have,
+        "resume_fit": resume_fit,
+        "best_resume": _top(best_resume_counts, 6),
         "recent": sorted(
             (job for job in jobs if job.get("posted_date")),
             key=lambda job: str(job.get("posted_date")), reverse=True,

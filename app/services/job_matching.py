@@ -130,3 +130,84 @@ def score_job(listing: dict[str, Any], preferences: dict[str, Any],
         "reasons": reasons,
         "reasons_text": " ".join(reasons) if reasons else "Limited evidence available.",
     }
+
+
+def _skill_set(values: Any) -> set[str]:
+    if isinstance(values, str):
+        values = [values]
+    return {" ".join(str(item).split()).casefold() for item in values or [] if str(item).strip()}
+
+
+def resume_fit(listing: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    """Explainable resume-vs-listing fit, independent of search preferences.
+
+    Skill coverage (60%): share of the listing's skills the resume names.
+    Title overlap (30%): listing title terms found in resume skills/keywords/projects.
+    Experience (10%): resume years vs. the listing's stated minimum.
+    Returns matched/missing skills for tailoring hints.
+    """
+    profile = profile or {}
+    resume_skills = _skill_set(profile.get("skills")) | _skill_set(profile.get("frameworks")) \
+        | _skill_set(profile.get("languages")) | _skill_set(profile.get("keywords"))
+    resume_terms = terms(list(resume_skills)) | terms(profile.get("projects")) | terms(profile.get("keywords"))
+    listing_skills = list(dict.fromkeys(str(item) for item in listing.get("skills") or [] if str(item).strip()))
+    matched = [skill for skill in listing_skills
+               if skill.casefold() in resume_skills or terms(skill) <= resume_terms]
+    missing = [skill for skill in listing_skills if skill not in matched]
+
+    coverage = (len(matched) / len(listing_skills)) if listing_skills else None
+    title_terms = terms(listing.get("title")) - {"senior", "junior", "lead", "intern", "engineer",
+                                                  "developer", "jobs", "job", "india", "remote"}
+    title_overlap = (len(title_terms & resume_terms) / len(title_terms)) if title_terms else None
+    years_needed = _experience_years(listing)
+    try:
+        years_have = int(profile.get("experience_years") or 0)
+    except (TypeError, ValueError):
+        years_have = 0
+    experience = None if years_needed is None else (1.0 if years_have >= years_needed
+                                                    else max(0.0, 1 - (years_needed - years_have) / 4))
+    parts = [(coverage, 60), (title_overlap, 30), (experience, 10)]
+    weight = sum(w for value, w in parts if value is not None)
+    if not weight:
+        return {"score": None, "matched": [], "missing": [], "evidence": "insufficient"}
+    score = round(sum((value or 0) * w for value, w in parts if value is not None) / weight * 100)
+    return {"score": score, "matched": matched[:12], "missing": missing[:12],
+            "evidence": "skills" if coverage is not None else "title"}
+
+
+def best_resume_match(listing: dict[str, Any], preferences: dict[str, Any],
+                      resumes: list[dict[str, Any]], today: date | None = None) -> dict[str, Any]:
+    """Score a listing against every stored resume and pick the best one.
+
+    The overall match score blends preference fit (score_job with that resume) and
+    the resume's own fit, so the chosen resume is the one that best evidences the role.
+    """
+    if not resumes:
+        result = score_job(listing, preferences, None, today)
+        return {"match_score": result["score"], "match_reason": result["reasons_text"],
+                "best_resume_id": None, "best_resume_label": None, "resume_scores": []}
+    scored = []
+    for resume in resumes:
+        profile = resume.get("profile") or {}
+        base = score_job(listing, preferences, profile, today)
+        fit = resume_fit(listing, profile)
+        values = [value for value in (base["score"], fit["score"]) if value is not None]
+        combined = round(sum(values) / len(values)) if values else None
+        scored.append({
+            "resume_id": resume.get("id"), "label": resume.get("label") or resume.get("filename"),
+            "score": combined, "fit": fit["score"], "matched": fit["matched"],
+            "missing": fit["missing"], "reasons": base["reasons_text"],
+            "is_default": bool(resume.get("is_default")),
+        })
+    scored.sort(key=lambda item: (item["score"] is not None, item["score"] or 0, item["is_default"]),
+                reverse=True)
+    best = scored[0]
+    reason = best["reasons"]
+    if best["matched"]:
+        reason += f" Resume covers: {', '.join(best['matched'][:5])}."
+    if best["missing"]:
+        reason += f" Missing: {', '.join(best['missing'][:4])}."
+    return {"match_score": best["score"], "match_reason": reason.strip(),
+            "best_resume_id": best["resume_id"], "best_resume_label": best["label"],
+            "resume_scores": [{key: item[key] for key in ("resume_id", "label", "score", "fit",
+                                                          "matched", "missing")} for item in scored]}

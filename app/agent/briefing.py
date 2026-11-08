@@ -93,12 +93,14 @@ class BriefingService:
 
         try:
             step("Reading Planning notes")
-            notes = read_planning_notes(self.settings.notes_dir, date.today(), max_files=1)
-            self.store.import_tasks(notes["tasks"])
+            notes = read_planning_notes(self.settings.notes_dir, date.today())
+            self.store.import_tasks(notes["tasks"], sync_sources=notes.get("sources", []))
             if cancel_event and cancel_event.is_set():
                 raise asyncio.CancelledError
 
-            jobs = self.store.jobs(limit=20)
+            jobs = self.store.jobs(limit=60, fresh_only=True)
+            jobs.sort(key=lambda job: (job.get("match_score") or 0, job.get("posted_date") or ""), reverse=True)
+            jobs = jobs[:20]
             notices = self.store.notices(limit=20)
             exams = self.store.exams(upcoming_only=True, limit=20)
             news = self.store.intel(category="news", limit=20)
@@ -128,6 +130,19 @@ class BriefingService:
             changes = self._changes(previous_urls, jobs, notices, exams, news, papers)
             deadlines = self._deadlines(all_tasks, notices, exams)
             sections = self._sections(live_section, jobs, notices, exams, news, papers)
+            try:
+                from app.services.insights import job_market
+                from app.services.today_plan import build_today_plan
+                market = job_market(self.store.jobs(limit=600, fresh_only=True), resumes=self.store.resumes())
+                today_plan = build_today_plan(tasks=all_tasks, jobs=jobs,
+                                              exams=self.store.exams(limit=100),
+                                              notices=self.store.notices(limit=100),
+                                              tracker=self.store.tracker(),
+                                              skill_gap=market.get("skill_gap"),
+                                              item_states=self.store.item_states())
+            except Exception:  # the plan is additive; never fail the briefing for it
+                log.exception("today plan assembly failed")
+                today_plan = None
 
             step("Saving briefing")
             content = {
@@ -143,6 +158,7 @@ class BriefingService:
                 "news": news[:8],
                 "papers": papers[:8],
                 "deadlines": deadlines,
+                "today_plan": today_plan,
                 "changes": changes,
                 "recommended_actions": self._actions(all_tasks, jobs, notices, exams),
                 "weather": {"status": "not_configured", "message": "Weather integration is not configured."},

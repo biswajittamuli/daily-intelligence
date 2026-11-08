@@ -1,6 +1,7 @@
 """Editable, persisted preference model for discovery categories."""
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Any
 
@@ -13,8 +14,18 @@ DEFAULT_PORTALS = {
     "Indeed": {"domain": "indeed.com", "enabled": True},
     "LinkedIn Jobs": {"domain": "linkedin.com/jobs", "enabled": True},
     "YC Work at a Startup": {"domain": "workatastartup.com", "enabled": True},
+    "foundit": {"domain": "foundit.in", "enabled": True},
+    "Instahyre": {"domain": "instahyre.com", "enabled": True},
+    "Cutshort": {"domain": "cutshort.io", "enabled": True},
+    "Hirist": {"domain": "hirist.tech", "enabled": False},
     "Company career pages": {"domain": "", "enabled": True},
 }
+
+# Role families scanned by the market scan so the app covers more than the configured roles.
+DEFAULT_SCAN_ROLES = ["AI Engineer", "Machine Learning Engineer", "Backend Developer",
+                      "Full Stack Developer", "Frontend Developer", "Data Engineer",
+                      "Data Analyst", "DevOps Engineer", "Software Engineer", "QA Automation Engineer",
+                      "Android Developer", "Cybersecurity Analyst"]
 
 DEFAULT_PREFERENCES: dict[str, Any] = {
     "jobs": {
@@ -37,6 +48,8 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "custom_sites": [],
         "freshness": "30d",
         "match_resume": True,
+        "scan_roles": DEFAULT_SCAN_ROLES[:6],
+        "scan_role_suggestions": DEFAULT_SCAN_ROLES,
     },
     "government": {
         "disciplines": ["Computer Science", "Information Technology"],
@@ -48,15 +61,21 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
         "freshness": "365d",
     },
     "news": {
-        "interests": ["AI agents", "large language models", "open source AI"],
+        "interests": ["artificial intelligence", "AI startups", "AI policy", "generative AI"],
         "sources": [],
         "region": "India",
+        "topics": [],
         "freshness": "7d",
     },
     "papers": {
         "interests": ["LLM agents", "retrieval augmented generation", "efficient inference"],
         "sources": [],
         "freshness": "30d",
+    },
+    "automation": {
+        "daily_refresh": False,
+        "refresh_time": "08:00",
+        "categories": ["jobs", "news"],
     },
 }
 
@@ -136,6 +155,8 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "custom_sites": _strings(jobs.get("custom_sites")),
         "freshness": str(jobs.get("freshness") or "30d")[:20],
         "match_resume": bool(jobs.get("match_resume", True)),
+        "scan_roles": _strings(jobs.get("scan_roles"), 12) if "scan_roles" in jobs
+        else list(DEFAULT_SCAN_ROLES[:6]),
     })
 
     government = payload.get("government") if isinstance(payload.get("government"), dict) else {}
@@ -154,8 +175,17 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "interests": _strings(news.get("interests")),
         "sources": _strings(news.get("sources")),
         "region": str(news.get("region") or "India")[:80],
+        "topics": _strings(news.get("topics"), 10),
         "freshness": str(news.get("freshness") or "7d")[:20],
     })
+
+    automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
+    output["automation"] = {
+        "daily_refresh": bool(automation.get("daily_refresh", False)),
+        "refresh_time": _clock(automation.get("refresh_time")),
+        "categories": [item for item in _strings(automation.get("categories"), 5)
+                       if item in {"jobs", "news", "papers", "government", "exams"}] or ["jobs", "news"],
+    }
 
     papers = payload.get("papers") if isinstance(payload.get("papers"), dict) else {}
     output["papers"].update({
@@ -164,6 +194,24 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "freshness": str(papers.get("freshness") or "30d")[:20],
     })
     return output
+
+
+def _clock(value: Any) -> str:
+    text = str(value or "08:00").strip()
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", text)
+    return f"{int(match.group(1)):02d}:{match.group(2)}" if match else "08:00"
+
+
+def scan_roles(preferences: dict[str, Any]) -> list[str]:
+    """Roles for the market scan: configured roles first, then scan roles."""
+    jobs = preferences.get("jobs", {})
+    roles = list(jobs.get("roles") or []) + list(jobs.get("scan_roles") or DEFAULT_SCAN_ROLES[:6])
+    output: list[str] = []
+    for role in roles:
+        clean = " ".join(str(role).split())
+        if clean and clean.casefold() not in {item.casefold() for item in output}:
+            output.append(clean)
+    return output[:12]
 
 
 def save_preferences(store: Store, payload: dict[str, Any]) -> dict[str, Any]:

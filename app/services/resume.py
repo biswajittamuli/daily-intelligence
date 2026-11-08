@@ -18,7 +18,22 @@ SKILL_VOCABULARY = [
     "PostgreSQL", "MySQL", "MongoDB", "Redis", "Kafka", "Spark", "Airflow",
     "Machine Learning", "Deep Learning", "NLP", "Computer Vision", "Data Science",
     "Data Engineering", "MLOps", "REST", "GraphQL", "Microservices", "CI/CD",
+    "Spring Boot", "Angular", "Vue", "Svelte", "Tailwind", "Redux", "Flutter", "React Native",
+    "Kotlin", "Swift", "Android", "iOS", "PHP", "Laravel", "Ruby", "Rails", "Scala", ".NET",
+    "Terraform", "Ansible", "Jenkins", "GitHub Actions", "Prometheus", "Grafana",
+    "Elasticsearch", "Snowflake", "Databricks", "BigQuery", "dbt", "Hadoop", "Tableau",
+    "Power BI", "Excel", "Selenium", "Playwright", "Cypress", "Jest", "Pytest", "Figma",
+    "Generative AI", "Vector Databases", "LangGraph", "OpenAI", "Statistics", "System Design",
+    "Data Structures", "Algorithms", "DSA", "Golang",
 ]
+
+# Skills whose names are ordinary words/letters need case-sensitive, list-like context.
+_AMBIGUOUS = {
+    "C": re.compile(r"(?<![A-Za-z0-9+#/.])C(?![A-Za-z0-9+#])(?=\s*(?:,|/|\)|and\b|\+\+)?)"),
+    "R": re.compile(r"(?<![A-Za-z0-9])R(?=\s*(?:,|/|\)|programming|language))"),
+    "Go": re.compile(r"(?<![A-Za-z0-9])Go(?=\s*(?:,|/|\)|lang\b|developer|engineer))"),
+    "Excel": re.compile(r"\b(?:MS[- ]?|Microsoft\s+)Excel\b|\bExcel(?=\s*(?:,|/|\)|spreadsheets?\b|sheets?\b))"),
+}
 
 DEGREE_PATTERN = re.compile(
     r"\b(B\.?\s?Tech|B\.?\s?E\.?|Bachelor(?:'s)?(?:\s+of)?(?:\s+Technology|\s+Engineering)?|"
@@ -46,10 +61,22 @@ def _find_skills(text: str) -> list[str]:
     found = []
     lowered = text.casefold()
     for skill in SKILL_VOCABULARY:
+        special = _AMBIGUOUS.get(skill)
+        if special is not None:
+            if special.search(text):
+                found.append(skill)
+            continue
         pattern = r"(?<![a-z0-9])" + re.escape(skill.casefold()) + r"(?![a-z0-9])"
         if re.search(pattern, lowered):
             found.append(skill)
-    return found
+    if "Golang" in found:
+        found = [("Go" if item == "Golang" else item) for item in found if item != "Go" or "Golang" not in found]
+    return list(dict.fromkeys(found))
+
+
+def find_skills(text: str) -> list[str]:
+    """Public deterministic skill scan shared by resumes and job listings."""
+    return _find_skills(text or "")
 
 
 def _sections(text: str, headings: list[str]) -> str:

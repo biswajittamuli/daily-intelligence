@@ -1,6 +1,7 @@
 """Deterministic date parsing and freshness classification."""
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -124,3 +125,38 @@ def classify_event_date(value: Any, text: str = "", today: date | None = None) -
     else:
         status = "announced"
     return {"date": event_date.isoformat(), "status": status, "tentative": tentative}
+
+
+_RELATIVE_TODAY = re.compile(
+    r"\b(?:posted\s+|active\s+|updated\s+)?(?:today|just\s+now|few\s+(?:hours|minutes)\s+ago|"
+    r"\d{1,2}\s*(?:hours?|hrs?|h|minutes?|mins?)\s+ago)\b", re.I)
+_RELATIVE_YESTERDAY = re.compile(r"\byesterday\b", re.I)
+_RELATIVE_AGO = re.compile(
+    r"\b(\d{1,3})\s*\+?\s*(days?|d|weeks?|wks?|w|months?|mos?)\s+ago\b", re.I)
+
+
+def parse_relative_date(text: Any, today: date | None = None) -> date | None:
+    """Parse job-board phrases such as "Posted 3 days ago", "30+ days ago", "today".
+
+    Returns the earliest-reading (most specific) date found in the text, or None.
+    Months are approximated as 30 days; this is labelled relative, not exact.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    today = today or date.today()
+    match = _RELATIVE_AGO.search(text)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).casefold()
+        if unit.startswith(("w",)):
+            days = amount * 7
+        elif unit.startswith(("mo", "month")):
+            days = amount * 30
+        else:
+            days = amount
+        return today - timedelta(days=min(days, 3650))
+    if _RELATIVE_TODAY.search(text):
+        return today
+    if _RELATIVE_YESTERDAY.search(text):
+        return today - timedelta(days=1)
+    return None
