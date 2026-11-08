@@ -50,6 +50,8 @@ SKILL_ALIASES = {
     "mongodb": "MongoDB", "mysql": "MySQL", "terraform": "Terraform", "ci/cd": "CI/CD",
     "rest": "REST", "graphql": "GraphQL", "microservices": "Microservices", "agile": "Agile",
     "sqlalchemy": "SQLAlchemy", "celery": "Celery", "airflow": "Airflow",
+    "api": "APIs", "apis": "APIs", "rest api": "REST", "rest apis": "REST", "node": "Node.js",
+    "llm apis": "LLM APIs", "spring": "Spring", "spring boot": "Spring Boot", "next.js": "Next.js",
 }
 
 TITLE_SKILL_HINTS = [
@@ -69,7 +71,9 @@ TITLE_SKILL_HINTS = [
 
 JOB_BOARD_HINTS = ("wellfound", "naukri", "indeed", "linkedin", "workatastartup",
                    "glassdoor", "monster", "ziprecruiter", "foundit", "instahyre",
-                   "cutshort", "hirist", "timesjobs", "shine.com", "simplyhired")
+                   "cutshort", "hirist", "timesjobs", "shine.com", "simplyhired", "dailyremote",
+                   "weworkremotely", "remoteok", "internshala", "apna.co", "unstop", "angel.co",
+                   "ycombinator")
 
 
 def _skill_name(value: str) -> str | None:

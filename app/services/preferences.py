@@ -132,6 +132,8 @@ def load_preferences(store: Store) -> dict[str, Any]:
             if category not in merged or not isinstance(values, dict):
                 continue
             merged[category].update(values)
+    # New default portals appear even when older saved preferences predate them.
+    merged["jobs"]["portals"] = _portals(merged["jobs"].get("portals"))
     return merged
 
 

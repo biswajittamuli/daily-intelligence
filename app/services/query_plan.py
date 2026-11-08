@@ -212,7 +212,7 @@ def _topic_plan(category: str, request: str, preferences: dict[str, Any],
     elif region_clause:
         # Regional news: every query carries the region so results are not generic.
         queries = [f"{base} {region_clause} news {month}",
-                   f"{region_clause} AI {topic_terms or 'startups government industry'} {month}",
+                   f"{region_clause} {topic_terms if topic_terms.casefold().startswith('ai') else 'AI ' + (topic_terms or 'startups government industry')} {month}",
                    f"latest {base} {region_clause} announcement"]
         for source in region_sources(region)[:3]:
             queries.append(f"site:{source} {topic_terms or 'AI'}")

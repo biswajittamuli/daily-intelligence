@@ -690,6 +690,12 @@ class Store:
                      if needle in f"{item.get('topic') or ''} {item.get('title') or ''} {item.get('summary') or ''}".casefold()]
         return items
 
+    def update_intel_labels(self, updates: list[dict[str, Any]]) -> None:
+        with self.connect() as db:
+            for update in updates:
+                db.execute("UPDATE intel_items SET region=?, topic=? WHERE id=?",
+                           (update.get("region"), update.get("topic"), update["id"]))
+
     # ------------------------------------------------------------- item state
     ITEM_STATES = {"saved", "applied", "interview", "offer", "rejected", "dismissed",
                    "follow_up", "completed", "seen"}

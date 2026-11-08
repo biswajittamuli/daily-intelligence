@@ -989,12 +989,20 @@ def _relative(text: Any, today: date) -> str | None:
     return value.isoformat() if value else None
 
 
+_NOT_SKILLS = re.compile(r"\b(developer|engineer|analyst|manager|intern|experience|years?|degree|"
+                         r"communication|team ?work|problem[- ]solving)\b", re.I)
+
+
 def _merge_skills(*groups: Any) -> list[str]:
+    from app.services.insights import _skill_name
     output: list[str] = []
     seen: set[str] = set()
     for group in groups:
         for skill in group or []:
-            clean = " ".join(str(skill).split())[:80]
+            raw = " ".join(str(skill).split())[:80]
+            if not raw or _NOT_SKILLS.search(raw) or len(raw.split()) > 4:
+                continue
+            clean = _skill_name(raw) or raw
             if clean and clean.casefold() not in seen:
                 seen.add(clean.casefold())
                 output.append(clean)

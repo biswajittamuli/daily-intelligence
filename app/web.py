@@ -30,6 +30,7 @@ from app.services.discovery import CATEGORIES, DiscoveryEngine
 from app.services.exports import calendar_ics, jobs_csv
 from app.services.insights import job_market, role_family
 from app.services.job_matching import best_resume_match
+from app.services.listing_links import looks_like_index
 from app.services.news_taxonomy import NEWS_REGIONS, NEWS_TOPICS
 from app.services.preferences import (
     load_preferences,
@@ -106,6 +107,14 @@ class Application:
         self._jobs: dict[str, dict] = {}
         self._active_job: str | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="daily-intel")
+        # One-time upgrade: score legacy listings against stored resumes.
+        if self.store.get_preference("upgrade_version") != APP_VERSION:
+            try:
+                self.rescore_jobs()
+                self.relabel_news()
+                self.store.set_preference("upgrade_version", APP_VERSION)
+            except Exception:
+                log.exception("initial job rescoring failed")
 
     def _apply_preferences_to_service(self):
         preference_text = " ".join(self.preferences.get(key, "") for key in ("location", "briefing_preferences")
@@ -171,11 +180,17 @@ class Application:
     def _decorate_jobs(jobs: list[dict]) -> list[dict]:
         for job in jobs:
             job["role_family"] = role_family(str(job.get("title") or ""))
-            job["source_kind"] = (job.get("raw") or {}).get("source_kind") or "job_listing"
+            kind = (job.get("raw") or {}).get("source_kind") or "job_listing"
+            if kind not in {"harvested", "index_page"} and not job.get("employer") \
+                    and looks_like_index(str(job.get("original_url") or ""), str(job.get("title") or "")):
+                kind = "search_page"
+            job["source_kind"] = kind
         return jobs
 
     def today_plan(self, *, jobs=None, market=None) -> dict:
-        jobs = jobs if jobs is not None else self._decorate_jobs(self.store.jobs(limit=600, fresh_only=True))
+        if jobs is None:
+            jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=600, fresh_only=True))
+                    if job["source_kind"] not in {"search_page", "index_page"}]
         market = market or job_market(jobs, resumes=self.store.resumes())
         return build_today_plan(tasks=self.store.tasks(), jobs=jobs, exams=self.store.exams(limit=200),
                                 notices=self.store.notices(limit=200), tracker=self.store.tracker(),
@@ -184,7 +199,8 @@ class Application:
     def bootstrap(self):
         notes = self.sync_planning_notes()
         all_jobs = self._decorate_jobs(self.store.jobs(limit=1500))
-        fresh = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))]
+        fresh = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))
+                 if job["source_kind"] not in {"search_page", "index_page"}]
         resumes = self.store.resumes()
         market = job_market(fresh or all_jobs, resumes=resumes)
         visits = self.store.get_preference("visits", {}) or {}
@@ -249,6 +265,20 @@ class Application:
                 result["match_reason"] = prefix + (result.get("match_reason") or "")
             updates.append({"id": job["id"], **result})
         self.store.update_job_matches(updates)
+        return len(updates)
+
+    def relabel_news(self) -> int:
+        """Label stored news by detected region/topic (content-based, not request-based)."""
+        from app.services.news_taxonomy import classify_region, classify_topic
+        updates = []
+        for item in self.store.intel(category="news", limit=500):
+            raw_text = (item.get("raw") or {}).get("raw_text") if isinstance(item.get("raw"), dict) else ""
+            updates.append({"id": item["id"],
+                            "region": classify_region(item.get("original_url"), item.get("title"),
+                                                      item.get("summary"), raw_text),
+                            "topic": classify_topic(item.get("title"), item.get("summary"),
+                                                    fallback=item.get("topic"))})
+        self.store.update_intel_labels(updates)
         return len(updates)
 
     def resume_action(self, resume_id: int, action: str, payload: dict) -> dict:
@@ -608,7 +638,8 @@ class Application:
                 "items": items, "counts": self.store.counts()}
 
     def insights(self) -> dict:
-        jobs = self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))
+        jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))
+                if job["source_kind"] not in {"search_page", "index_page"}]
         return {"job_market": job_market(jobs, resumes=self.store.resumes()), "counts": self.store.counts()}
 
     def save_discovery_preferences(self, payload: dict) -> dict:

@@ -83,7 +83,8 @@ def build_today_plan(*, tasks: list[dict[str, Any]], jobs: list[dict[str, Any]],
                   and job.get("match_score") is not None
                   and job_states.get(int(job.get("id") or 0)) not in {"applied", "interview", "offer",
                                                                       "rejected", "dismissed"}
-                  and (job.get("raw") or {}).get("source_kind") not in {"index_page", "search_page"}]
+                  and (job.get("source_kind") or (job.get("raw") or {}).get("source_kind"))
+                  not in {"index_page", "search_page"}]
     candidates.sort(key=lambda job: (job.get("match_score") or 0, job.get("posted_date") or ""), reverse=True)
     for job in candidates[:3]:
         resume = f" with your “{job['best_resume_label']}” resume" if job.get("best_resume_label") else ""
@@ -97,8 +98,9 @@ def build_today_plan(*, tasks: list[dict[str, Any]], jobs: list[dict[str, Any]],
             suggestions.append({"kind": "follow_up", "title": f"Follow up: {entry.get('title')}",
                                 "detail": f"Applied {(today - applied).days} days ago",
                                 "job_id": entry.get("id"), "url": entry.get("original_url")})
-    if skill_gap:
-        top = skill_gap[0]
+    gaps = [item for item in skill_gap or [] if item.get("count", 0) >= 2]
+    if gaps:
+        top = gaps[0]
         suggestions.append({"kind": "learn", "title": f"Spend 45 minutes on {top['name']}",
                             "detail": f"Requested in {top['count']} stored listings and missing from your resumes"})
 

@@ -55,7 +55,8 @@ ROLE_WORDS = re.compile(
     r"associate|trainee|fresher|technician|officer|executive)\b", re.I)
 
 NOISE_TITLES = re.compile(r"^(apply( now)?|view( job| details)?|save|share|see more|read more|"
-                          r"learn more|details|more|next|previous|sign in|log ?in|register)$", re.I)
+                          r"learn more|details|more|next|previous|sign in|log ?in|register)$|"
+                          r"^(this|these|the following|view all|see all|browse|show all|we are|our)\b", re.I)
 
 MARKDOWN_LINK = re.compile(r"\[([^\]]{2,200})\]\((https?://[^)\s]+|/[^)\s]*)(?:\s+\"([^\"]*)\")?\)")
 HTML_LINK = re.compile(r"<a\s[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", re.I | re.S)
@@ -84,7 +85,7 @@ def looks_like_index(url: str, title: str = "") -> bool:
         return False
     lowered = title.casefold()
     return bool(INDEX_PATTERNS.search(url)) or bool(re.search(
-        r"\b(\d[\d,]*\+?\s+)?(jobs|vacancies|openings)\b.*\b(in|for|at)\b|\bjobs in\b|careers\s*\|", lowered))
+        r"\b(\d[\d,]*\+?\s+)?(jobs|vacancies|openings)\b.*\b(in|for|at)\b|\bjobs in\b|careers\s*\||grow with us", lowered))
 
 
 def _clean_title(text: str) -> str:
@@ -130,6 +131,8 @@ def harvest_listings(page_url: str, content: str, *, limit: int = 30,
         if url.rstrip("/") == page_url.rstrip("/") or not is_listing_url(url):
             return
         title = _clean_title(text)
+        if len(title) > 110 or len(title.split()) > 16:
+            title = ""
         if not title or NOISE_TITLES.match(title) or not ROLE_WORDS.search(title):
             alt = _clean_title(title_attr or "")
             if not (alt and ROLE_WORDS.search(alt) and not NOISE_TITLES.match(alt)):

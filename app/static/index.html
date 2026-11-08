@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>Daily Intelligence</title>
   <link rel="stylesheet" href="/app.css">
@@ -11,13 +11,25 @@
   <div class="shell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#daily-briefing" aria-label="Daily Intelligence home">
-        <span class="brand-mark">DI</span><span><strong>Daily Intelligence</strong><small>PERSONAL DESK</small></span>
+        <svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+          <circle cx="24" cy="24" r="22" fill="#d9a21b"/>
+          <g stroke="#2b2019" stroke-width="2.2" stroke-linecap="round">
+            <path d="M24 9v30M9 24h30M13.4 13.4l21.2 21.2M34.6 13.4 13.4 34.6"/>
+          </g>
+          <circle cx="24" cy="24" r="6.5" fill="#00897b" stroke="#2b2019" stroke-width="2"/>
+          <circle cx="24" cy="9" r="2.6" fill="#c75a1f"/>
+          <circle cx="39" cy="24" r="2.6" fill="#c75a1f"/>
+          <circle cx="24" cy="39" r="2.6" fill="#c75a1f"/>
+          <circle cx="9" cy="24" r="2.6" fill="#c75a1f"/>
+        </svg>
+        <span><strong>Daily Intelligence</strong><small>Personal desk</small></span>
       </a>
-      <div class="nav-caption">WORKSPACE</div>
+      <div class="nav-caption">Workspace</div>
       <nav id="navigation" aria-label="Primary navigation"></nav>
       <div class="sidebar-bottom">
         <div class="local-indicator"><i></i><span><b>Local workspace</b><small>Private by default</small></span></div>
-        <button class="profile-button" data-view="settings"><span class="avatar">B</span><span><b>Personal assistant</b><small>Preferences & models</small></span><span class="chevron">↗</span></button>
+        <button class="profile-button" data-view="settings"><span class="avatar">B</span><span><b>Personal assistant</b><small>Resumes, preferences & models</small></span><span class="chevron">↗</span></button>
+        <div class="version-tag" id="version-tag"></div>
       </div>
     </aside>
 
@@ -25,7 +37,7 @@
       <header class="topbar">
         <button id="mobile-menu" class="icon-button mobile-only" aria-label="Toggle navigation">☰</button>
         <div class="breadcrumbs"><span>Workspace</span><span class="crumb-sep">/</span><b id="page-crumb">Daily briefing</b></div>
-        <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local services</span><button class="icon-button" id="theme-toggle" title="Toggle theme">◐</button></div>
+        <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local services</span><button class="icon-button" id="theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">◐</button></div>
       </header>
       <div class="page-wrap" id="page-content" aria-live="polite"></div>
     </main>
