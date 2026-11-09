@@ -136,6 +136,7 @@ def _portals(value: Any) -> dict[str, dict[str, Any]]:
 def load_preferences(store: Store) -> dict[str, Any]:
     stored = store.get_preference(PREFERENCE_KEY, {}) or {}
     merged = deepcopy(DEFAULT_PREFERENCES)
+    merged.setdefault("discovery", {"sections": ["jobs", "government", "exams", "news"]})
     if isinstance(stored, dict):
         for category, values in stored.items():
             if category not in merged or not isinstance(values, dict):
@@ -191,6 +192,25 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
     jobs_in = payload.get("jobs") if isinstance(payload.get("jobs"), dict) else {}
     output["jobs"]["work_authorization"] = _strings(jobs_in.get("work_authorization"), 6) or ["India"]
     output["jobs"]["discover_employers"] = bool(jobs_in.get("discover_employers", False))
+    # Acquisition limits (v3.3) and matching mode (v4).
+    def _int(key: str, default: int, low: int, high: int) -> int:
+        try:
+            return max(low, min(high, int(jobs_in.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+    output["jobs"].update({
+        "browser_rendering": bool(jobs_in.get("browser_rendering", True)),
+        "browser_concurrency": _int("browser_concurrency", 1, 1, 2),
+        "browser_timeout_ms": _int("browser_timeout_ms", 15000, 3000, 60000),
+        "http_concurrency": _int("http_concurrency", 6, 1, 8),
+        "store_cap": _int("store_cap", 500, 50, 2000),
+        "firecrawl_enabled": bool(jobs_in.get("firecrawl_enabled", False)),
+        "match_mode": "best" if jobs_in.get("match_mode") == "best" else "active",
+    })
+    discovery = payload.get("discovery") if isinstance(payload.get("discovery"), dict) else {}
+    output["discovery"] = {"sections": [item for item in _strings(discovery.get("sections"), 6)
+                                        if item in {"jobs", "government", "exams", "news"}]
+                           or ["jobs", "government", "exams", "news"]}
     scan_all = payload.get("scan_all") if isinstance(payload.get("scan_all"), dict) else {}
     output["scan_all"] = {"categories": [item for item in _strings(scan_all.get("categories"), 5)
                                          if item in {"jobs", "government", "exams", "news", "papers"}]
@@ -223,6 +243,10 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
         "refresh_time": _clock(automation.get("refresh_time")),
         "categories": [item for item in _strings(automation.get("categories"), 5)
                        if item in {"jobs", "news", "papers", "government", "exams"}] or ["jobs", "news"],
+        "reverify_batch": max(5, min(100, int(automation.get("reverify_batch", 30) or 30))),
+        "followed_hours": max(0.0, min(168.0, float(automation.get("followed_hours", 12) or 0))),
+        "notify": bool(automation.get("notify", True)),
+        "notify_min_score": max(0, min(100, int(automation.get("notify_min_score", 70) or 70))),
     }
 
     papers = payload.get("papers") if isinstance(payload.get("papers"), dict) else {}

@@ -124,7 +124,32 @@ def extract_profile_deterministic(text: str) -> dict[str, Any]:
     }
     from app.services.job_matching import infer_job_titles
     profile["job_titles"] = infer_job_titles(profile)
+    profile.update(profile_facets(profile, clean))
     return profile
+
+
+AI_ML_SKILLS = {"machine learning", "deep learning", "pytorch", "tensorflow", "keras", "scikit-learn", "nlp", "llms", "rag",
+                "langchain", "langgraph", "llamaindex", "transformers", "computer vision", "generative ai", "hugging face",
+                "openai api", "prompt engineering", "fine-tuning", "vector databases", "mlops", "pandas", "numpy",
+                "data science", "reinforcement learning", "opencv", "xgboost"}
+CLOUD_SKILLS = {"aws", "gcp", "google cloud", "azure", "docker", "kubernetes", "terraform", "ci/cd", "linux", "git",
+                "github actions", "jenkins", "nginx", "redis", "kafka", "serverless", "cloud"}
+CITY_RE = re.compile(r"\b(Bengaluru|Bangalore|Hyderabad|Pune|Mumbai|Delhi|New Delhi|Gurugram|Gurgaon|Noida|Chennai|Kochi|"
+                     r"Ahmedabad|Jaipur|Kolkata|Guwahati|Bhubaneswar|Chandigarh|Indore|Coimbatore|Lucknow|Nagpur)\b", re.I)
+
+
+def profile_facets(profile: dict[str, Any], text: str = "") -> dict[str, Any]:
+    """Derived, deterministic facets: AI/ML experience, cloud/infrastructure skills, stated location."""
+    skills = [str(s) for s in profile.get("skills") or []]
+    facets = {"ai_ml_skills": [s for s in skills if s.casefold() in AI_ML_SKILLS],
+              "cloud_skills": [s for s in skills if s.casefold() in CLOUD_SKILLS]}
+    if text:
+        head = text[:800]
+        found = CITY_RE.search(head)
+        facets["location"] = found.group(0) if found else profile.get("location")
+    else:
+        facets["location"] = profile.get("location")
+    return facets
 
 
 async def extract_profile(text: str, provider: OllamaProvider | None = None) -> dict[str, Any]:
@@ -168,6 +193,7 @@ async def extract_profile(text: str, provider: OllamaProvider | None = None) -> 
     profile["source"] = "local_model_reviewed"
     from app.services.job_matching import infer_job_titles
     profile["job_titles"] = infer_job_titles(profile)
+    profile.update(profile_facets(profile, text))
     return profile
 
 

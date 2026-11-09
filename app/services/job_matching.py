@@ -418,41 +418,58 @@ def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,
             "required_years": result["experience"]["required_min"], "assessment": result}
 
 
+ELIGIBILITY_LABELS = {"eligible": "Eligible", "likely_eligible": "Likely eligible",
+                      "uncertain": "Eligibility uncertain", "not_eligible": "Not eligible"}
+
+
 def active_resume_match(listing: dict[str, Any], preferences: dict[str, Any],
                         resumes: list[dict[str, Any]], *, targets: list[str] | None = None,
                         today: date | None = None) -> dict[str, Any]:
-    """Assess against the active resume; record other resumes' match for comparison."""
+    """Assess against the active resume, or against every resume and keep the best (``jobs.match_mode = best``).
+
+    Eligibility always comes from the deterministic assessment; the model never decides it.
+    """
     usable = [resume for resume in resumes if resume.get("status", "processed") == "processed"]
     active = next((resume for resume in usable if resume.get("is_default")), None)
     if "_requirements" not in listing:
         from app.services.requirements import extract_requirements
         listing = {**listing, "_requirements": extract_requirements(
             str(listing.get("raw_text") or listing.get("description") or ""), title=str(listing.get("title") or ""))}
-    result = rank_listing(listing, (active or {}).get("profile"), preferences, targets=targets, today=today)
+    mode = str((preferences.get("jobs") or {}).get("match_mode") or "active")
+    assessed = [(resume, rank_listing(listing, resume.get("profile"), preferences, targets=targets, today=today))
+                for resume in usable] or [(None, rank_listing(listing, None, preferences, targets=targets, today=today))]
+    if mode == "best" and len(assessed) > 1:
+        tier_rank = {"strong": 3, "possible": 2, "low": 1, "ineligible": 0, "excluded": -1}
+        primary_resume, result = max(assessed, key=lambda pair: (tier_rank.get(pair[1]["tier"], 0),
+                                                                 pair[1]["assessment"]["composite"]))
+    else:
+        primary_resume, result = next(((r, res) for r, res in assessed if active and r and r.get("id") == active.get("id")),
+                                      assessed[0])
     a = result["assessment"]
-    others = []
-    for resume in usable:
-        if active and resume.get("id") == active.get("id"):
-            continue
-        other = rank_listing(listing, resume.get("profile"), preferences, targets=targets, today=today)
-        others.append({"resume_id": resume.get("id"), "label": resume.get("label"), "score": other["score"],
-                       "tier": other["tier"], "eligibility": other["assessment"]["eligibility"]})
+    others = [{"resume_id": r.get("id"), "label": r.get("label"), "score": res["score"], "tier": res["tier"],
+               "eligibility": res["assessment"]["eligibility"]}
+              for r, res in assessed if r is not None and r is not primary_resume]
     reason = a["why"] or "Limited evidence; open the listing to review."
     if result["excluded_reason"]:
         reason = f"Excluded: {result['excluded_reason']}. " + reason
     elif a["gates"]:
         reason = "Not eligible: " + "; ".join(a["gates"]) + ". " + reason
+    level = a.get("eligibility_level") or a["eligibility"]
+    primary = primary_resume or {}
     return {
         "match_score": None if result["tier"] == "excluded" else a["match"],
         "match_reason": reason.strip(),
-        "best_resume_id": (active or {}).get("id"),
-        "best_resume_label": (active or {}).get("label"),
-        "resume_scores": ([{"resume_id": (active or {}).get("id"), "label": (active or {}).get("label"),
+        "best_resume_id": primary.get("id"),
+        "best_resume_label": primary.get("label"),
+        "resume_scores": ([{"resume_id": primary.get("id"), "label": primary.get("label"),
                             "score": a["match"], "tier": result["tier"], "matched": a["matched"],
-                            "missing": a["missing_mandatory"], "active": True}] if active else []) + others,
-        "eligibility": {"tier": result["tier"], "status": a["eligibility"], "gates": a["gates"],
+                            "missing": a["missing_mandatory"], "active": bool(active and primary.get("id") == active.get("id")),
+                            "primary": True}] if primary_resume else []) + others,
+        "eligibility": {"tier": result["tier"], "status": a["eligibility"], "level": level,
+                        "level_label": ELIGIBILITY_LABELS.get(level, level), "gates": a["gates"],
                         "warnings": a["gates"] + a["warnings"], "excluded_reason": result["excluded_reason"],
-                        "required_years": a["experience"]["required_min"], "resume": (active or {}).get("label"),
+                        "required_years": a["experience"]["required_min"], "resume": primary.get("label"),
+                        "match_mode": mode,
                         "composite": a["composite"], "freshness": a["freshness"], "confidence": a["confidence"],
                         "confidence_label": a["confidence_label"], "confidence_notes": a["confidence_notes"],
                         "requirements": a["requirements"], "breakdown": a["breakdown"],

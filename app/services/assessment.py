@@ -265,6 +265,10 @@ def assess(listing: dict[str, Any], profile: dict[str, Any] | None, preferences:
         eligibility = "uncertain"
     else:
         eligibility = "eligible"
+    # Four-level label shown to the user. "Likely eligible": no gate failed and experience fits, but one
+    # mandatory-type requirement (degree, experience or location) could not be read from the listing.
+    eligibility_level = {"not_eligible": "not_eligible", "uncertain": "uncertain"}.get(eligibility) or \
+        ("likely_eligible" if unknowns else "eligible")
 
     # --- evidence confidence
     confidence = 100
@@ -313,7 +317,7 @@ def assess(listing: dict[str, Any], profile: dict[str, Any] | None, preferences:
         why.append(f"Posted {freshness['age_days']} days ago.")
     return {
         "match": match, "tier": tier, "composite": composite,
-        "eligibility": eligibility, "gates": gates, "warnings": warnings,
+        "eligibility": eligibility, "eligibility_level": eligibility_level, "gates": gates, "warnings": warnings,
         "freshness": {k: v for k, v in freshness.items() if k != "factor"},
         "confidence": confidence, "confidence_label": confidence_label, "confidence_notes": notes,
         "requirements": requirements, "breakdown": breakdown, "weights": weights,

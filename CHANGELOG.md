@@ -42,6 +42,16 @@
   source_url, application_url and its India work arrangement.
 - Scheduled re-verification checks any active listing whose last check is due, not only saved ones.
 
+### Phase 4: resume intelligence
+- Matching mode `jobs.match_mode`: `active` (default) or `best` (each listing is assessed against every
+  processed resume and ranked by the best fit; the resume used is shown).
+- Four eligibility levels from the deterministic assessment: Eligible, Likely eligible (no gate failed but a
+  degree/experience/location requirement could not be read), Eligibility uncertain, Not eligible.
+- Resume facets: AI/ML skills, cloud/infrastructure skills, location stated in the resume header.
+- Fixed: acquisition settings (`browser_rendering`, `browser_concurrency`, `browser_timeout_ms`,
+  `http_concurrency`, `store_cap`, `firecrawl_enabled`) were dropped by preference validation in 3.3;
+  they are now persisted, together with `discovery.sections` and new automation settings.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)
