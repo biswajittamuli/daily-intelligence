@@ -1742,29 +1742,28 @@ const VIEWS={
 
 
 /* ------------------------------------------------------------------ home (v4) */
-const FEED_SECTIONS=[['all','All'],['new','New'],['strong','Strong'],['good','Good'],['internship','Internships'],['fresher','Fresher'],
-  ['remote','Remote'],['startup','Startups'],['product','Product cos'],['followed','Following'],['government','Government'],['exam','Exams'],['stretch','Stretch']];
+const FEED_LENSES=[['foryou','For you'],['new','New'],['saved','Saved'],['public','Government & exams'],['all','All']];
+const FEED_SECTIONS=[['internship','Internships'],['fresher','Fresher roles'],['remote','Remote'],['startup','Startups'],['product','Product companies'],['followed','Companies you follow'],['stretch','Stretch roles']];
 function greeting(d=new Date()){const h=d.getHours();return h<5?'Good evening':h<12?'Good morning':h<17?'Good afternoon':'Good evening';}
 function longDate(d=new Date()){return d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});}
 function F(){return state.feed||{items:[],summary:{},deadlines:[],news:[]};}
-function homeStatus(f){
-  const s=f.summary||{};
-  if(!(f.items||[]).length)return 'Nothing discovered yet. Run Discover to build your feed from every enabled source.';
-  const parts=[];
-  if(s.strong_matches)parts.push(`${s.strong_matches} strong match${s.strong_matches===1?'':'es'}`);
-  if(s.new_opportunities)parts.push(`${s.new_opportunities} new opportunit${s.new_opportunities===1?'y':'ies'}`);
-  if(s.deadlines_14d)parts.push(`${s.deadlines_14d} deadline${s.deadlines_14d===1?'':'s'} in the next two weeks`);
-  return parts.length?`${parts.join(', ').replace(/, ([^,]*)$/,' and $1')}. Here’s what matters today.`:'Here’s what matters today.';
+function homeStatus(f,picks){
+  if(!(f.items||[]).length)return 'Nothing here yet. When you’re ready, run Discover and the feed will fill in.';
+  if(!picks.length)return 'You’re all caught up. Nothing new needs your attention right now.';
+  return picks.length===1?'One opportunity is worth your attention today.':`${picks.length} opportunities are worth your attention today.`;
 }
-function metric(label,value,hint,action){
-  return `<button class="metric" ${action?`data-action="${action[0]}" data-value="${esc(action[1])}"`:'disabled'} title="${esc(hint||'')}"><span class="metric-value">${esc(value??0)}</span><span class="metric-label">${esc(label)}</span></button>`;
-}
+function feedState(){return state.filters.feed=state.filters.feed||{lens:'foryou',section:'',q:'',fresh:'',elig:'',source:''};}
 function feedFilter(){
-  const f=state.filters.feed=state.filters.feed||{section:'all',q:'',fresh:'',elig:'',source:''};
+  const f=feedState();
   const q=(f.q||'').toLowerCase();
+  const lens=f.lens||'foryou';
   return (F().items||[]).filter(i=>{
-    if(f.section&&f.section!=='all'&&!(i.sections||[]).includes(f.section))return false;
-    if(f.section==='all'&&i.tier==='ineligible')return false;
+    if(lens==='foryou'&&!(i.kind==='job'&&['strong','possible'].includes(i.tier)))return false;
+    if(lens==='new'&&!(i.sections||[]).includes('new'))return false;
+    if(lens==='saved'&&!['saved','applied','interview','offer'].includes(i.state))return false;
+    if(lens==='public'&&i.kind==='job')return false;
+    if(f.section&&!(i.sections||[]).includes(f.section))return false;
+    if(!f.section&&lens!=='all'&&i.tier==='ineligible')return false;
     if(f.fresh&&((i.freshness||{}).key||'')!==f.fresh&&!(f.fresh==='week'&&['new_today','new_24h','new_3d','new_7d'].includes((i.freshness||{}).key)))return false;
     if(f.elig&&i.eligibility!==f.elig)return false;
     if(f.source&&i.source_type!==f.source)return false;
@@ -1772,88 +1771,129 @@ function feedFilter(){
     return true;
   });
 }
+function todaysPicks(){
+  // At most three: new strong matches first, then other strong, then fresh eligible good matches. Never stretch or saved.
+  const items=(F().items||[]).filter(i=>i.kind==='job'&&!i.state&&['strong','possible'].includes(i.tier)&&!['not_eligible','uncertain'].includes(i.eligibility));
+  const fresh=i=>['new_today','new_24h','new_3d'].includes((i.freshness||{}).key);
+  const rank=i=>(i.tier==='strong'?2:0)+(fresh(i)?1:0);
+  return items.filter(i=>i.tier==='strong'||fresh(i)).sort((a,b)=>rank(b)-rank(a)||b.priority-a.priority).slice(0,3);
+}
+function rowMeta(i){
+  const fresh=(i.freshness||{}).label;
+  const parts=[i.org,i.kind==='job'?(i.location||'').split(',')[0]:null,i.kind==='exam'?(i.event||'').replace(/_/g,' '):null,
+    fresh&&!/date unknown/i.test(fresh)?fresh.replace(/^New /,'').replace(/^First seen /,'seen '):null].filter(Boolean);
+  return parts.map(esc).join(' · ');
+}
+function rowNote(i){
+  if(i.deadline_days!=null&&i.deadline_days<=7)return `<span class="note-due">${i.deadline_days===0?'Closes today':`Closes in ${i.deadline_days} day${i.deadline_days===1?'':'s'}`}</span>`;
+  if(i.state&&i.state!=='dismissed')return `<span class="note-state">${esc(i.state)}</span>`;
+  return '';
+}
 function feedRow(i){
-  const open=state.expanded['feed-'+i.kind+'-'+i.id];
-  const fresh=i.freshness||{};
-  const deadline=i.deadline_days!=null?`<span class="due ${i.deadline_days<=3?'due-soon':''}">${i.deadline_days===0?'due today':i.deadline_days+'d left'}</span>`:'';
-  const score=i.kind==='job'?`<span class="feed-score ${esc(i.tier)}${i.eligibility==='uncertain'||i.confidence==='low'?' tentative':''}" title="Profile match${i.resume?' · '+esc(i.resume):''}">${i.match??'—'}</span>`
-    :`<span class="feed-score kind">${i.kind==='exam'?'Exam':'Gov'}</span>`;
-  const meta=[i.org,i.location,i.arrangement,i.kind==='exam'?(i.event||'').replace(/_/g,' '):null].filter(Boolean).map(esc).join(' · ');
-  return `<article class="feed-row${open?' open':''}">
-    ${score}
-    <div class="feed-main">
-      <button class="feed-title" data-action="expand" data-key="feed-${i.kind}-${i.id}">${esc(i.title||'Untitled')}</button>
-      <div class="feed-meta">${meta}</div>
-      <div class="feed-tags">${i.kind==='job'?`<span class="tag-elig elig-${esc(i.eligibility)}">${esc(i.eligibility_label||'')}</span>`:''}${fresh.label?`<span title="${esc(fresh.basis||'')}">${esc(fresh.label)}</span>`:''}${deadline}${i.state&&i.state!=='dismissed'?`<span class="tag-state">${esc(i.state)}</span>`:''}${(i.sections||[]).includes('followed')?'<span class="tag-state">following</span>':''}</div>
-      ${open?feedDetail(i):''}
-    </div>
-    <div class="feed-actions">${i.url?`<a class="link-button" href="${esc(i.application_url||i.url)}" target="_blank" rel="noopener">Open</a>`:''}</div>
+  const key='feed-'+i.kind+'-'+i.id;
+  const open=state.expanded[key];
+  const score=i.kind==='job'?(i.match??''):(i.kind==='exam'?'exam':'gov');
+  return `<article class="calm-row${open?' open':''}">
+    <button class="calm-head" data-action="expand" data-key="${key}" aria-expanded="${!!open}">
+      <span class="calm-text"><span class="calm-title">${esc(i.title||'Untitled')}</span><span class="calm-meta">${rowMeta(i)}</span></span>
+      <span class="calm-side">${rowNote(i)}<span class="calm-score ${esc(i.tier||'')}" title="${i.kind==='job'?'Match with your resume':''}">${esc(score)}</span></span>
+    </button>
+    ${open?feedDetail(i):''}
+  </article>`;
+}
+function pickCard(i){
+  const key='feed-'+i.kind+'-'+i.id;
+  const open=state.expanded[key];
+  const reason=(i.matched||[]).length?`Matches ${(i.matched||[]).slice(0,3).join(', ')}`:(i.why||'').split('.')[0];
+  return `<article class="pick${open?' open':''}">
+    <button class="pick-head" data-action="expand" data-key="${key}" aria-expanded="${!!open}">
+      <span class="pick-score">${esc(i.match??'')}</span>
+      <span class="pick-title">${esc(i.title)}</span>
+      <span class="calm-meta">${rowMeta(i)}</span>
+      ${reason?`<span class="pick-reason">${esc(reason)}</span>`:''}
+    </button>
+    ${open?feedDetail(i):''}
   </article>`;
 }
 function feedDetail(i){
-  if(i.kind!=='job')return `<div class="feed-detail">${i.eligibility_label?`<div>Eligibility: ${esc(i.eligibility_label)}</div>`:''}<div class="item-actions">${i.url?`<a class="link-button" href="${esc(i.url)}" target="_blank" rel="noopener">Original notice</a>`:''}${i.application_url?`<a class="link-button" href="${esc(i.application_url)}" target="_blank" rel="noopener">Application page</a>`:''}</div></div>`;
+  const link=i.application_url||i.url;
+  if(i.kind!=='job')return `<div class="calm-detail">${i.eligibility_label?`<p class="why">Eligibility: ${esc(i.eligibility_label)}</p>`:''}<div class="calm-actions">${link?`<a class="open-link" href="${esc(link)}" target="_blank" rel="noopener">Open notice ↗</a>`:''}</div></div>`;
   const current=stateOf('job',i.id);
   const reporting=state.expanded['report-'+i.id];
-  return `<div class="feed-detail">
+  const followed=(i.sections||[]).includes('followed');
+  const quiet=(action,label,extra='')=>`<button class="quiet-action" data-action="${action}" ${extra}>${label}</button>`;
+  return `<div class="calm-detail">
     <p class="why">${esc(i.why||'No explanation stored yet.')}</p>
-    ${(i.matched||[]).length||(i.missing||[]).length?`<div class="skills">${(i.matched||[]).map(s=>`<span class="tag have">${esc(s)}</span>`).join('')}${(i.missing||[]).map(s=>`<span class="tag miss" title="Required, not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
-    <div class="feed-facts">${[(i.lifecycle||{}).label,i.posted?'posted '+fmtDate(i.posted):'posting date not stated',(i.freshness||{}).basis,i.sources>1?i.sources+' sources':null,i.source_type?'via '+i.source_type:null].filter(Boolean).map(esc).join(' · ')}</div>
-    <div class="item-actions">
-      ${i.url?`<a class="link-button" href="${esc(i.url)}" target="_blank" rel="noopener">Original listing</a>`:''}
-      ${i.application_url&&i.application_url!==i.url?`<a class="link-button primary" href="${esc(i.application_url)}" target="_blank" rel="noopener">Application page</a>`:''}
-      ${trackButtons(i.id,current)}
-      ${i.employer_id!=null?`<button class="link-button" data-action="follow" data-id="${i.employer_id}" data-on="${(i.sections||[]).includes('followed')?0:1}">${(i.sections||[]).includes('followed')?'Unfollow':'Follow'} company</button>`:''}
-      <button class="link-button" data-action="expand" data-key="report-${i.id}">Report inaccurate</button>
-      <a class="link-button" href="#jobs" data-view="jobs" title="Full requirement breakdown on the Jobs page">Why this match?</a>
+    ${(i.matched||[]).length||(i.missing||[]).length?`<p class="skills-line">${(i.matched||[]).length?`<span class="have">You have</span> ${(i.matched||[]).slice(0,6).map(esc).join(', ')}`:''}${(i.missing||[]).length?`${(i.matched||[]).length?'<br>':''}<span class="miss">Missing</span> ${(i.missing||[]).slice(0,4).map(esc).join(', ')}`:''}</p>`:''}
+    <p class="facts">${[(i.lifecycle||{}).label,i.eligibility_label,i.arrangement,i.posted?'posted '+fmtDate(i.posted):null,i.sources>1?i.sources+' sources':null].filter(Boolean).map(esc).join(' · ')}</p>
+    <div class="calm-actions">
+      ${link?`<a class="open-link" href="${esc(link)}" target="_blank" rel="noopener">${i.application_url?'Apply':'Open listing'} ↗</a>`:''}
+      ${quiet('item-state',current==='saved'?'Saved ✓':'Save',`data-kind="job" data-id="${i.id}" data-state="${current==='saved'?'none':'saved'}"`)}
+      ${quiet('item-state',current==='applied'?'Applied ✓':'Mark applied',`data-kind="job" data-id="${i.id}" data-state="${current==='applied'?'none':'applied'}"`)}
+      ${quiet('item-state','Not for me',`data-kind="job" data-id="${i.id}" data-state="dismissed"`)}
+      <details class="more-actions"><summary>More</summary><div>
+        ${i.employer_id!=null?quiet('follow',followed?'Unfollow company':'Follow company',`data-id="${i.employer_id}" data-on="${followed?0:1}"`):''}
+        ${quiet('expand','Report inaccurate',`data-key="report-${i.id}"`)}
+        <a class="quiet-action" href="#jobs" data-view="jobs">Full breakdown</a>
+        ${i.url&&i.application_url&&i.url!==i.application_url?`<a class="quiet-action" href="${esc(i.url)}" target="_blank" rel="noopener">Original listing ↗</a>`:''}
+      </div></details>
     </div>
     ${reporting?`<div class="report-row">${[['closed','No longer open'],['wrong_location','Wrong location'],['wrong_details','Wrong details'],['duplicate','Duplicate'],['not_a_job','Not a job'],['scam','Looks like a scam']].map(([v,l])=>`<button class="chip" data-action="report" data-id="${i.id}" data-reason="${v}">${l}</button>`).join('')}</div>`:''}
   </div>`;
 }
 function viewHome(){
   const f=F(),s=f.summary||{};
-  const ff=state.filters.feed=state.filters.feed||{section:'all',q:'',fresh:'',elig:'',source:''};
-  const items=feedFilter();
-  const limit=state.expanded.feedall?items.length:25;
+  const ff=feedState();
+  const picks=todaysPicks();
+  const pickIds=new Set(picks.map(i=>i.kind+i.id));
+  const items=feedFilter().filter(i=>ff.lens!=='foryou'||!pickIds.has(i.kind+i.id));
+  const limit=state.expanded.feedmore||10;
   const plan=(f.today_plan||D().today_plan||{});
-  const priorities=((plan.counts||{}).today||0)+((plan.counts||{}).overdue||0);
+  const coming=[...(f.deadlines||[]).map(d=>({title:d.title,url:d.url,when:d.deadline_days===0?'today':d.deadline_days+'d'})),
+    ...(plan.schedule||[]).map(t=>({title:t.title,url:t.url,when:t.time||'today'}))].slice(0,4);
+  const alerts=(f.alerts||[]).length;
+  const refining=state.expanded.refine||ff.section||ff.fresh||ff.elig||ff.source||ff.q;
   const disc=f.discovery;
-  const counts=s.sections||{};
-  return `<section class="home-head">
+  const m=(disc||{}).metrics||{};
+  const facts=[s.strong_matches?`<button class="fact" data-action="feed-lens" data-value="foryou">${s.strong_matches} strong</button>`:'',
+    s.new_opportunities?`<button class="fact" data-action="feed-lens" data-value="new">${s.new_opportunities} new</button>`:'',
+    s.deadlines_14d?`<span class="fact">${s.deadlines_14d} deadline${s.deadlines_14d===1?'':'s'} soon</span>`:''].filter(Boolean).join('<span class="dot">·</span>');
+  return `<section class="calm-head-block">
+      <p class="calm-date">${esc(longDate())}</p>
       <h1>${esc(greeting())}.</h1>
-      <p class="home-date">${esc(longDate())}</p>
-      <p class="home-status">${esc(homeStatus(f))}</p>
+      <p class="calm-status">${esc(homeStatus(f,picks))}</p>
+      ${facts?`<p class="calm-facts">${facts}</p>`:''}
+      ${alerts?`<p class="calm-alert">${alerts} new match alert${alerts===1?'':'s'} since you last looked. <button class="quiet-action" data-action="alerts-read">Dismiss</button></p>`:''}
     </section>
     ${progressBox()}
-    <section class="metrics" aria-label="Today at a glance">
-      ${metric('New opportunities',s.new_opportunities,'Posted (or first seen) in the last 3 days',['feed-section','new'])}
-      ${metric('Strong matches',s.strong_matches,'Eligible, mandatory skills met, fresh and well evidenced',['feed-section','strong'])}
-      ${metric('Deadlines · 14 days',s.deadlines_14d,'Jobs, notices and exams with a date in the next 14 days',['feed-section','deadline'])}
-      ${metric('Exam updates',s.exam_updates,'Exam events in the next 60 days',['feed-section','exam'])}
-      ${metric('AI developments',(f.news||[]).length,'Recent AI stories',['go','ai-news'])}
-      ${metric('Today’s priorities',priorities,'Tasks due today or overdue',['go','planning'])}
-    </section>
-    <div class="home-grid">
-      <section class="feed" aria-label="Opportunity feed">
-        <div class="feed-controls">
-          <div class="feed-sections" role="tablist">${FEED_SECTIONS.filter(([k])=>k==='all'||counts[k]).map(([k,l])=>`<button class="seg ${ff.section===k?'active':''}" data-action="feed-section" data-value="${k}" role="tab" aria-selected="${ff.section===k}">${l}${k!=='all'&&counts[k]?` <span>${counts[k]}</span>`:''}</button>`).join('')}</div>
-          <div class="feed-filters">
-            <input class="input" data-action="feed-q" placeholder="Filter by role, skill, company, city…" value="${esc(ff.q||'')}">
-            <select class="select" data-feed="fresh">${optionList([['week','Last 7 days'],['new_today','New today'],['new_24h','Last 24 hours'],['new_3d','Last 3 days'],['older_open','Older, still open'],['date_unknown','Date unknown'],['verification_required','Needs verification']],ff.fresh||'','Any freshness')}</select>
-            <select class="select" data-feed="elig">${optionList([['eligible','Eligible'],['likely_eligible','Likely eligible'],['uncertain','Uncertain'],['not_eligible','Not eligible']],ff.elig||'','Any eligibility')}</select>
-            <select class="select" data-feed="source">${optionList([['ats','Employer ATS'],['career','Career page'],['feed','Public feed'],['portal','Job portal'],['web','Web search']],ff.source||'','Any source')}</select>
+    <div class="calm-grid">
+      <div class="calm-main">
+        ${picks.length?`<section class="picks" aria-label="Today's picks"><h2 class="calm-h2">Today’s picks</h2>${picks.map(pickCard).join('')}</section>`:''}
+        <section aria-label="Opportunities">
+          <div class="lens-bar">
+            <h2 class="calm-h2">${picks.length&&ff.lens==='foryou'?'More for you':'Opportunities'}</h2>
+            <div class="lenses" role="tablist">${FEED_LENSES.map(([k,l])=>`<button class="lens ${ff.lens===k?'active':''}" data-action="feed-lens" data-value="${k}" role="tab" aria-selected="${ff.lens===k}">${l}</button>`).join('')}</div>
+            <button class="quiet-action" data-action="expand" data-key="refine" aria-expanded="${!!refining}">${refining?'Hide filters':'Refine'}</button>
           </div>
-        </div>
-        ${ff.section==='deadline'?deadlineList(f.deadlines||[]):
-          items.length?`<div class="feed-list">${items.slice(0,limit).map(feedRow).join('')}</div>${items.length>limit?`<button class="link-button more" data-action="expand" data-key="feedall">Show all ${items.length}</button>`:''}`
-          :`<div class="feed-empty">${(f.items||[]).length?'Nothing matches these filters.':'Your feed is empty.'} ${(f.items||[]).length?'<button class="link-button" data-action="feed-clear">Clear filters</button>':'<button class="discover-button" data-action="discover">Discover opportunities</button>'}</div>`}
-      </section>
-      <aside class="side-panels">
-        <section class="mini"><h2>Deadlines</h2>${deadlineList((f.deadlines||[]).slice(0,5),true)}</section>
-        <section class="mini"><h2>Today</h2>${[...(plan.schedule||[]),...(plan.suggestions||[])].slice(0,5).map(t=>`<div class="mini-row"><span>${t.url?`<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.title||'')}</a>`:esc(t.title||'')}</span><span class="mini-sub">${esc(t.time||t.detail||'')}</span></div>`).join('')||'<div class="mini-empty">Nothing scheduled for today.</div>'}<a class="link-button" href="#planning" data-view="planning">Plan</a></section>
-        <section class="mini"><h2>AI developments</h2>${(f.news||[]).slice(0,4).map(n=>`<div class="mini-row"><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a><span class="mini-sub">${esc(n.publisher||'')}</span></div>`).join('')||'<div class="mini-empty">No stories yet.</div>'}</section>
-        ${(f.alerts||[]).length?`<section class="mini"><h2>Alerts</h2>${f.alerts.slice(0,5).map(a=>`<div class="mini-row"><a href="${esc(a.url||'#')}" target="_blank" rel="noopener">${esc(a.title)}</a><span class="mini-sub">${esc(a.score??'')}</span></div>`).join('')}<button class="link-button" data-action="alerts-read">Mark read</button></section>`:''}
-        <section class="mini"><h2>Last discovery</h2>${disc?discoverySummary(disc):'<div class="mini-empty">Not run yet.</div>'}
-          ${(f.automation||{}).daily_refresh?`<div class="mini-kv"><span>Daily discovery</span><b>${esc((f.automation||{}).refresh_time||'08:00')}</b></div>`:`<div class="mini-empty">Daily discovery is off. <button class="link-button" data-action="auto-on">Turn on</button></div>`}<a class="link-button" href="#sources" data-view="sources">Sources &amp; coverage</a></section>
+          ${refining?`<div class="refine">
+            <input class="input" data-action="feed-q" placeholder="Role, skill, company or city" value="${esc(ff.q||'')}">
+            <select class="select" data-feed="section">${optionList(FEED_SECTIONS,ff.section||'','Any kind')}</select>
+            <select class="select" data-feed="fresh">${optionList([['week','Last 7 days'],['new_today','Today'],['older_open','Older, still open'],['date_unknown','Date unknown']],ff.fresh||'','Any time')}</select>
+            <select class="select" data-feed="elig">${optionList([['eligible','Eligible'],['likely_eligible','Likely eligible'],['uncertain','Uncertain']],ff.elig||'','Any eligibility')}</select>
+            <select class="select" data-feed="source">${optionList([['ats','Employer job board'],['career','Career page'],['feed','Public feed'],['portal','Job portal'],['web','Web search']],ff.source||'','Any source')}</select>
+            <button class="quiet-action" data-action="feed-clear">Clear</button>
+          </div>`:''}
+          ${items.length?`<div class="calm-list">${items.slice(0,limit).map(feedRow).join('')}</div>
+            ${items.length>limit?`<button class="quiet-action more" data-action="feed-more">Show ${Math.min(10,items.length-limit)} more</button>`:''}`
+          :`<p class="calm-empty">${(f.items||[]).length?'Nothing here with these filters.':'Your feed is empty.'} ${(f.items||[]).length?'<button class="quiet-action" data-action="feed-clear">Clear filters</button>':'<button class="quiet-action" data-action="discover">Run Discover</button>'}</p>`}
+        </section>
+      </div>
+      <aside class="calm-side-col">
+        <section><h2 class="calm-h2">Coming up</h2>${coming.length?coming.map(c=>`<div class="side-row"><span>${c.url?`<a href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.title)}</a>`:esc(c.title)}</span><span class="side-when">${esc(c.when)}</span></div>`).join(''):'<p class="calm-empty small">A quiet two weeks — no deadlines.</p>'}</section>
+        ${(f.news||[]).length?`<section><h2 class="calm-h2">Worth knowing</h2>${(f.news||[]).slice(0,2).map(n=>`<div class="side-row"><span><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a></span></div>`).join('')}<a class="quiet-action" href="#ai-news" data-view="ai-news">More news</a></section>`:''}
+        <p class="side-foot">${disc?`Updated ${esc(fmtDateTime(disc.created_at))} · ${esc(m.sources_successful??0)} of ${esc(m.sources_attempted??0)} sources answered`:'Not updated yet'}
+          · <a href="#sources" data-view="sources">Coverage</a><br>
+          ${(f.automation||{}).daily_refresh?`Refreshes daily at ${esc((f.automation||{}).refresh_time||'08:00')}`:`Daily refresh is off · <button class="quiet-action inline" data-action="auto-on">Turn on</button>`}</p>
       </aside>
     </div>`;
 }
@@ -1914,18 +1954,18 @@ function paletteItems(q){
   items.push({label:'Discover opportunities',hint:'Run every enabled source',run:()=>startJobRequest('/api/discover',{},'Discovering opportunities')});
   if(t){
     items.push({label:`Search roles: “${t}”`,hint:'Targeted discovery with the same engine',run:()=>startJobRequest('/api/discover',{query:t},'Searching '+t)});
-    items.push({label:`Filter feed: “${t}”`,hint:'Narrow what is already stored',run:()=>{(state.filters.feed=state.filters.feed||{}).q=t;setView('home');}});
+    items.push({label:`Filter feed: “${t}”`,hint:'Narrow what is already stored',run:()=>{const f=feedState();f.q=t;f.lens='all';state.expanded.refine=true;setView('home');}});
     items.push({label:`Ask: “${t}”`,hint:'Research with sources',run:()=>{state.askPrefill=t;setView('ask-intelligence');}});
   }
   const lower=t.toLowerCase();
   NAV.forEach(n=>{if(!t||n.label.toLowerCase().includes(lower))items.push({label:'Go to '+n.label,hint:'',run:()=>setView(n.id)});});
   if(t){
     (F().items||[]).filter(i=>`${i.title} ${i.org||''}`.toLowerCase().includes(lower)).slice(0,6).forEach(i=>
-      items.push({label:i.title,hint:[i.org,i.state].filter(Boolean).join(' · '),run:()=>{state.expanded['feed-'+i.kind+'-'+i.id]=true;(state.filters.feed=state.filters.feed||{}).q=t;setView('home');}}));
+      items.push({label:i.title,hint:[i.org,i.state].filter(Boolean).join(' · '),run:()=>{state.expanded['feed-'+i.kind+'-'+i.id]=true;const f=feedState();f.q=t;f.lens='all';state.expanded.refine=true;setView('home');}}));
   }else{
     (F().items||[]).filter(i=>['saved','applied','interview'].includes(i.state)).slice(0,5).forEach(i=>
       items.push({label:i.title,hint:i.state,run:()=>{state.expanded['feed-'+i.kind+'-'+i.id]=true;setView('home');}}));
-    (F().deadlines||[]).slice(0,3).forEach(i=>items.push({label:`Deadline: ${i.title}`,hint:i.deadline_days+' days',run:()=>{(state.filters.feed=state.filters.feed||{}).section='all';setView('home');}}));
+    (F().deadlines||[]).slice(0,3).forEach(i=>items.push({label:`Deadline: ${i.title}`,hint:i.deadline_days+' days',run:()=>setView('home')}));
   }
   return items.slice(0,14);
 }
@@ -1983,9 +2023,11 @@ document.addEventListener('click',async event=>{
     else if(action==='alerts-read'){await api('/api/alerts/read',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refresh();render();}
     else if(action==='auto-on'){const prefs=JSON.parse(JSON.stringify(D().preferences||{}));prefs.automation={...(prefs.automation||{}),daily_refresh:true};
       await api('/api/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(prefs)});await refresh();render();toast('Daily discovery is on');}
-    else if(action==='feed-section'){const f=state.filters.feed=state.filters.feed||{};f.section=button.dataset.value;state.expanded.feedall=false;render();}
+    else if(action==='feed-section'){const f=feedState();f.lens='all';f.section=button.dataset.value;state.expanded.feedmore=0;render();}
+    else if(action==='feed-lens'){const f=feedState();f.lens=button.dataset.value;f.section='';state.expanded.feedmore=0;render();}
+    else if(action==='feed-more'){state.expanded.feedmore=(state.expanded.feedmore||10)+10;render();}
     else if(action==='go'){setView(button.dataset.value);}
-    else if(action==='feed-clear'){state.filters.feed={section:'all',q:'',fresh:'',elig:'',source:''};render();}
+    else if(action==='feed-clear'){state.filters.feed={lens:(state.filters.feed||{}).lens||'foryou',section:'',q:'',fresh:'',elig:'',source:''};state.expanded.refine=false;render();}
     else if(action==='follow'){await api(`/api/employers/${button.dataset.id}/follow`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({followed:button.dataset.on==='1'})});
       await refresh();render();toast(button.dataset.on==='1'?'Following this company':'Unfollowed');}
     else if(action==='report'){await api(`/api/listings/${button.dataset.id}/report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:button.dataset.reason})});
@@ -2422,7 +2464,7 @@ async function boot(){
   const status=D().status;
   if(status&&['queued','running'].includes(status.status)&&status.id){state.activeJob=status;pollJob(status.id);}
   setInterval(()=>{api('/api/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(()=>{
-    const c=$('#connection');if(c)c.innerHTML='<i></i>Local';}).catch(()=>{const c=$('#connection');if(c)c.textContent='Offline';});},60000);
+    const c=$('#connection');if(c){c.textContent='';c.classList.remove('offline');}}).catch(()=>{const c=$('#connection');if(c){c.textContent='Offline';c.classList.add('offline');}});},60000);
 }
 window.addEventListener('hashchange',()=>{
   const hash=location.hash.replace('#','');

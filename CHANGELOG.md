@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.1.0 — 2026-11-09
+
+### Calmer home
+- Fewer choices: up to three "Today's picks" (new or strong, eligible, not yet acted on), then a short list
+  (10 at a time) under five lenses — For you, New, Saved, Government & exams, All. Other filters sit behind
+  "Refine".
+- One sentence and a quiet line of facts replace the six-metric strip; two side sections (Coming up, Worth
+  knowing) replace five panels; last update and coverage become a single footnote.
+- Rows show title, company · city · freshness and a muted score; deadlines and saved/applied state appear
+  only when they matter. Opening a row shows why it matches, what you have and miss, and plain actions
+  (Open / Apply, Save, Mark applied, Not for me; follow and report under More).
+- Quieter chrome: borderless icon buttons, outline Discover, connection status only when offline,
+  more whitespace and a narrower reading width.
+
 ## 4.0.0 — 2026-11-09
 
 ### Phase 1: unified acquisition
