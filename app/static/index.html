@@ -41,6 +41,17 @@
   </main>
   <div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden></div>
   <div id="toast" class="toast" role="status"></div>
-  <script src="/app.js" defer></script>
+  <!-- Classic scripts sharing one global scope; defer keeps this order. events.js must stay last. -->
+  <script src="/js/core.js" defer></script>
+  <script src="/js/jobs.js" defer></script>
+  <script src="/js/market.js" defer></script>
+  <script src="/js/intel.js" defer></script>
+  <script src="/js/planning.js" defer></script>
+  <script src="/js/settings.js" defer></script>
+  <script src="/js/startups.js" defer></script>
+  <script src="/js/briefing-skills.js" defer></script>
+  <script src="/js/home.js" defer></script>
+  <script src="/js/palette.js" defer></script>
+  <script src="/js/events.js" defer></script>
 </body>
 </html>

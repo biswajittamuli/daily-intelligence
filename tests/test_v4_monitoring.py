@@ -101,6 +101,13 @@ class SchedulerTests(unittest.TestCase):
             self.assertIsNone(app.maybe_auto_refresh(morning))
             self.assertEqual(app.maybe_auto_refresh(datetime(2026, 11, 9, 9, 0)), "id-auto_refresh")
             self.assertIsNone(app.maybe_auto_refresh(datetime(2026, 11, 9, 18, 0)))  # once a day
+            # A full Discover run earlier the same day counts as that day's refresh.
+            app.store.set_preference("last_discovery", {"at": datetime(2026, 11, 10, 6, 0).astimezone().isoformat(),
+                                                        "mode": "full"})
+            self.assertIsNone(app.maybe_auto_refresh(datetime(2026, 11, 10, 9, 0)))
+            self.assertEqual(app.store.get_preference("last_auto_refresh"), "2026-11-10")
+            self.assertEqual(app.maybe_auto_refresh(datetime(2026, 11, 11, 9, 0)), "id-auto_refresh")
+            self.assertEqual(started.count("auto_refresh"), 2)
             self.assertIsNone(app.maybe_followed_check())  # nothing followed
             employer, _ = app.store.upsert_employer({"name": "Fixture"})
             app.store.set_employer_followed(employer["id"], True)

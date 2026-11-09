@@ -229,7 +229,7 @@ class BriefingJobTests(unittest.IsolatedAsyncioTestCase):
             app._executor.shutdown(wait=True)
 
     def test_frontend_handles_api_errors_and_has_real_navigation(self):
-        source = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        source = "\n".join(path.read_text(encoding="utf-8") for path in sorted((STATIC_DIR / "js").glob("*.js")))
         self.assertIn("if(!res.ok)throw Error", source)
         self.assertIn("const NAV=", source)
         self.assertIn("pollJob", source)

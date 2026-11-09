@@ -53,7 +53,8 @@ class LocalApplicationTests(unittest.TestCase):
             page = app.page()
             self.assertIn("id=\"navigation\"", page)
             self.assertIn("/app.css", page)
-            self.assertIn("/app.js", page)
+            self.assertIn("/js/core.js", page)
+            self.assertIn("/js/events.js", page)
 
     def test_settings_persist_and_apply_to_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
