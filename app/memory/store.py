@@ -195,7 +195,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 8  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 9  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -251,7 +251,9 @@ class Store:
                              # v6: canonical schema + evidence
                              "extraction_method": "TEXT", "evidence_confidence": "INTEGER", "ats_ref": "TEXT",
                              "salary_currency": "TEXT", "education": "TEXT", "conflicts_json": "TEXT",
-                             "retrieved_at": "TEXT", "verification_source": "TEXT"},
+                             "retrieved_at": "TEXT", "verification_source": "TEXT",
+                             # v9: posting-date provenance
+                             "posted_date_source": "TEXT", "posting_date_confidence": "TEXT"},
             "employers": {"career_discovery_json": "TEXT", "career_outcome": "TEXT", "next_discovery_at": "TEXT",
                           "discovery_attempts": "INTEGER DEFAULT 0", "last_discovery_method": "TEXT",
                           "last_discovery_success": "TEXT",
@@ -614,8 +616,19 @@ class Store:
                     continue
                 original = str(record.get("original_url") or record.get("url") or url)
                 key = dedup_key(record)
-                row = db.execute("SELECT id, first_seen, sources_json, verify_history_json, repost_of FROM job_listings "
+                row = db.execute("SELECT id, first_seen, sources_json, verify_history_json, repost_of, posted_date, "
+                                 "posting_date_confidence, posted_date_source FROM job_listings "
                                  "WHERE canonical_url=?", (url,)).fetchone()
+                from app.services.freshness import date_confidence, stronger_date
+                record = dict(record)
+                record["posting_date_confidence"] = record.get("posting_date_confidence") or \
+                    date_confidence(record.get("posted_date_source"), record.get("posted_date"))
+                if row is not None and row["posted_date"] and not stronger_date(
+                        record.get("posted_date"), record["posting_date_confidence"], row["posted_date"],
+                        row["posting_date_confidence"] or "low"):
+                    # Keep the better-evidenced stored date; a re-fetch never downgrades it.
+                    record["posted_date"], record["posted_date_source"] = row["posted_date"], row["posted_date_source"]
+                    record["posting_date_confidence"] = row["posting_date_confidence"]
                 repost_of = row["repost_of"] if row else None
                 if row is None and key:
                     twins = db.execute("SELECT id, canonical_url, status, requisition_id, sources_json FROM job_listings "
@@ -646,14 +659,17 @@ class Store:
                     best_resume_id,best_resume_label,resume_scores_json,sources_json,eligibility_json,
                     discovered_via,updated_date,employer_url,application_url,requisition_id,status_evidence,
                     repost_of,verify_history_json,employer_id,dedup_key,extraction_method,evidence_confidence,
-                    ats_ref,salary_currency,education,retrieved_at,verification_source)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ats_ref,salary_currency,education,retrieved_at,verification_source,posted_date_source,
+                    posting_date_confidence)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(canonical_url) DO UPDATE SET
                     original_url=excluded.original_url, employer=COALESCE(excluded.employer, job_listings.employer),
                     title=excluded.title, location=COALESCE(excluded.location, job_listings.location),
                     remote=excluded.remote, employment_type=COALESCE(excluded.employment_type, job_listings.employment_type),
                     experience=excluded.experience, skills_json=excluded.skills_json, salary=excluded.salary,
                     posted_date=COALESCE(excluded.posted_date, job_listings.posted_date),
+                    posted_date_source=COALESCE(excluded.posted_date_source, job_listings.posted_date_source),
+                    posting_date_confidence=COALESCE(excluded.posting_date_confidence, job_listings.posting_date_confidence),
                     deadline=COALESCE(excluded.deadline, job_listings.deadline), status=excluded.status,
                     source_platform=excluded.source_platform, match_score=excluded.match_score,
                     match_reason=excluded.match_reason, evidence_json=excluded.evidence_json,
@@ -690,7 +706,8 @@ class Store:
                      record.get("requisition_id"), record.get("status_evidence"), repost_of,
                      _json(history), record.get("employer_id"), key, record.get("extraction_method"),
                      record.get("evidence_confidence"), record.get("ats_ref"), record.get("salary_currency"),
-                     record.get("education"), record.get("retrieved_at") or now, record.get("verification_source")))
+                     record.get("education"), record.get("retrieved_at") or now, record.get("verification_source"),
+                     record.get("posted_date_source"), record.get("posting_date_confidence")))
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "job_listings"))
         return saved
@@ -758,8 +775,10 @@ class Store:
                 fields["verification_source"] = ("employer public job board" if evidence.startswith("Listed on") else
                                                  "employer page" if evidence.startswith(("Employer page", "JobPosting")) else
                                                  "third-party listing page")
-            if posted_date and not row["posted_date"]:
+            if posted_date and (not row["posted_date"] or (row["posting_date_confidence"] or "low") in {"low", "unknown"}):
                 fields["posted_date"] = posted_date
+                fields["posted_date_source"] = "employer ATS" if evidence.startswith("Listed on") else "JobPosting datePosted"
+                fields["posting_date_confidence"] = "high"
             if raw_text:
                 raw = _loads(row["raw_json"], {}) or {}
                 raw["raw_text"] = raw_text[:8000]

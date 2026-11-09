@@ -226,6 +226,12 @@ class Application:
             job["source_kind"] = kind
             from app.services.verification import lifecycle
             job["lifecycle"] = lifecycle(job)
+            from app.services.freshness import freshness_bucket, vacancy_view
+            job["freshness_bucket"] = freshness_bucket(job, lifecycle_state=job["lifecycle"]["state"])
+            job.update(vacancy_view(job, job["lifecycle"]["state"]))
+            from app.services.job_sources.geo import work_arrangement
+            job["arrangement"] = work_arrangement(job.get("location"), job.get("remote"),
+                                                  str((job.get("raw") or {}).get("raw_text") or "")[:3000])
             types = set()
             if job.get("discovered_via") == "company career board" or job.get("ats_ref"):
                 types.add("ats")
@@ -240,7 +246,10 @@ class Application:
                     source["policy"] = portal.policy
             if not types or job.get("discovered_via") in {"web search", "index page"}:
                 types.add("portal" if portal_for(str(job.get("original_url") or "")) else "web")
+            if job.get("discovered_via") == "public feed":
+                types.add("feed")
             job["source_types"] = sorted(types)
+            job["source_type"] = next((t for t in ("ats", "career", "feed", "portal", "web") if t in types), "web")
             title = str(job.get("title") or "")
             exp = ((job.get("eligibility") or {}).get("experience") or {}).get("required_min")
             job["flags"] = {
@@ -724,7 +733,9 @@ class Application:
                     from app.services.verification import select_for_verification, verify_jobs
                     payload = job.get("payload") or {}
                     ids = [int(x) for x in payload.get("job_ids") or []] or None
-                    targets = select_for_verification(self.store, limit=int(payload.get("limit") or 40), job_ids=ids)
+                    from app.services.verification import select_due_for_verification
+                    targets = (select_for_verification(self.store, limit=int(payload.get("limit") or 40), job_ids=ids) if ids
+                               else select_due_for_verification(self.store, limit=int(payload.get("limit") or 40)))
                     self._progress(job_id, f"Re-verifying {len(targets)} listings")
 
                     def cancel_check():

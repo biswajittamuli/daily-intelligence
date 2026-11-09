@@ -160,3 +160,103 @@ def parse_relative_date(text: Any, today: date | None = None) -> date | None:
     if _RELATIVE_YESTERDAY.search(text):
         return today - timedelta(days=1)
     return None
+
+
+# ----------------------------------------------------------------- v4: posting-date provenance and buckets
+DATE_CONFIDENCE = {
+    "employer ATS": "high", "JobPosting datePosted": "high", "career page": "medium",
+    "feed entry date": "medium", "listing text (relative date)": "medium",
+    "search engine page date": "low", "model-extracted from page text": "low",
+}
+_RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0, None: 0}
+
+
+def date_confidence(source: str | None, posted: Any) -> str:
+    if not posted:
+        return "unknown"
+    return DATE_CONFIDENCE.get(str(source or ""), "low")
+
+
+def stronger_date(new_date: Any, new_confidence: str | None, old_date: Any, old_confidence: str | None) -> bool:
+    """True when a newly observed posting date may replace the stored one (never downgrade confidence)."""
+    if not new_date:
+        return False
+    if not old_date:
+        return True
+    return _RANK.get(new_confidence, 0) > _RANK.get(old_confidence, 0)
+
+
+BUCKET_LABEL = {"new_today": "New today", "new_24h": "New in the last 24 hours", "new_3d": "New in the last 3 days",
+                "new_7d": "New in the last 7 days", "older_open": "Older but still open", "date_unknown": "Date unknown",
+                "closed": "Closed", "expired": "Expired", "verification_required": "Verification required"}
+
+
+def freshness_bucket(job: dict[str, Any], *, now: Any = None, lifecycle_state: str | None = None) -> dict[str, Any]:
+    """Freshness from the posting date when it is trustworthy, otherwise from when the app first saw it.
+
+    A listing re-fetched later keeps its first-seen time, so it never becomes "new" again.
+    """
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    state = lifecycle_state or ""
+    if state in {"closed", "expired"} or job.get("status") in {"closed", "expired"}:
+        key = "expired" if (state == "expired" or job.get("status") == "expired") else "closed"
+        return {"key": key, "label": BUCKET_LABEL[key], "basis": "status"}
+    confidence = job.get("posting_date_confidence") or date_confidence(job.get("posted_date_source"), job.get("posted_date"))
+    posted = parse_date(job.get("posted_date"))
+    first_seen = None
+    try:
+        first_seen = datetime.fromisoformat(str(job.get("first_seen")).replace("Z", "+00:00")) if job.get("first_seen") else None
+    except ValueError:
+        first_seen = None
+    if posted and confidence in {"high", "medium"}:
+        age_days = (today - posted).days
+        basis = f"posted {posted.isoformat()} ({job.get('posted_date_source') or 'source'})"
+        if age_days <= 0:
+            key = "new_today"
+        elif age_days <= 1:
+            key = "new_24h"
+        elif age_days <= 3:
+            key = "new_3d"
+        elif age_days <= 7:
+            key = "new_7d"
+        else:
+            key = "older_open" if state in {"open_verified", "open_page_checked"} else "verification_required"
+        return {"key": key, "label": BUCKET_LABEL[key], "basis": basis, "age_days": age_days}
+    if first_seen is not None:
+        hours = (now - first_seen).total_seconds() / 3600
+        basis = "first seen by this app (posting date " + ("uncertain" if posted else "not stated") + ")"
+        if first_seen.date() == today:
+            key = "new_today"
+        elif hours <= 24:
+            key = "new_24h"
+        elif hours <= 72:
+            key = "new_3d"
+        elif hours <= 168:
+            key = "new_7d"
+        else:
+            key = "date_unknown"
+        label = BUCKET_LABEL[key] if key == "date_unknown" else BUCKET_LABEL[key].replace("New", "First seen")
+        return {"key": key, "label": label, "basis": basis, "age_days": int(hours // 24)}
+    return {"key": "date_unknown", "label": BUCKET_LABEL["date_unknown"], "basis": "no date evidence"}
+
+
+def vacancy_view(job: dict[str, Any], lifecycle_state: str) -> dict[str, Any]:
+    """The normalised freshness/verification fields every vacancy exposes through the API."""
+    vacancy = {"closed": "closed", "expired": "expired"}.get(lifecycle_state) or (
+        "open" if lifecycle_state in {"open_verified", "open_page_checked", "open_not_recent"} else "unknown")
+    verification = {"open_verified": "verified_employer", "open_page_checked": "verified_third_party",
+                    "open_not_recent": "verification_due", "inaccessible": "inaccessible",
+                    "pending_verification": "pending", "closed": "verified_closed", "expired": "verified_expired"
+                    }.get(lifecycle_state, "unverified")
+    return {
+        "first_seen_at": job.get("first_seen"), "last_seen_at": job.get("last_seen"),
+        "published_at": job.get("posted_date"), "updated_at": job.get("updated_date"),
+        "verified_at": job.get("last_verified"), "application_deadline": job.get("deadline"),
+        "posting_date_source": job.get("posted_date_source"),
+        "posting_date_confidence": job.get("posting_date_confidence") or date_confidence(job.get("posted_date_source"),
+                                                                                         job.get("posted_date")),
+        "verification_status": verification, "vacancy_status": vacancy,
+        "source_url": job.get("original_url"), "application_url": job.get("application_url"),
+    }

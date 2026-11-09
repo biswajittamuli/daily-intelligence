@@ -95,7 +95,8 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
             jobs.append({
                 "title": item.get("title"), "employer": item.get("company_name") or name,
                 "location": location, "url": item.get("absolute_url"),
-                "posted_date": _iso(item.get("first_published") or item.get("updated_at")),
+                "posted_date": _iso(item.get("first_published")),
+                "updated_date": _iso(item.get("updated_at")),
                 "description": _text(item.get("content"))[:12000],
                 "employment_type": None,
                 "remote": "remote" if "remote" in location.casefold() else None,

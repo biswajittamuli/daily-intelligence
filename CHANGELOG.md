@@ -29,6 +29,19 @@
   relocation / outside India — only from location evidence.
 - Employer registry (schema v8): city, stage, verification status, followed flag.
 
+### Phase 3: freshness and verification
+- Posting-date provenance (schema v9): `posted_date_source` and `posting_date_confidence`
+  (employer ATS / JobPosting = high; career page, feed, "3 days ago" text = medium; search-engine page
+  date, model extraction = low). A re-fetch never replaces a better-evidenced date; Greenhouse
+  `updated_at` is stored as the update date, not the posting date.
+- Freshness buckets: new today / 24 h / 3 days / 7 days, older but still open, date unknown, closed,
+  expired, verification required — from trusted posting dates, otherwise from first-seen (labelled
+  "First seen …"); a listing never becomes new again by being re-fetched.
+- Every vacancy exposes first_seen_at, last_seen_at, published_at, updated_at, verified_at,
+  application_deadline, posting_date_confidence, verification_status, vacancy_status, source_type,
+  source_url, application_url and its India work arrangement.
+- Scheduled re-verification checks any active listing whose last check is due, not only saved ones.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

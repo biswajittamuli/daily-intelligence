@@ -1197,6 +1197,8 @@ class BroadJobSearch:
                  "status_hint": "open", "employer_id": job.get("employer_id"),
                  "application_url": job.get("application_url"), "requisition_id": job.get("requisition_id"),
                  "extraction_method": f"{ats} public job-board API", "ats_ref": job.get("source_platform"),
+                 "updated_date": job.get("updated_date"),
+                 "date_source": "employer ATS" if job.get("posted_date") else None,
                  "_report_keys": set(job.get("_report_keys") or ()),
                  "evidence": [{"text": text[:300], "source_url": job["url"]}]})
         ordered = sorted(harvested, key=lambda link: link.get("_via") != "Company career page")
@@ -1213,7 +1215,9 @@ class BroadJobSearch:
                  "skills": link.get("skills") or find_skills(f"{link['title']} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": urlparse(link["url"]).hostname, "_via": link.get("_via"),
                  "discovered_via": "company career page" if career else ("public feed" if link.get("feed_id") else "index page"),
-                 "date_source": link.get("date_source") or ("career page" if career and link.get("posted_date") else
+                 "date_source": link.get("date_source") or (
+                     "JobPosting datePosted" if str(link.get("extraction_method") or "").startswith("schema.org") and link.get("posted_date") else
+                     "career page" if career and link.get("posted_date") else
                                                             "listing text (relative date)" if link.get("posted_date") else None),
                  "employer_id": link.get("employer_id"), "source_kind": "job_listing" if career else "harvested",
                  "extraction_method": link.get("extraction_method") or ("career page link" if career else "index page link"),
@@ -1232,7 +1236,11 @@ class BroadJobSearch:
             else:
                 employer, _how = infer_employer(str(result.get("url") or ""), title, f"{excerpts} {content[:20000]}")
             location = LOCATION_RE.search(f"{title} {excerpts}")
-            posted = (parse_date(result.get("publish_date")) or parse_relative_date(text, today))
+            relative = parse_relative_date(text, today)
+            page_date = parse_date(result.get("publish_date"))
+            # A relative date in the listing text ("3 days ago") is better evidence than the search engine's page date.
+            posted = relative or page_date
+            date_source = "listing text (relative date)" if relative else ("search engine page date" if page_date else None)
             ats_hit = None
             from app.services.job_sources import ats_registry
             ats_hit = ats_registry.detect_url(str(result["url"]))
@@ -1243,6 +1251,7 @@ class BroadJobSearch:
                  "source_platform": result.get("domain"), "_via": result.get("_via"),
                  "discovered_via": "web search", "source_kind": "job_listing",
                  "extraction_method": "search result + page fetch" if content else "search result snippet",
+                 "date_source": date_source,
                  "ats_ref": f"{ats_hit[0].key}:{ats_hit[1]}" if ats_hit else None,
                  "_report_keys": set(result.get("_report_keys") or ()),
                  "_content": content, "evidence": result.get("evidence") or []})
@@ -1271,6 +1280,7 @@ class BroadJobSearch:
                     item[field] = record[field]
             if record.get("posted_date") and not item.get("posted_date"):
                 item["posted_date"] = record["posted_date"]
+                item["date_source"] = "model-extracted from page text"
             if record.get("status") in {"open", "closed", "expired"}:
                 item["status_hint"] = record["status"]
             item["skills"] = list(dict.fromkeys((item.get("skills") or []) + (record.get("skills") or [])))[:16]
@@ -1303,6 +1313,8 @@ class BroadJobSearch:
             "status_evidence": ("Listed on the employer's public job board" if item.get("discovered_via") ==
                                 "company career board" else None),
             "extraction_method": item.get("extraction_method"),
+            "posted_date_source": item.get("date_source") if item.get("posted_date") else None,
+            "updated_date": item.get("updated_date"),
             "evidence_confidence": (item.get("eligibility") or {}).get("confidence"),
             "ats_ref": item.get("ats_ref"), "salary_currency": item.get("salary_currency"),
             "education": item.get("education"),
