@@ -52,6 +52,17 @@
   `http_concurrency`, `store_cap`, `firecrawl_enabled`) were dropped by preference validation in 3.3;
   they are now persisted, together with `discovery.sections` and new automation settings.
 
+### Phase 5: unified feed
+- `services/feed.py` + `GET /api/feed`: jobs, government notices and exam events in one prioritised
+  feed (new strong matches → approaching deadlines → followed companies → fresh startup roles →
+  internships → government → rank), with section tags (strong, good, stretch, internship, fresher, remote,
+  startup, product, government, followed, new) used as filters — no section needs its own search.
+- Summary: new opportunities, new since last visit, strong/good matches, deadlines in 14 days, exam
+  updates, AI news, today's plan, last discovery report.
+- Follow company (`POST /api/employers/{id}/follow`), report inaccurate listing
+  (`POST /api/listings/{id}/report`, schema v10 `listing_reports`; hidden from the feed, never deleted).
+  Saved/applied/hidden states survive rescans.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

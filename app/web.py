@@ -260,6 +260,25 @@ class Application:
             }
         return jobs
 
+    def feed(self, *, include_hidden: bool = False) -> dict:
+        from app.services.feed import build_feed
+        jobs = self._decorate_jobs(self.store.jobs(limit=2000))
+        visits = self.store.get_preference("visits", {}) or {}
+        feed = build_feed(jobs=jobs, notices=self.store.notices(limit=200), exams=self.store.exams(limit=300),
+                          employers=self.store.employers(limit=3000), states=self.store.item_states().get("job", {}),
+                          reported=set(self.store.reported_listings()), news=self.store.intel(category="news", limit=10),
+                          last_visit=visits.get("previous"), include_hidden=include_hidden)
+        feed["last_discovery"] = self.store.get_preference("last_discovery")
+        feed["discovery"] = self.last_discovery()
+        feed["today_plan"] = self.today_plan(jobs=[j for j in jobs if j.get("source_kind") not in {"search_page", "index_page"}])
+        return feed
+
+    def last_discovery(self) -> dict | None:
+        for session in self.store.search_sessions(40):
+            if session.get("category") == "discovery" and session.get("summary"):
+                return {**session["summary"], "created_at": session.get("created_at")}
+        return None
+
     def sources_view(self) -> list[dict]:
         """Registry definitions joined with persisted state (enabled, attempts, reliability, backoff)."""
         from app.services.job_sources.base import skip_map
@@ -1098,6 +1117,8 @@ class Application:
                     signals = app.store.signals(limit=500)
                     return self.json(200, {"employers": app.store.employers(limit=1000), "signals": signals,
                                            "signal_events": cluster_signals(signals)})
+                if path == "/api/feed":
+                    return self.json(200, app.feed(include_hidden=params.get("hidden", ["0"])[0] == "1"))
                 if path == "/api/sources":
                     return self.json(200, {"sources": app.sources_view()})
                 if path == "/api/sources/health":
@@ -1258,6 +1279,26 @@ class Application:
                                                                         "limit": payload.get("limit")})
                         if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
                         return self.json(202, {"id": job_id, "status": "queued"})
+                    if path.startswith("/api/employers/") and path.endswith("/follow"):
+                        try:
+                            employer_id = int(path.split("/")[3])
+                        except (ValueError, IndexError):
+                            return self.json(400, {"error": "Invalid employer id"})
+                        app.store.set_employer_followed(employer_id, bool(payload.get("followed", True)))
+                        return self.json(200, {"ok": True, "id": employer_id, "followed": bool(payload.get("followed", True))})
+                    if path.startswith("/api/listings/") and path.endswith("/report"):
+                        try:
+                            listing_id = int(path.split("/")[3])
+                        except (ValueError, IndexError):
+                            return self.json(400, {"error": "Invalid listing id"})
+                        if payload.get("undo"):
+                            app.store.unreport_listing(listing_id)
+                            return self.json(200, {"ok": True, "id": listing_id, "reported": False})
+                        try:
+                            app.store.report_listing(listing_id, str(payload.get("reason") or "other"), payload.get("note"))
+                        except ValueError as exc:
+                            return self.json(400, {"error": str(exc)})
+                        return self.json(200, {"ok": True, "id": listing_id, "reported": True})
                     if path == "/api/discover":
                         query = str(payload.get("query") or "").strip()
                         if len(query) > 500:

@@ -151,6 +151,9 @@ CREATE TABLE IF NOT EXISTS job_exclusions (
     reason TEXT NOT NULL, stage TEXT, detail TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_exclusions_session ON job_exclusions(session_id, reason);
+CREATE TABLE IF NOT EXISTS listing_reports (
+    id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, reason TEXT NOT NULL, note TEXT, created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS source_state (
     source_id TEXT PRIMARY KEY, enabled INTEGER, last_attempt_at TEXT, last_success_at TEXT, last_result_at TEXT,
     last_state TEXT, last_failure_reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0,
@@ -195,7 +198,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 9  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 10  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -1405,6 +1408,26 @@ class Store:
                 f"SELECT * FROM job_exclusions WHERE {where} ORDER BY id LIMIT ? OFFSET ?",
                 (*args, max(1, min(limit, 1000)), max(0, offset)))]
         return {"session_id": session_id, "total": total, "reasons": reasons, "items": items}
+
+    REPORT_REASONS = {"closed", "wrong_location", "wrong_details", "duplicate", "not_a_job", "scam", "other"}
+
+    def report_listing(self, job_id: int, reason: str, note: str | None = None) -> None:
+        if reason not in self.REPORT_REASONS:
+            raise ValueError("Unsupported report reason")
+        with self.connect() as db:
+            db.execute("INSERT INTO listing_reports(job_id,reason,note,created_at) VALUES(?,?,?,?)",
+                       (int(job_id), reason, (note or None) and " ".join(note.split())[:500], self.now()))
+
+    def reported_listings(self) -> dict[int, list[dict[str, Any]]]:
+        with self.connect() as db:
+            output: dict[int, list[dict[str, Any]]] = {}
+            for row in db.execute("SELECT * FROM listing_reports ORDER BY id"):
+                output.setdefault(row["job_id"], []).append(dict(row))
+            return output
+
+    def unreport_listing(self, job_id: int) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM listing_reports WHERE job_id=?", (int(job_id),))
 
     def set_employer_followed(self, employer_id: int, followed: bool) -> None:
         with self.connect() as db:
