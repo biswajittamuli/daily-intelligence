@@ -1,5 +1,53 @@
 # Changelog
 
+## 3.3.0 — 2026-11-09
+
+### Audit (v3.2 run: 5,804 results → 88 stored)
+- 5,724 of the 5,804 "results" were openings from 25 built-in, mostly US company boards; only 60
+  came from web search (6 calls) and 10 pages were fetched.
+- ~1,200 real Greenhouse openings were discarded as "search pages" because their URLs are hosted on
+  company domains (`stripe.com/jobs/search?gh_jid=…`, `jobs.elastic.co/jobs?gh_jid=…`).
+- Employer discovery only ran for "startup" requests; career pages were found from static HTML only
+  (5 of 15 checked employers: "no career link found").
+- Relevant listings beyond the pool size were dropped; exclusions were counted but not inspectable;
+  "50 of 54 sources" counted targeted sources, not ones that returned data.
+
+### Acquisition (`app/services/job_sources/`)
+- `safe_http.py` SSRF-safe polite fetcher (DNS check of every address, per-hop redirect validation,
+  robots.txt with wildcards + crawl-delay, per-host interval, size cap, ETag/Last-Modified disk cache,
+  bot-challenge detection — reported, never bypassed). `robots.py`.
+- `browser.py` bounded Playwright renderer using system Chrome; private-network sub-requests aborted;
+  images/fonts/media blocked; one context, pages closed after use; memory and clean-shutdown stats.
+- `career_discovery.py` stages A–F with outcomes: verified, candidate, public jobs endpoint, ATS
+  identified, not found, rendering failed, access denied, domain unavailable, search exhausted.
+- `structured.py` JSON-LD JobPosting, `__NEXT_DATA__`/app JSON, job objects in public JSON, sitemaps.
+- `ats_registry.py` 23 providers; Recruitee added to the public-API readers.
+- `portals.py` access policies; `coverage.py` per-session reports, funnel, exclusions; `firecrawl.py`
+  optional, off by default.
+- Job search: ATS-board, city and remote search paths, near-duplicate query removal, boards revealed by
+  search results are read through their APIs and saved as employers, unknown employers in results are
+  resolved (domain → career discovery → ATS), due career re-discoveries run each search, verified
+  career pages are re-read. Every relevant listing is stored (cap 500), not only the pool size.
+- Cheap relevance gate before full assessment (ranking 112 s → 8 s for ~6,000 candidates).
+
+### Data (schema v6, automatic backup)
+- New tables `source_reports`, `source_health`, `job_exclusions`.
+- `job_listings`: extraction method, evidence confidence, ATS reference, salary currency, education,
+  conflicts, retrieved/verification source. `employers`: career discovery result, outcome, next retry.
+
+### Verification
+- Employer page first (direct, robots-respecting); search-results-only portals are never fetched
+  ("not checked"); new states pending verification, open · third-party only, open · verified on
+  employer page, inaccessible (two unreachable checks), conflicting sources.
+
+### UI
+- Jobs: coverage dashboard (funnel, per-source state table, inaccessible sources, resources,
+  click-through exclusions), filters for listing status, verified in 7 days, ATS/career/portal/web,
+  internships, fresher roles, remote; "Where this listing came from" panel; tentative score styling
+  when evidence is low or eligibility uncertain.
+- Startups: career-discovery outcome, methods tried and next check per employer, re-check buttons;
+  funding/hiring articles clustered into events.
+
 ## 3.2.0 — 2026-11-09
 
 ### Job matching repair

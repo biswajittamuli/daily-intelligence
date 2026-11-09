@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 import httpx
 
-USER_AGENT = "DailyIntelligence/3.2 (local personal job scanner)"
+USER_AGENT = "DailyIntelligence/3.3 (local personal job scanner)"
 
 # Verified on 2026-11-08 to return public boards. Users can add/remove in Settings.
 DEFAULT_COMPANIES: list[dict[str, str]] = [
@@ -53,7 +53,7 @@ DEFAULT_COMPANIES: list[dict[str, str]] = [
     {"name": "PostHog", "ats": "ashby", "slug": "posthog"},
 ]
 
-ATS_TYPES = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}
+ATS_TYPES = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee"}
 _CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 CACHE_SECONDS = 3 * 3600
 
@@ -153,6 +153,20 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
                 "remote": "remote" if loc.get("remote") else None, "requisition_id": item.get("refNumber"),
                 "experience_level": (item.get("experienceLevel") or {}).get("label"),
             })
+    elif ats == "recruitee":
+        for item in (payload or {}).get("offers", []):
+            location = item.get("location") or ", ".join(
+                part for part in (item.get("city"), item.get("country")) if part)
+            jobs.append({
+                "title": item.get("title"), "employer": item.get("company_name") or name, "location": location,
+                "url": item.get("careers_url") or item.get("careers_apply_url"),
+                "application_url": item.get("careers_apply_url"),
+                "posted_date": _iso(item.get("published_at") or item.get("created_at")),
+                "description": _text(f"{item.get('description') or ''} {item.get('requirements') or ''}")[:12000],
+                "employment_type": item.get("employment_type_code"),
+                "remote": "remote" if item.get("remote") else None,
+                "requisition_id": item.get("slug"),
+            })
     output = []
     for job in jobs:
         if job.get("title") and job.get("url"):
@@ -174,6 +188,7 @@ def _endpoint(company: dict[str, str]) -> str:
         "greenhouse": f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
         "lever": f"https://api.lever.co/v0/postings/{slug}?mode=json",
         "ashby": f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+        "recruitee": f"https://{slug}.recruitee.com/api/offers/",
     }[company["ats"]]
 
 

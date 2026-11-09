@@ -186,6 +186,8 @@ class IndianJobScenarioTests(unittest.TestCase):
                  "source_platform": "naukri.com", "status": "unverified"},
                 {"url": "https://example.in/jobs/3", "title": "Data Engineer", "employer": "Gamma",
                  "deadline": (TODAY - timedelta(days=3)).isoformat(), "status": "unverified"},
+                {"url": "https://cutshort.io/job/Backend-Engineer-Delta-77", "title": "Backend Engineer", "employer": "Delta",
+                 "source_platform": "cutshort.io", "status": "unverified"},
             ])
             targets = store.jobs()
             result = asyncio.run(verify_jobs(store, Settings(data_dir=Path(tmp)), targets, ats_fetcher=ats,
@@ -193,11 +195,20 @@ class IndianJobScenarioTests(unittest.TestCase):
             outcomes = {d["title"]: d["outcome"] for d in result["details"]}
             self.assertEqual(outcomes["AI Engineer"], "verified_open")
             self.assertEqual(outcomes["Data Engineer"], "expired")
-            self.assertEqual(outcomes["ML Engineer"], "unreachable")
+            # Naukri is search-results-only: never re-fetched, reported as not checked.
+            self.assertEqual(outcomes["ML Engineer"], "not_checked")
+            self.assertEqual(outcomes["Backend Engineer"], "unreachable")
             by_title = {j["title"]: j for j in store.jobs()}
             self.assertEqual(lifecycle(by_title["AI Engineer"])["state"], "open_verified")
             self.assertEqual(lifecycle(by_title["Data Engineer"])["state"], "expired")
-            self.assertNotEqual(by_title["ML Engineer"]["status"], "closed")  # unreachable is not closed
+            self.assertNotEqual(by_title["Backend Engineer"]["status"], "closed")  # unreachable is not closed
+            self.assertNotEqual(by_title["ML Engineer"]["status"], "closed")
+            # A second unreachable check makes it "inaccessible" (still not closed).
+            asyncio.run(verify_jobs(store, Settings(data_dir=Path(tmp)), [by_title["Backend Engineer"]],
+                                    retriever=Blocked()))
+            again = {j["title"]: j for j in store.jobs()}["Backend Engineer"]
+            self.assertEqual(lifecycle(again)["state"], "inaccessible")
+            self.assertNotEqual(again["status"], "closed")
 
     def test_10b_board_miss_closes_only_after_two_checks(self):
         async def empty_board(companies, **kwargs):

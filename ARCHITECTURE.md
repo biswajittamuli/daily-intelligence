@@ -7,6 +7,27 @@ single-file SPA, a local SQLite store, a local Ollama model, and dynamically
 discovered Parallel MCP search/fetch tools. There is no cloud LLM and no model
 downloads.
 
+## v3.3 acquisition layer
+
+```text
+BroadJobSearch.run (app/services/broad_search.py)
+  plan: portal site: / ATS-host site: / career / open web / city / remote / startup / company paths
+  1  employer discovery (startup requests)        -> EmployerDiscovery -> CareerDiscovery
+  2  known ATS boards (task, cached 3 h)          -> ats_sources.fetch_company_jobs (public APIs)
+  3  Parallel MCP search batches                  -> SourceReport per batch / portal
+  4  classify: article | index page | listing     -> exclusions recorded
+  5  boards revealed by result URLs               -> ats_registry.boards_from_urls
+  6  index pages (portal policy gate)             -> Parallel fetch -> harvest_listings
+  7  unknown employers -> domain -> CareerDiscovery (SafeFetcher, BrowserRenderer when needed)
+     due re-discoveries; verified career pages re-read
+  8  newly found boards read + saved as employers
+  9  normalise (employer-owned sources first) + dedup, relevance gate, assessment, store
+ 10  coverage: source_reports, source_health, job_exclusions, resources
+```
+
+Access rules: `portals.may_fetch` (search-results-only portals are never fetched), robots.txt in
+`SafeFetcher`, private-network blocking in both the fetcher and the browser, bot challenges reported.
+
 ## V2 request paths
 
 ### Discovery (jobs / government / exams / news / papers)

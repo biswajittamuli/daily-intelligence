@@ -342,26 +342,27 @@ def _required_years(text: str) -> int | None:
     return min(values) if values else None
 
 
-def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,
-                 preferences: dict[str, Any], *, targets: list[str] | None = None,
-                 today: date | None = None) -> dict[str, Any]:
-    """Relevance filter + four-dimension assessment against the ACTIVE resume.
+def relevance_gate(listing: dict[str, Any], profile: dict[str, Any] | None, preferences: dict[str, Any], *,
+                   targets: list[str] | None = None) -> dict[str, Any]:
+    """The cheap part of ranking: search-page / non-technical / location / role exclusions (no text analysis).
 
-    Irrelevant listings (search pages, non-technical roles, roles unrelated to the targets,
-    jobs outside preferred locations) are *excluded*. Everything else is assessed by
-    app.services.assessment: eligibility gates (experience, degree, batch, authorization,
-    seniority, deadline) make a listing *ineligible* — visible, but never a strong match.
+    Used before the full assessment so thousands of clearly irrelevant board openings are rejected quickly,
+    with exactly the same reasons ``rank_listing`` reports.
     """
-    from app.services.assessment import assess
     from app.services.listing_links import is_listing_url, looks_like_index
+    from app.services.job_sources.ats_registry import is_ats_listing
 
-    today = today or date.today()
     profile = profile or {}
     jobs_pref = preferences.get("jobs", {})
     title = str(listing.get("title") or "")
     url = str(listing.get("original_url") or listing.get("url") or "")
     excluded = None
-    if (looks_like_index(url, title) and not is_listing_url(url)) or _re.search(r"^\s*[\d,]+\+?\s+.*\bjobs\b", title, _re.I):
+    # Listings read from an employer's own board or career page are single vacancies whatever their URL shape
+    # (e.g. Greenhouse boards hosted at stripe.com/jobs/search?gh_jid=…).
+    employer_owned = listing.get("discovered_via") in {"company career board", "company career page"} \
+        or is_ats_listing(url)
+    if not employer_owned and ((looks_like_index(url, title) and not is_listing_url(url))
+                               or _re.search(r"^\s*[\d,]+\+?\s+.*\bjobs\b", title, _re.I)):
         excluded = "Job search page, not a single vacancy"
     elif NON_TECH_TITLE.search(title) and not STRONG_TECH.search(title):
         excluded = "Not a technical role for your profile"
@@ -388,9 +389,28 @@ def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,
         role_score, role_reason = 0.0, ""
         if not excluded:
             excluded = "Role does not match your target roles"
+    return {"excluded": excluded, "role_score": role_score, "role_reason": role_reason,
+            "location_ok": location_ok, "location_reason": location_reason}
 
-    result = assess(listing, profile, preferences, role_score=role_score, role_reason=role_reason,
-                    location_ok=location_ok, location_reason=location_reason, today=today)
+
+def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,
+                 preferences: dict[str, Any], *, targets: list[str] | None = None,
+                 today: date | None = None) -> dict[str, Any]:
+    """Relevance filter + four-dimension assessment against the ACTIVE resume.
+
+    Irrelevant listings (search pages, non-technical roles, roles unrelated to the targets,
+    jobs outside preferred locations) are *excluded*. Everything else is assessed by
+    app.services.assessment: eligibility gates (experience, degree, batch, authorization,
+    seniority, deadline) make a listing *ineligible* — visible, but never a strong match.
+    """
+    from app.services.assessment import assess
+
+    today = today or date.today()
+    profile = profile or {}
+    gate = relevance_gate(listing, profile, preferences, targets=targets)
+    excluded = gate["excluded"]
+    result = assess(listing, profile, preferences, role_score=gate["role_score"], role_reason=gate["role_reason"],
+                    location_ok=gate["location_ok"], location_reason=gate["location_reason"], today=today)
     tier = "excluded" if excluded else result["tier"]
     return {"score": result["match"], "tier": tier, "reasons": [result["why"]] if result["why"] else [],
             "warnings": result["gates"] + result["warnings"], "excluded_reason": excluded,

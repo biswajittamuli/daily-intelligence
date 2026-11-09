@@ -39,7 +39,9 @@ class FakeRetriever:
         self.searches.append(list(queries))
         if any("site:wellfound.com" in q for q in queries):
             return [{"title": "AI Engineer Jobs in India | Wellfound", "url": "https://wellfound.com/role/l/ai-engineer/india",
-                     "domain": "wellfound.com", "publish_date": None, "excerpts": ["AI Engineer jobs"], "evidence": []}]
+                     "domain": "wellfound.com", "publish_date": None, "excerpts": ["AI Engineer jobs"], "evidence": []},
+                    {"title": "AI Engineer Jobs in Bengaluru | Cutshort", "url": "https://cutshort.io/jobs/ai-engineer-jobs-in-bengaluru",
+                     "domain": "cutshort.io", "publish_date": None, "excerpts": ["AI Engineer jobs"], "evidence": []}]
         return [
             {"title": "AI Engineer at Acme", "url": "https://jobs.acme.in/ai-engineer-1234",
              "domain": "jobs.acme.in", "publish_date": RECENT,
@@ -51,9 +53,11 @@ class FakeRetriever:
 
     async def fetch(self, urls, objective, **kwargs):
         self.fetches.append(list(urls))
-        page = ("[ML Engineer](https://wellfound.com/jobs/3912345-ml-engineer) Kappa · Bengaluru · Python, PyTorch · 2 days ago\n"
-                "[Senior Staff Engineer](https://wellfound.com/jobs/3912346-senior-staff) Kappa · Bengaluru · 1 day ago\n")
-        return [{"url": url, "full_content": page} for url in urls if "wellfound.com/role" in url]
+        page = ("[ML Engineer](https://cutshort.io/job/ML-Engineer-Bengaluru-Kappa-3912345) Kappa · Bengaluru · Python, PyTorch · 2 days ago\n"
+                "[Senior Staff Engineer](https://cutshort.io/job/Senior-Staff-Engineer-Kappa-3912346) Kappa · Bengaluru · 1 day ago\n")
+        # Wellfound pages must never be requested (search-results-only policy).
+        assert not any("wellfound.com" in url for url in urls), urls
+        return [{"url": url, "full_content": page} for url in urls if "cutshort.io/jobs" in url]
 
 
 async def fake_ats(companies, **kwargs):
@@ -125,9 +129,16 @@ class BroadSearchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             engine = BroadJobSearch(Settings(data_dir=Path(tmp)), Store(Path(tmp)), PREFS)
             plans = {n: engine.plan("", n) for n in (50, 100, 200)}
-            self.assertEqual([plans[n]["search_calls"] for n in (50, 100, 200)], [3, 6, 10])
+            self.assertEqual([plans[n]["search_calls"] for n in (50, 100, 200)], [4, 8, 12])
             groups = [batch.get("group") for batch in plans[50]["batches"]]
-            self.assertEqual(groups, ["portal", "career", "web"])
+            self.assertEqual(groups, ["portal", "ats", "career", "web"])
+            self.assertNotIn("city", plans[200]["paths"])  # preferences already name Bengaluru
+            self.assertIn("remote", plans[200]["paths"])
+            india_only = validate_preferences({"jobs": {"locations": ["India"], "roles": ["AI Engineer"]}})
+            wide = BroadJobSearch(Settings(data_dir=Path(tmp)), Store(Path(tmp)), india_only).plan("", 200)
+            self.assertIn("city", wide["paths"])
+            all_queries = [q for b in wide["batches"] for q in b["queries"]]
+            self.assertEqual(len(all_queries), len(set(all_queries)))
             queries = [q for b in plans[200]["batches"] for q in b["queries"]]
             self.assertFalse(any("site:" in q and "/" in q.split()[0] for q in queries))
             self.assertFalse(any("naukri" in q for q in queries))  # disabled portal is not searched
@@ -142,7 +153,7 @@ class BroadSearchTests(unittest.TestCase):
                                     ats_fetcher=fake_ats)
             summary = asyncio.run(engine.run("", pool_size=50, use_llm=False))
             self.assertEqual(summary["status"], "complete")
-            self.assertEqual(summary["search_calls"], 3)
+            self.assertEqual(summary["search_calls"], 4)
             self.assertEqual(summary["harvested"], 2)
             self.assertEqual(summary["ats_openings"], 5)
             excluded = summary["excluded"]
@@ -157,6 +168,16 @@ class BroadSearchTests(unittest.TestCase):
             platforms = {entry["platform"]: entry for entry in summary["coverage"]}
             self.assertEqual(platforms["Ghost"]["status"], "board not found (404)")
             self.assertIn("Wellfound", platforms)
+            acquisition = summary["acquisition"]
+            wellfound = [r for r in acquisition["sources"] if r["name"] == "Wellfound" and r["method"] == "index page fetch"]
+            self.assertEqual(wellfound[0]["state"], "skipped_by_access_policy")
+            self.assertIn("Search or listing-index page, not a job detail", acquisition["exclusion_reasons"])
+            stages = {row["stage"]: row["count"] for row in acquisition["funnel_stages"]}
+            self.assertEqual(stages["stored_jobs"], summary["stored"])
+            self.assertEqual(stages["ats_openings"], 5)
+            exclusions = store.exclusions(summary["session_id"])
+            self.assertGreater(exclusions["total"], 0)
+            self.assertTrue(store.source_reports(summary["session_id"]))
             # Acme's AI Engineer appears on web search and its ATS board: merged, both sources kept.
             acme = [job for job in store.jobs() if job["title"] == "AI Engineer at Acme" or
                     (job["title"] == "AI Engineer" and job["employer"] == "Acme")]

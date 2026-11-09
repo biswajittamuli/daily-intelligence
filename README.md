@@ -11,6 +11,29 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 3.3
+
+- **Multi-engine acquisition** (`app/services/job_sources/`): Parallel MCP search (kept as is) plus
+  public ATS job-board APIs, employer career pages, a polite SSRF-safe direct fetcher (robots.txt,
+  crawl-delay, per-host rate limits, on-disk ETag cache) and bounded Playwright rendering that drives
+  the installed Google Chrome (one page at a time, private-network requests blocked).
+- **JavaScript career-page discovery** in stages: static HTML → rendered DOM (with permitted
+  "careers"/menu reveal clicks) → embedded `__NEXT_DATA__`/JSON-LD/public JSON the page loads →
+  sitemaps → verification → search fallback. Nine precise outcomes, every method recorded, bounded
+  retry schedule. Nothing is invented.
+- **ATS registry** of 23 providers (6 read through documented public APIs, the rest identified and
+  read as career pages). `site:` searches on ATS hosts reveal boards of employers you did not know.
+- **Portal access policies**: LinkedIn, Indeed, Glassdoor, Naukri, Wellfound and YC Work at a
+  Startup are used through search-engine results only and never fetched; other portals only via the
+  search provider. Coverage never claims a portal was searched when nothing came back.
+- **Coverage dashboard**: per-source states (17 distinct states), an 11-stage funnel, resource usage
+  and an exclusion browser with a reason for every discarded result.
+- **Canonical job schema, cross-source dedup** with the employer page as canonical destination,
+  contradiction tracking, new lifecycle states (pending, third-party only, inaccessible) and
+  employer-page-first re-verification.
+- Fixed: Greenhouse listings hosted on company domains (`…/jobs/search?gh_jid=…`) were discarded as
+  "search pages" (≈1,200 real openings per run); ranking is ~14× faster.
+
 ## What's new in 3.2
 
 - **Honest job scoring.** Every job shows four separate measures: **profile match** (weighted,
@@ -139,6 +162,18 @@ chmod +x scripts/start-desktop.sh
 Then search for **Daily Intelligence** in KDE's application launcher. The script
 checks Ollama, starts the local server, and opens the browser. Run from this checkout
 because the desktop entry points to its current absolute path.
+
+### Logs and inspection
+
+```bash
+tail -f ~/.local/state/daily-intelligence/logs/*.log         # launcher + server logs
+curl -s http://127.0.0.1:8765/api/sources/health | python3 -m json.tool | less   # per-source health, policies
+curl -s "http://127.0.0.1:8765/api/sources/exclusions?reason=Duplicate%20of%20another%20listing" | python3 -m json.tool | less
+```
+
+Optional settings (preferences JSON, `jobs` section): `browser_rendering` (default true),
+`browser_concurrency` (1), `browser_timeout_ms` (15000), `http_concurrency` (6), `store_cap` (500),
+`firecrawl_enabled` (false; also needs `FIRECRAWL_API_KEY`, sends only public employer URLs).
 
 ### Manual server (development)
 
@@ -296,7 +331,7 @@ fetch, and prints per-stage timing. Credentials are never printed.
 ## Tests
 
 ```bash
-./.venv/bin/python -m unittest discover -q      # 132 tests (network mocked)
+./.venv/bin/python -m unittest discover -s tests -q   # 155 tests (network mocked; browser tests use a local fixture site)
 ./.venv/bin/python -m compileall -q app tests
 ```
 
@@ -318,10 +353,13 @@ fetch, and prints per-stage timing. Credentials are never printed.
 
 ## Current limitations
 
-- Many startup homepages are rendered by JavaScript, so their career link is not in the HTML.
-  Those companies are listed with "no career link found on homepage"; nothing is guessed.
-- LinkedIn and Indeed `site:` searches often return nothing through the search provider, and
-  Indeed pages frequently time out when re-verified. Both are reported as such, never as searched.
+- Coverage is never complete. LinkedIn, Indeed, Glassdoor, Naukri and Wellfound are deliberately
+  limited to search-engine results (their terms forbid automated access), so their listings stay
+  "third-party / unverified" unless the same vacancy is found on the employer's own page.
+- Workday, Keka, Darwinbox, Zoho Recruit and similar systems have no documented public API; they are
+  read as rendered career pages, which is slower and less complete than the API-backed boards.
+- Browser rendering takes ~5–15 s per page and Chrome uses up to ~1 GB while open; it is used only
+  when static HTML is insufficient and is closed at the end of each run.
 - Company names in startup news are extracted by patterns plus one small local-model pass. A few
   foreign companies covered by Indian publications may be tagged India; the evidence is shown.
 - Discovery quality depends on the local model and on what MCP returns. Index pages

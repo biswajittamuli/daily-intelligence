@@ -132,12 +132,32 @@ CREATE INDEX IF NOT EXISTS idx_notices_last_seen ON recruitment_notices(last_see
 CREATE INDEX IF NOT EXISTS idx_exam_events_date ON exam_events(event_date);
 CREATE INDEX IF NOT EXISTS idx_intel_category ON intel_items(category, last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_created ON search_sessions(created_at DESC);
+CREATE TABLE IF NOT EXISTS source_reports (
+    id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL, source_key TEXT NOT NULL, name TEXT NOT NULL,
+    category TEXT, domain TEXT, method TEXT, state TEXT NOT NULL, started_at TEXT, completed_at TEXT,
+    http_status INTEGER, queries INTEGER, search_results INTEGER, fetched INTEGER, parsed INTEGER,
+    listings INTEGER, unique_count INTEGER, duplicates INTEGER, rejected INTEGER, stored INTEGER, verified INTEGER,
+    retries INTEGER, duration_ms INTEGER, failure_reason TEXT, detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_source_reports_session ON source_reports(session_id);
+CREATE TABLE IF NOT EXISTS source_health (
+    source_key TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT, domain TEXT, method TEXT,
+    last_state TEXT, last_success_at TEXT, last_failure_at TEXT, last_failure_reason TEXT,
+    success_count INTEGER NOT NULL DEFAULT 0, failure_count INTEGER NOT NULL DEFAULT 0,
+    last_listings INTEGER, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS job_exclusions (
+    id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL, url TEXT, title TEXT, employer TEXT, source TEXT,
+    reason TEXT NOT NULL, stage TEXT, detail TEXT, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_exclusions_session ON job_exclusions(session_id, reason);
 """
 
 JSON_COLUMNS = {
     "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json",
-                     "sources_json", "eligibility_json", "verify_history_json"),
-    "employers": ("locations_json", "funding_json", "discovery_sources_json", "aliases_json", "evidence_json"),
+                     "sources_json", "eligibility_json", "verify_history_json", "conflicts_json"),
+    "employers": ("locations_json", "funding_json", "discovery_sources_json", "aliases_json", "evidence_json",
+                  "career_discovery_json"),
     "applications": ("interview_dates_json", "history_json"),
     "recruitment_notices": ("evidence_json", "raw_json"),
     "exam_events": ("evidence_json", "raw_json"),
@@ -166,7 +186,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 5  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 6  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -218,7 +238,14 @@ class Store:
                              "updated_date": "TEXT", "employer_url": "TEXT", "application_url": "TEXT",
                              "requisition_id": "TEXT", "status_evidence": "TEXT", "repost_of": "INTEGER",
                              "verify_history_json": "TEXT", "missing_count": "INTEGER DEFAULT 0",
-                             "employer_id": "INTEGER", "dedup_key": "TEXT"},
+                             "employer_id": "INTEGER", "dedup_key": "TEXT",
+                             # v6: canonical schema + evidence
+                             "extraction_method": "TEXT", "evidence_confidence": "INTEGER", "ats_ref": "TEXT",
+                             "salary_currency": "TEXT", "education": "TEXT", "conflicts_json": "TEXT",
+                             "retrieved_at": "TEXT", "verification_source": "TEXT"},
+            "employers": {"career_discovery_json": "TEXT", "career_outcome": "TEXT", "next_discovery_at": "TEXT",
+                          "discovery_attempts": "INTEGER DEFAULT 0", "last_discovery_method": "TEXT",
+                          "last_discovery_success": "TEXT"},
             "intel_items": {"region": "TEXT", "topic": "TEXT", "updated_date": "TEXT"},
         }
         for table, columns in additions.items():
@@ -589,12 +616,7 @@ class Store:
                         if twin["status"] in {"closed", "expired"}:
                             repost_of = twin["id"]
                         else:
-                            merged = _merge_sources(_loads(twin["sources_json"], []),
-                                                    (record.get("sources") or []) + [{"platform": record.get("source_platform"),
-                                                                                      "url": original, "via": "duplicate"}])
-                            db.execute("UPDATE job_listings SET sources_json=?, last_seen=?, "
-                                       "requisition_id=COALESCE(requisition_id, ?) WHERE id=?",
-                                       (_json(merged), now, req, twin["id"]))
+                            self._merge_twin(db, twin["id"], record, original, now)
                             saved.append(self._row(db.execute("SELECT * FROM job_listings WHERE id=?",
                                                               (twin["id"],)).fetchone(), "job_listings"))
                             continue
@@ -611,8 +633,9 @@ class Store:
                     match_score,match_reason,evidence_json,raw_json,first_seen,last_seen,last_verified,
                     best_resume_id,best_resume_label,resume_scores_json,sources_json,eligibility_json,
                     discovered_via,updated_date,employer_url,application_url,requisition_id,status_evidence,
-                    repost_of,verify_history_json,employer_id,dedup_key)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    repost_of,verify_history_json,employer_id,dedup_key,extraction_method,evidence_confidence,
+                    ats_ref,salary_currency,education,retrieved_at,verification_source)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(canonical_url) DO UPDATE SET
                     original_url=excluded.original_url, employer=COALESCE(excluded.employer, job_listings.employer),
                     title=excluded.title, location=COALESCE(excluded.location, job_listings.location),
@@ -634,7 +657,14 @@ class Store:
                     status_evidence=COALESCE(excluded.status_evidence, job_listings.status_evidence),
                     verify_history_json=excluded.verify_history_json,
                     employer_id=COALESCE(excluded.employer_id, job_listings.employer_id),
-                    dedup_key=excluded.dedup_key, missing_count=0""",
+                    dedup_key=excluded.dedup_key, missing_count=0,
+                    extraction_method=COALESCE(excluded.extraction_method, job_listings.extraction_method),
+                    evidence_confidence=COALESCE(excluded.evidence_confidence, job_listings.evidence_confidence),
+                    ats_ref=COALESCE(excluded.ats_ref, job_listings.ats_ref),
+                    salary_currency=COALESCE(excluded.salary_currency, job_listings.salary_currency),
+                    education=COALESCE(excluded.education, job_listings.education),
+                    retrieved_at=excluded.retrieved_at,
+                    verification_source=COALESCE(excluded.verification_source, job_listings.verification_source)""",
                     (url, original, record.get("employer"), record.get("title") or "Untitled role",
                      record.get("location"), record.get("remote"), record.get("employment_type"),
                      record.get("experience"), _json(record.get("skills") or []), record.get("salary"),
@@ -646,10 +676,53 @@ class Store:
                      _json(sources), _json(record.get("eligibility")), record.get("discovered_via"),
                      record.get("updated_date"), record.get("employer_url"), record.get("application_url"),
                      record.get("requisition_id"), record.get("status_evidence"), repost_of,
-                     _json(history), record.get("employer_id"), key))
+                     _json(history), record.get("employer_id"), key, record.get("extraction_method"),
+                     record.get("evidence_confidence"), record.get("ats_ref"), record.get("salary_currency"),
+                     record.get("education"), record.get("retrieved_at") or now, record.get("verification_source")))
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
                 saved.append(self._row(row, "job_listings"))
         return saved
+
+    OFFICIAL_VIA = {"company career board", "company career page"}
+
+    def _merge_twin(self, db: sqlite3.Connection, twin_id: int, record: dict[str, Any], original: str, now: str) -> None:
+        """Same opening seen on another source: keep one row, every source reference, and any contradictions.
+
+        When the new sighting comes from the employer's own board or career page and the stored row does
+        not, the employer page becomes the official application destination and status evidence.
+        """
+        twin = db.execute("SELECT * FROM job_listings WHERE id=?", (twin_id,)).fetchone()
+        via = record.get("discovered_via")
+        merged = _merge_sources(_loads(twin["sources_json"], []),
+                                (record.get("sources") or []) + [{"platform": record.get("source_platform"),
+                                                                  "url": original, "via": via or "duplicate",
+                                                                  "method": record.get("extraction_method"),
+                                                                  "retrieved_at": now}])
+        conflicts = _loads(twin["conflicts_json"], []) or []
+        for field in ("posted_date", "deadline", "location"):
+            new, old = record.get(field), twin[field]
+            if new and old and str(new)[:10] != str(old)[:10] and \
+                    not any(c.get("field") == field and c.get("value") == new for c in conflicts):
+                conflicts.append({"field": field, "stored": old, "value": new, "source": original, "seen_at": now})
+        new_status = record.get("status")
+        if new_status in {"closed", "expired"} and twin["status"] not in {"closed", "expired"}:
+            conflicts.append({"field": "status", "stored": twin["status"], "value": new_status, "source": original,
+                              "seen_at": now})
+        fields = {"sources_json": _json(merged), "last_seen": now, "conflicts_json": _json(conflicts[-12:]) if conflicts else None}
+        if record.get("requisition_id") and not twin["requisition_id"]:
+            fields["requisition_id"] = record["requisition_id"]
+        official_new = via in self.OFFICIAL_VIA
+        official_old = twin["discovered_via"] in self.OFFICIAL_VIA
+        if official_new and not official_old:
+            fields.update({"application_url": record.get("application_url") or original, "employer_url": original,
+                           "discovered_via": via, "verification_source": "employer page (merged duplicate)"})
+            if via == "company career board":
+                fields.update({"status": "open", "last_verified": now,
+                               "status_evidence": "Listed on the employer's public job board"})
+            for column in ("posted_date", "employer_id", "ats_ref", "extraction_method"):
+                if record.get(column) and not twin[column]:
+                    fields[column] = record[column]
+        db.execute(f"UPDATE job_listings SET {', '.join(k + '=?' for k in fields)} WHERE id=?", (*fields.values(), twin_id))
 
     def record_verification(self, job_id: int, *, status: str | None, evidence: str, outcome: str,
                             missing: bool = False, posted_date: str | None = None,
@@ -670,6 +743,9 @@ class Store:
                 fields["status"] = status
             if outcome in {"verified_open", "closed", "expired"}:
                 fields["last_verified"] = now
+                fields["verification_source"] = ("employer public job board" if evidence.startswith("Listed on") else
+                                                 "employer page" if evidence.startswith(("Employer page", "JobPosting")) else
+                                                 "third-party listing page")
             if posted_date and not row["posted_date"]:
                 fields["posted_date"] = posted_date
             if raw_text:
@@ -1156,13 +1232,127 @@ class Store:
             output.append(item)
         return output
 
+    # -------------------------------------------------------- diagnostics (v6)
+    def save_coverage(self, session_id: int, reports: list[dict[str, Any]], exclusions: list[dict[str, Any]]) -> None:
+        """Persist one session's source reports and exclusions, and roll source health forward."""
+        from app.services.job_sources.models import SourceState
+        now = self.now()
+        with self.connect() as db:
+            db.execute("DELETE FROM source_reports WHERE session_id=?", (session_id,))
+            for r in reports:
+                db.execute("""INSERT INTO source_reports(session_id,source_key,name,category,domain,method,state,started_at,
+                              completed_at,http_status,queries,search_results,fetched,parsed,listings,unique_count,duplicates,
+                              rejected,stored,verified,retries,duration_ms,failure_reason,detail)
+                              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           (session_id, r["key"], r["name"], r.get("category"), r.get("domain"), r.get("method"), r["state"],
+                            r.get("started_at"), r.get("completed_at"), r.get("http_status"), r.get("queries"),
+                            r.get("search_results"), r.get("fetched"), r.get("parsed"), r.get("listings"), r.get("unique"),
+                            r.get("duplicates"), r.get("rejected"), r.get("stored"), r.get("verified"), r.get("retries"),
+                            r.get("duration_ms"), r.get("failure_reason"), r.get("detail")))
+                success = r["state"] in SourceState.SUCCESS
+                failure = not success and r["state"] not in {SourceState.NO_RESULTS, SourceState.TARGETED,
+                                                             SourceState.NOT_TARGETED, SourceState.POLICY_SKIPPED}
+                db.execute("""INSERT INTO source_health(source_key,name,category,domain,method,last_state,last_success_at,
+                              last_failure_at,last_failure_reason,success_count,failure_count,last_listings,updated_at)
+                              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                              ON CONFLICT(source_key) DO UPDATE SET last_state=excluded.last_state,
+                              last_success_at=COALESCE(excluded.last_success_at, source_health.last_success_at),
+                              last_failure_at=COALESCE(excluded.last_failure_at, source_health.last_failure_at),
+                              last_failure_reason=COALESCE(excluded.last_failure_reason, source_health.last_failure_reason),
+                              success_count=source_health.success_count+excluded.success_count,
+                              failure_count=source_health.failure_count+excluded.failure_count,
+                              last_listings=excluded.last_listings, updated_at=excluded.updated_at""",
+                           (r["key"], r["name"], r.get("category"), r.get("domain"), r.get("method"), r["state"],
+                            now if success else None, now if failure else None,
+                            r.get("failure_reason") if failure else None, int(success), int(failure),
+                            r.get("listings"), now))
+            db.execute("DELETE FROM job_exclusions WHERE session_id=?", (session_id,))
+            db.executemany("""INSERT INTO job_exclusions(session_id,url,title,employer,source,reason,stage,detail,created_at)
+                              VALUES(?,?,?,?,?,?,?,?,?)""",
+                           [(session_id, e.get("url"), e.get("title"), e.get("employer"), e.get("source"), e["reason"],
+                             e.get("stage"), e.get("detail"), now) for e in exclusions])
+            # Keep diagnostics for the 15 most recent job sessions only.
+            keep = [row["id"] for row in db.execute(
+                "SELECT id FROM search_sessions WHERE category='jobs' ORDER BY id DESC LIMIT 15")]
+            if keep:
+                marks = ",".join("?" * len(keep))
+                db.execute(f"DELETE FROM job_exclusions WHERE session_id NOT IN ({marks})", keep)
+                db.execute(f"DELETE FROM source_reports WHERE session_id NOT IN ({marks})", keep)
+
+    def source_reports(self, session_id: int) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM source_reports WHERE session_id=? ORDER BY id",
+                                                    (session_id,))]
+
+    def source_health(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT * FROM source_health ORDER BY updated_at DESC LIMIT ?",
+                                                    (limit,))]
+
+    def exclusions(self, session_id: int | None = None, *, reason: str = "", query: str = "",
+                   limit: int = 200, offset: int = 0) -> dict[str, Any]:
+        with self.connect() as db:
+            if session_id is None:
+                row = db.execute("SELECT MAX(session_id) AS s FROM job_exclusions").fetchone()
+                session_id = row["s"] if row else None
+            if session_id is None:
+                return {"session_id": None, "total": 0, "reasons": {}, "items": []}
+            reasons = {row["reason"]: row["n"] for row in db.execute(
+                "SELECT reason, COUNT(*) AS n FROM job_exclusions WHERE session_id=? GROUP BY reason ORDER BY n DESC",
+                (session_id,))}
+            where, args = "session_id=?", [session_id]
+            if reason:
+                where += " AND reason=?"
+                args.append(reason)
+            if query:
+                where += " AND (title LIKE ? OR employer LIKE ? OR url LIKE ?)"
+                args += [f"%{query}%"] * 3
+            total = db.execute(f"SELECT COUNT(*) AS n FROM job_exclusions WHERE {where}", args).fetchone()["n"]
+            items = [dict(row) for row in db.execute(
+                f"SELECT * FROM job_exclusions WHERE {where} ORDER BY id LIMIT ? OFFSET ?",
+                (*args, max(1, min(limit, 1000)), max(0, offset)))]
+        return {"session_id": session_id, "total": total, "reasons": reasons, "items": items}
+
+    def save_career_discovery(self, employer_id: int, result: dict[str, Any]) -> None:
+        """Store a career-discovery outcome (methods attempted, last success, next retry) on an employer."""
+        ats = result.get("ats") or {}
+        status = result.get("outcome_label") or result.get("outcome")
+        compact = {k: result.get(k) for k in ("outcome", "outcome_label", "career_url", "candidates", "ats", "ats_all",
+                                              "jobs_endpoint", "methods", "checked_at", "homepage_status", "attempts",
+                                              "last_method", "last_success_at", "next_retry_at", "homepage_fingerprint",
+                                              "homepage_changed")}
+        compact["listings_found"] = len(result.get("listings") or [])
+        with self.connect() as db:
+            db.execute("""UPDATE employers SET career_discovery_json=?, career_outcome=?, next_discovery_at=?,
+                          discovery_attempts=?, last_discovery_method=COALESCE(?, last_discovery_method),
+                          last_discovery_success=COALESCE(?, last_discovery_success), career_status=?,
+                          career_url=COALESCE(?, career_url), last_career_check=?,
+                          ats_provider=COALESCE(?, ats_provider),
+                          ats_slug=CASE WHEN ? THEN COALESCE(?, ats_slug) ELSE ats_slug END WHERE id=?""",
+                       (_json(compact), result.get("outcome"), result.get("next_retry_at"), result.get("attempts") or 1,
+                        result.get("last_method"), result.get("last_success_at"), status, result.get("career_url"),
+                        result.get("checked_at"), ats.get("provider"), 1 if ats.get("readable") else 0, ats.get("slug"),
+                        employer_id))
+
+    def employers_due_for_discovery(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Employers with a website whose career discovery has never run or whose retry time has come."""
+        now = self.now()
+        with self.connect() as db:
+            rows = db.execute("""SELECT * FROM employers WHERE website IS NOT NULL AND website != ''
+                                 AND (next_discovery_at IS NULL OR next_discovery_at <= ?)
+                                 AND NOT (ats_provider IN ('greenhouse','lever','ashby','workable','smartrecruiters','recruitee')
+                                          AND ats_slug IS NOT NULL AND career_outcome IS NOT NULL)
+                                 ORDER BY (career_outcome IS NULL) DESC, COALESCE(next_discovery_at, '') ASC LIMIT ?""",
+                              (now, limit)).fetchall()
+        return [self._row(row, "employers") for row in rows]
+
     # ------------------------------------------------------------- maintenance
     def clear_intel(self) -> dict[str, int]:
         """Remove discovered intelligence while preserving tasks, history and briefings."""
         with self.connect() as db:
             removed = {}
             for table in ("job_listings", "recruitment_notices", "exam_events",
-                          "intel_items", "search_sessions", "saved_items"):
+                          "intel_items", "search_sessions", "saved_items", "source_reports", "job_exclusions"):
                 removed[table] = int(db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"])
                 db.execute(f"DELETE FROM {table}")
             return removed
@@ -1251,9 +1441,12 @@ def _merge_sources(existing: list[Any], new: list[Any]) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        output.append({"platform": item.get("platform"), "url": item["url"],
-                       "via": item.get("via")})
-    return output[:12]
+        entry = {"platform": item.get("platform"), "url": item["url"], "via": item.get("via")}
+        for extra in ("method", "retrieved_at", "kind", "policy"):
+            if item.get(extra):
+                entry[extra] = item[extra]
+        output.append(entry)
+    return output[:16]
 
 
 def _iso_date(value: Any) -> date | None:

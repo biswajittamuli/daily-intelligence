@@ -23,6 +23,7 @@ import asyncio
 import json
 import re
 import time
+from collections import Counter
 from dataclasses import replace
 from datetime import date
 from typing import Any, Callable
@@ -159,6 +160,9 @@ def _clean_name(raw: str) -> str | None:
         return None
     if len(name.split()) > 4 or re.match(r"^\d", name):
         return None
+    # "Y Combinator startups", "AI companies", "Top jobs" are categories, not companies.
+    if re.search(r"\b(startups|companies|jobs|careers|investors|founders|unicorns|portfolio)$", name, re.I):
+        return None
     return name
 
 
@@ -240,12 +244,16 @@ def detect_links(base_url: str, html_or_md: str) -> dict[str, Any]:
 
 class EmployerDiscovery:
     def __init__(self, settings: Settings, store: Store, *, retriever: Any | None = None,
-                 http: httpx.AsyncClient | None = None, provider: Any | None = None) -> None:
+                 http: Any | None = None, provider: Any | None = None, browser: Any | None = None,
+                 direct: bool = True) -> None:
+        """``http`` may be a ``SafeFetcher`` (shared with a job search) or an ``httpx.AsyncClient`` (tests)."""
         self.settings = settings
         self.store = store
         self._retriever = retriever
         self._http = http
         self._provider = provider
+        self._browser = browser
+        self._direct = direct
 
     async def run(self, request: str = "", *, topic: str = "AI", search_calls: int = 6, max_companies: int = 25,
                   progress: Callable[[str], None] | None = None, cancel_event: Any | None = None,
@@ -275,8 +283,22 @@ class EmployerDiscovery:
         failures: list[str] = []
         retriever = self._retriever
         owns_retriever = retriever is None
-        owns_http = self._http is None
-        http = self._http or httpx.AsyncClient(timeout=12, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+        from app.services.job_sources.safe_http import SafeFetcher
+        raw_client = self._http if isinstance(self._http, httpx.AsyncClient) else None
+        owns_raw = raw_client is None
+        raw = raw_client or httpx.AsyncClient(timeout=12, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+        if isinstance(self._http, SafeFetcher):
+            safe, owns_safe = self._http, False
+        else:
+            safe = SafeFetcher(client=raw_client, resolve_dns=raw_client is None, per_host_interval=0 if raw_client else 1.0,
+                               cache_path=None if raw_client else self.settings.data_dir / "http-cache.sqlite3")
+            await safe.__aenter__()
+            owns_safe = True
+        browser, owns_browser = self._browser, False
+        if browser is None and raw_client is None and self._direct:
+            from app.services.job_sources.browser import BrowserRenderer
+            browser, owns_browser = BrowserRenderer(max_pages=1), True
+        http = raw
         try:
             if retriever is None:
                 from app.mcp.retrieval import ParallelWebRetriever
@@ -317,12 +339,16 @@ class EmployerDiscovery:
                                                       if company["name"].casefold() in str(item.get("title") or "").casefold()})
 
             await self._resolve_websites(retriever, companies, failures, progress, check_cancel)
-            await self._discover_careers(retriever, http, companies, failures, progress, check_cancel)
+            await self._discover_careers(retriever, safe, browser, companies, failures, progress, check_cancel)
             await self._probe_ats(http, companies, progress)
             saved = self._persist(companies)
         finally:
-            if owns_http:
+            if owns_safe:
+                await safe.__aexit__(None, None, None)
+            if owns_raw:
                 await http.aclose()
+            if owns_browser and browser is not None:
+                await browser.close()
             if owns_retriever and retriever is not None:
                 try:
                     await retriever.__aexit__(None, None, None)
@@ -342,7 +368,9 @@ class EmployerDiscovery:
             "signals_saved": saved["signals"], "coverage": coverage, "failures": failures[:20],
             "companies": [{key: company.get(key) for key in ("name", "website", "career_url", "ats_provider", "ats_slug",
                                                              "ats_readable", "ats_jobs", "classification", "country",
-                                                             "career_status", "employer_id")} for company in companies],
+                                                             "career_status", "career_outcome", "employer_id",
+                                                             "career_listings_count")} for company in companies],
+            "career_outcomes": dict(Counter(company.get("career_outcome") or "no website" for company in companies)),
             "career_listings": [dict(item, employer=company["name"], employer_id=company.get("employer_id"))
                                 for company in companies for item in company.get("career_listings") or []],
             "duration_seconds": round(time.perf_counter() - started, 1),
@@ -424,25 +452,55 @@ class EmployerDiscovery:
         except (httpx.HTTPError, ValueError):
             return None
 
-    async def _discover_careers(self, retriever, http, companies, failures, progress, check_cancel) -> None:
+    async def _discover_careers(self, retriever, safe, browser, companies, failures, progress, check_cancel) -> None:
+        """Multi-stage career discovery (static, browser, embedded data, sitemaps, search) per company website."""
+        from app.services.job_sources.career_discovery import CareerDiscovery, discover_many
+
+        async def search(queries):
+            return await retriever.search(queries[:3], "Find the company's official careers page or public job board.")
+
         targets = [c for c in companies if c.get("website")]
-        semaphore = asyncio.Semaphore(4)
+        progress(f"Checking {len(targets)} company websites for career pages (static first, browser when needed)")
+        discovery = CareerDiscovery(safe, browser=browser, search=search if retriever is not None else None)
+        for company in targets:
+            stored = self.store.find_employer(company["name"])
+            company["career_discovery"] = (stored or {}).get("career_discovery")
+        results = await discover_many(targets, discovery, concurrency=4, cancel=check_cancel)
         need_mcp: list[dict[str, Any]] = []
-
-        async def one(company):
-            async with semaphore:
-                check_cancel()
-                html = await self._get(http, company["website"])
-                if html is None:
-                    need_mcp.append(company)
-                    return
+        for company, result in zip(targets, results):
+            company["career_discovery_result"] = result
+            text = str(result.pop("homepage_text", "") or "")
+            first = normalize_name(company["name"]).split()[0] if normalize_name(company["name"]) else None
+            if text and first and not re.search(re.escape(first), text, re.I) and \
+                    not re.search(re.escape(first), str(result.get("homepage_title") or ""), re.I):
+                company["website_rejected"] = company.pop("website")
+                company["career_status"] = "website did not mention the company; not used"
+                company["career_discovery_result"] = None
+                continue
+            if text:
                 company["website_status"] = "fetched directly"
-                await self._inspect(http, company, company["website"], html)
-
-        progress(f"Checking {len(targets)} company websites for career pages")
-        await asyncio.gather(*(one(company) for company in targets))
-        # Sites that block direct fetches: try once through Parallel MCP (bounded).
+                company["india_site"] = bool(INDIA_HINT.search(text))
+            ats = result.get("ats") or {}
+            if ats:
+                company.update(ats_provider=ats["provider"], ats_slug=ats["slug"], ats_readable=bool(ats.get("readable")))
+            if result.get("career_url"):
+                company["career_url"] = result["career_url"]
+            company["career_listings"] = [
+                {"title": job["title"], "url": job["url"], "employer": company["name"], "context": job.get("description") or "",
+                 "posted_date": job.get("posted_date"), "location": job.get("location"), "skills": [],
+                 "extraction_method": job.get("extraction_method"), "deadline": job.get("deadline"),
+                 "employment_type": job.get("employment_type"), "salary": job.get("salary"),
+                 "education": job.get("education"), "requisition_id": job.get("requisition_id")}
+                for job in result.get("listings") or [] if not job.get("url_is_synthetic")]
+            company["career_listings_count"] = len(company["career_listings"])
+            company["career_outcome"] = result.get("outcome")
+            company["career_status"] = result.get("outcome_label")
+            if result.get("outcome") in {"access_denied", "domain_unavailable"} and not text:
+                need_mcp.append(company)
+        # Sites that refuse direct fetches: one bounded read through the search provider (homepage only).
         for start in range(0, min(len(need_mcp), 10), 5):
+            if retriever is None:
+                break
             check_cancel()
             chunk = need_mcp[start:start + 5]
             try:
@@ -450,52 +508,27 @@ class EmployerDiscovery:
                                               full_content=True)
             except Exception as exc:
                 failures.append(f"website fetch: {str(exc)[:100]}")
-                for company in chunk:
-                    company["career_status"] = "website not retrievable"
                 continue
             by_domain = {_registrable(domain_of(str(p.get("url") or "")) or ""): p for p in pages}
             for company in chunk:
                 page = by_domain.get(_registrable(domain_of(company["website"]) or ""))
                 content = str((page or {}).get("full_content") or (page or {}).get("content") or "")
-                if content:
-                    company["website_status"] = "fetched via Parallel"
-                    await self._inspect(http, company, company["website"], content)
-                else:
-                    company["career_status"] = "website not retrievable"
-
-    async def _inspect(self, http, company, url, content) -> None:
-        # The homepage must mention the company; otherwise the domain is someone else's.
-        first = re.escape(normalize_name(company["name"]).split()[0]) if normalize_name(company["name"]) else None
-        if first and not re.search(first, re.sub(r"<[^>]+>", " ", content[:200_000]), re.I):
-            company["website_rejected"] = company.pop("website")
-            company["career_status"] = "website did not mention the company; not used"
-            return
-        if INDIA_HINT.search(re.sub(r"<[^>]+>", " ", content[:200_000])):
-            company["india_site"] = True
-        links = detect_links(url, content)
-        if links["ats"]:
-            best = sorted(links["ats"], key=lambda a: not a["readable"])[0]
-            company.update(ats_provider=best["provider"], ats_slug=best["slug"], ats_readable=best["readable"],
-                           career_url=company.get("career_url") or best["url"])
-        if links["career_urls"]:
-            career = links["career_urls"][0]
-            company["career_url"] = career
-            if not company.get("ats_provider"):
-                html = await self._get(http, career)
-                if html:
-                    deeper = detect_links(career, html)
-                    if deeper["ats"]:
-                        best = sorted(deeper["ats"], key=lambda a: not a["readable"])[0]
-                        company.update(ats_provider=best["provider"], ats_slug=best["slug"], ats_readable=best["readable"])
-                    company["career_page_text"] = html[:200_000]
-                    from app.services.listing_links import harvest_career_page
-                    company["career_listings"] = harvest_career_page(career, html, company["name"])
-                    company["career_status"] = "career page found"
-                else:
-                    company["career_status"] = "career page linked but not retrievable"
-        if not company.get("career_status"):
-            company["career_status"] = ("public job board linked" if company.get("ats_provider")
-                                        else "no career link found on homepage")
+                if not content:
+                    continue
+                company["website_status"] = "fetched via Parallel"
+                links = detect_links(company["website"], content)
+                if links["ats"]:
+                    best = sorted(links["ats"], key=lambda a: not a["readable"])[0]
+                    company.update(ats_provider=best["provider"], ats_slug=best["slug"], ats_readable=best["readable"])
+                if links["career_urls"]:
+                    company["career_url"] = links["career_urls"][0]
+                    company["career_status"] = "Career page candidate found (via search provider)"
+                    result = company.get("career_discovery_result")
+                    if result:
+                        result["outcome"], result["outcome_label"] = "career_candidate", company["career_status"]
+                        result["career_url"] = company["career_url"]
+                        result["methods"].append({"stage": "B", "method": "Parallel fetch fallback", "state": "fetch_successful",
+                                                  "detail": f"{len(links['career_urls'])} career link(s)"})
 
     async def _probe_ats(self, http, companies, progress) -> None:
         """Verify public boards: detected slugs first, then slug guesses from the verified domain."""
@@ -570,6 +603,14 @@ class EmployerDiscovery:
             employer, created = self.store.upsert_employer(record)
             new += int(created)
             company["employer_id"] = employer["id"]
+            if company.get("career_discovery_result"):
+                result = company["career_discovery_result"]
+                if company.get("ats_verified") and not result.get("ats"):
+                    result["ats"] = {"provider": company["ats_provider"], "slug": company["ats_slug"], "readable": True,
+                                     "url": None, "via": "verified slug probe"}
+                    result["outcome"], result["outcome_label"] = "ats_identified", "ATS identified"
+                self.store.save_career_discovery(employer["id"], result)
+                employer = self.store.find_employer(company["name"]) or employer
             saved.append(employer)
             for signal in company.get("signals", []):
                 signals += int(self.store.add_signal({**signal, "employer_id": employer["id"],
@@ -611,3 +652,59 @@ def signals_from_news(store: Store, items: list[dict[str, Any]]) -> int:
             for signal in company["signals"]:
                 created += int(store.add_signal({**signal, "employer_id": employer["id"], "company_name": company["name"]}))
     return created
+
+
+def _amount_key(amount: str | None) -> str:
+    """'$5 Mn', 'USD 5 million', '$5M' -> '5m' (rough, for clustering only)."""
+    text = str(amount or "").casefold().replace(",", "")
+    number = re.search(r"[\d.]+", text)
+    if not number:
+        return ""
+    unit = "m" if re.search(r"mn|million|\bm\b|\dm", text) else "cr" if "cr" in text else \
+        "b" if re.search(r"bn|billion|\bb\b", text) else "k" if re.search(r"\bk\b|\dk", text) else ""
+    try:
+        value = float(number.group(0))
+    except ValueError:
+        return ""
+    return f"{value:g}{unit}"
+
+
+def cluster_signals(signals: list[dict[str, Any]], *, window_days: int = 45) -> list[dict[str, Any]]:
+    """Group articles about the same event (company + signal type + amount, within a window) into one event.
+
+    Several publications covering one funding round count as ONE startup signal with several sources.
+    """
+    from app.services.freshness import parse_date
+    events: list[dict[str, Any]] = []
+    for signal in sorted(signals, key=lambda s: str(s.get("signal_date") or s.get("first_seen") or "")):
+        company = normalize_name(str(signal.get("company_name") or "")) or str(signal.get("company_name") or "").casefold()
+        kind = signal.get("signal_type")
+        amount = _amount_key(signal.get("amount"))
+        when = parse_date(signal.get("signal_date")) or parse_date(str(signal.get("first_seen") or "")[:10])
+        match = None
+        for event in events:
+            if event["_company"] != company or event["signal_type"] != kind:
+                continue
+            if amount and event["_amount"] and amount != event["_amount"]:
+                continue
+            if when and event["_date"] and abs((when - event["_date"]).days) > window_days:
+                continue
+            match = event
+            break
+        source = {"url": signal.get("source_url"), "publisher": signal.get("publisher"), "title": signal.get("title"),
+                  "date": signal.get("signal_date")}
+        if match:
+            match["sources"].append(source)
+            match["amount"] = match["amount"] or signal.get("amount")
+            match["_amount"] = match["_amount"] or amount
+            continue
+        events.append({"company_name": signal.get("company_name"), "employer_id": signal.get("employer_id"),
+                       "signal_type": kind, "amount": signal.get("amount"), "title": signal.get("title"),
+                       "signal_date": signal.get("signal_date"), "sources": [source],
+                       "_company": company, "_amount": amount, "_date": when})
+    for event in events:
+        event["source_count"] = len(event["sources"])
+        for key in ("_company", "_amount", "_date"):
+            event.pop(key, None)
+    events.sort(key=lambda e: str(e.get("signal_date") or ""), reverse=True)
+    return events

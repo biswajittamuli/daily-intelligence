@@ -31,6 +31,8 @@ from app.services.exports import calendar_ics, jobs_csv
 from app.services.insights import job_market, role_family
 from app.services.job_matching import active_resume_match, best_resume_match
 from app.services.listing_links import looks_like_index
+from app.services.job_sources.ats_registry import is_ats_listing
+from app.services.job_sources.portals import portal_for
 from app.services.news_taxonomy import NEWS_REGIONS, NEWS_TOPICS
 from app.services.preferences import (
     load_preferences,
@@ -41,7 +43,7 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
 APP_ID = "daily-intelligence"
 THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
 LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}
@@ -216,13 +218,76 @@ class Application:
         for job in jobs:
             job["role_family"] = role_family(str(job.get("title") or ""))
             kind = (job.get("raw") or {}).get("source_kind") or "job_listing"
-            if kind not in {"harvested", "index_page"} and not job.get("employer") \
-                    and looks_like_index(str(job.get("original_url") or ""), str(job.get("title") or "")):
+            official = job.get("discovered_via") in {"company career board", "company career page"}
+            if kind not in {"harvested", "index_page"} and not job.get("employer") and not official \
+                    and looks_like_index(str(job.get("original_url") or ""), str(job.get("title") or "")) \
+                    and not is_ats_listing(str(job.get("original_url") or "")):
                 kind = "search_page"
             job["source_kind"] = kind
             from app.services.verification import lifecycle
             job["lifecycle"] = lifecycle(job)
+            types = set()
+            if job.get("discovered_via") == "company career board" or job.get("ats_ref"):
+                types.add("ats")
+            if job.get("discovered_via") == "company career page" or any(
+                    str(s.get("via") or "").casefold() == "company career page" for s in job.get("sources") or []):
+                types.add("career")
+            for source in job.get("sources") or []:
+                portal = portal_for(str(source.get("url") or ""))
+                if portal:
+                    types.add("portal")
+                    source["portal"] = portal.name
+                    source["policy"] = portal.policy
+            if not types or job.get("discovered_via") in {"web search", "index page"}:
+                types.add("portal" if portal_for(str(job.get("original_url") or "")) else "web")
+            job["source_types"] = sorted(types)
+            title = str(job.get("title") or "")
+            exp = ((job.get("eligibility") or {}).get("experience") or {}).get("required_min")
+            job["flags"] = {
+                "intern": bool(re.search(r"\bintern(ship)?s?\b|\btrainee\b", title, re.I)),
+                "fresher": bool(re.search(r"\b(fresher|graduate|entry[- ]level|junior|associate|new grad|trainee|"
+                                          r"campus)\b", title, re.I)) or exp == 0,
+                "remote": bool(re.search(r"\bremote\b", f"{job.get('remote') or ''} {job.get('location') or ''}", re.I)),
+            }
         return jobs
+
+    async def rediscover_careers(self, employer_ids: list[int] | None = None, *, limit: int = 10,
+                                 progress=None, cancel_event=None) -> dict:
+        """Re-run multi-stage career discovery for chosen employers (or those whose retry time has come)."""
+        from app.services.job_sources.browser import BrowserRenderer
+        from app.services.job_sources.career_discovery import CareerDiscovery, discover_many
+        from app.services.job_sources.safe_http import SafeFetcher
+        progress = progress or (lambda _: None)
+        if employer_ids:
+            wanted = set(employer_ids)
+            employers = [e for e in self.store.employers(limit=2000) if e["id"] in wanted and e.get("website")]
+        else:
+            employers = self.store.employers_due_for_discovery(limit=limit)
+        def check():
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError
+        prefs = self.discovery_preferences.get("jobs", {})
+        outcomes: dict[str, int] = {}
+        details = []
+        async with SafeFetcher(cache_path=self.settings.data_dir / "http-cache.sqlite3") as http:
+            browser = BrowserRenderer(max_pages=1, enabled=bool(prefs.get("browser_rendering", True)))
+            try:
+                discovery = CareerDiscovery(http, browser=browser)
+                targets = [{"name": e["name"], "website": e["website"], "career_discovery": e.get("career_discovery")}
+                           for e in employers]
+                progress(f"Career discovery for {len(targets)} employer(s)")
+                results = await discover_many(targets, discovery, concurrency=3, cancel=check, progress=progress)
+            finally:
+                await browser.close()
+            summary_browser = browser.summary()
+        for employer, result in zip(employers, results):
+            self.store.save_career_discovery(employer["id"], result)
+            outcomes[result["outcome"]] = outcomes.get(result["outcome"], 0) + 1
+            details.append({"employer": employer["name"], "outcome": result.get("outcome_label"),
+                            "career_url": result.get("career_url"), "ats": (result.get("ats") or {}).get("name"),
+                            "listings": len(result.get("listings") or []), "next_retry_at": result.get("next_retry_at")})
+        return {"kind": "career_rediscovery", "status": "complete", "employers": len(employers), "outcomes": outcomes,
+                "details": details, "browser": summary_browser}
 
     INDIAN_BOARDS = {"groww": "startup", "cred": "startup", "meesho": "startup", "zeta": "startup",
                      "sarvam": "startup", "paytm": "established"}
@@ -296,6 +361,9 @@ class Application:
             "application_statuses": self.store.APPLICATION_STATUSES,
             "employers": self.store.employers(limit=300),
             "signals": self.store.signals(limit=150),
+            "signal_events": __import__("app.services.employer_discovery", fromlist=["x"]).cluster_signals(
+                self.store.signals(limit=400))[:150],
+            "source_policies": __import__("app.services.job_sources.portals", fromlist=["x"]).policy_table(),
             "last_reverify": self.store.get_preference("last_reverify"),
             "today_plan": self.today_plan(jobs=fresh, market=market),
             "last_visit": visits.get("previous"),
@@ -662,6 +730,11 @@ class Application:
                         **{k: v for k, v in result.items() if k != "career_listings"},
                         "companies": (result.get("companies") or [])[:80],
                         "career_listings": (result.get("career_listings") or [])[:60]})
+                elif job["kind"] == "career_rediscovery":
+                    payload = job.get("payload") or {}
+                    result = asyncio.run(self.rediscover_careers(
+                        payload.get("employer_ids"), limit=max(1, min(30, int(payload.get("limit") or 10))),
+                        progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
                 elif job["kind"] == "auto_refresh":
                     engine = DiscoveryEngine(self.settings, self.store, preferences=self.discovery_preferences)
                     categories = (self.discovery_preferences.get("automation") or {}).get("categories") or ["jobs", "news"]
@@ -1004,8 +1077,32 @@ class Application:
                     return self.json(200, {"items": app.store.applications(),
                                            "statuses": app.store.APPLICATION_STATUSES})
                 if path == "/api/employers":
-                    return self.json(200, {"employers": app.store.employers(limit=1000),
-                                           "signals": app.store.signals(limit=300)})
+                    from app.services.employer_discovery import cluster_signals
+                    signals = app.store.signals(limit=500)
+                    return self.json(200, {"employers": app.store.employers(limit=1000), "signals": signals,
+                                           "signal_events": cluster_signals(signals)})
+                if path == "/api/sources/health":
+                    from app.services.job_sources import ats_registry
+                    from app.services.job_sources.portals import policy_table
+                    return self.json(200, {"health": app.store.source_health(),
+                                           "policies": policy_table(),
+                                           "ats_providers": [{"key": p.key, "name": p.name, "readable": p.readable,
+                                                              "interface": p.interface} for p in ats_registry.PROVIDERS]})
+                if path == "/api/sources/exclusions":
+                    session = params.get("session", [""])[0]
+                    try:
+                        offset = int(params.get("offset", ["0"])[0] or 0)
+                        session_id = int(session) if session else None
+                    except ValueError:
+                        return self.json(400, {"error": "session and offset must be integers"})
+                    return self.json(200, app.store.exclusions(session_id, reason=params.get("reason", [""])[0][:200],
+                                                               query=params.get("q", [""])[0][:200], offset=offset,
+                                                               limit=200))
+                if path == "/api/sources/reports":
+                    session = params.get("session", [""])[0]
+                    if not session.isdigit():
+                        return self.json(400, {"error": "session is required"})
+                    return self.json(200, {"reports": app.store.source_reports(int(session))})
                 if path == "/api/tracker":
                     return self.json(200, {"items": app.store.tracker()})
                 if path == "/api/planning/today":
@@ -1140,6 +1237,13 @@ class Application:
                     if path == "/api/jobs/reverify":
                         job_id, active = app.start_job("reverify", "", {"job_ids": payload.get("job_ids"),
                                                                         "limit": payload.get("limit")})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued"})
+                    if path == "/api/employers/rediscover":
+                        ids = payload.get("employer_ids")
+                        ids = [int(i) for i in ids if str(i).isdigit()][:50] if isinstance(ids, list) else None
+                        job_id, active = app.start_job("career_rediscovery", "", {"employer_ids": ids,
+                                                                                 "limit": payload.get("limit")})
                         if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
                         return self.json(202, {"id": job_id, "status": "queued"})
                     if path == "/api/employers/discover":

@@ -376,6 +376,23 @@ function sourceKind(job){
   if(via.includes('index'))return 'index';
   return 'web';
 }
+function sourceMatch(job,key){
+  const types=job.source_types||[];
+  if(key==='board'||key==='ats')return types.includes('ats');
+  if(key==='career')return types.includes('career');
+  if(key==='portal')return types.includes('portal');
+  if(key==='index')return String(job.discovered_via||'').includes('index');
+  if(key==='web')return types.includes('web');
+  return true;
+}
+function statusGroup(job){
+  const s=(job.lifecycle||{}).state||'unverified';
+  if(s==='open_verified')return 'verified';
+  if(s==='open_page_checked'||s==='open_not_recent')return 'third';
+  if(s==='inaccessible')return 'inaccessible';
+  if(['closed','expired'].includes(s))return 'closed';
+  return 'unverified';
+}
 function employmentOf(job){
   const t=String(job.employment_type||'');
   if(/intern/i.test(t)||/\bintern(ship)?\b/i.test(job.title||''))return 'Internship';
@@ -410,13 +427,18 @@ function feedJobs({includeIneligible=false}={}){
     if(tier==='excluded')return false;
     if(tier==='ineligible'&&!includeIneligible)return false;
     const life=(job.lifecycle||{}).state;
-    if(['expired','closed'].includes(life||job.status)&&!f.showExpired)return false;
+    if(['expired','closed'].includes(life||job.status)&&!f.showExpired&&f.life!=='closed')return false;
     if(days!=null){const age=daysAgo(job.posted_date);if(age==null?!f.undated:age>days)return false;}
     if(f.role&&job.role_family!==f.role)return false;
     if(f.city&&cityOf(job)!==f.city)return false;
     if(f.exp&&expBucket(job)!==f.exp)return false;
     if(f.employment&&employmentOf(job)!==f.employment)return false;
-    if(f.source&&sourceKind(job)!==f.source)return false;
+    if(f.source&&!sourceMatch(job,f.source))return false;
+    if(f.life&&statusGroup(job)!==f.life)return false;
+    if(f.verifiedRecent&&!(job.last_verified&&daysAgo(job.last_verified)!=null&&daysAgo(job.last_verified)<=7))return false;
+    if(f.intern&&!(job.flags||{}).intern)return false;
+    if(f.fresher&&!(job.flags||{}).fresher)return false;
+    if(f.remote&&!(job.flags||{}).remote)return false;
     if(f.fresh&&((elig(job).freshness||{}).label||'unknown')!==f.fresh)return false;
     if(f.eligibility&&(elig(job).status||'unknown')!==f.eligibility)return false;
     if(f.minMatch&&(job.match_score??0)<Number(f.minMatch))return false;
@@ -462,14 +484,15 @@ function jobFilters(base){
   const families=counted(base,j=>j.role_family);
   const cities=counted(base,cityOf).slice(0,18);
   const employment=counted(base,employmentOf);
-  const active=[f.role,f.city,f.exp,f.employment,f.source,f.fresh,f.eligibility,f.minMatch,f.startup,f.tracked,f.q].filter(Boolean).length;
+  const active=[f.role,f.city,f.exp,f.employment,f.source,f.life,f.fresh,f.eligibility,f.minMatch,f.startup,f.tracked,f.verifiedRecent,f.intern,f.fresher,f.remote,f.q].filter(Boolean).length;
   return `<details class="collapsible" ${state.expanded.filters?'open':''} data-details="filters"><summary>Filters and sorting${active?` <span class="badge">${active} active</span>`:''}</summary>
     <div class="filter-grid">
       <label class="field"><span>Location</span><select class="select" data-filter="city">${optionList(cities.map(([v,n])=>[v,v,n]),f.city||'','Any location')}</select></label>
       <label class="field"><span>Role family</span><select class="select" data-filter="role">${optionList(families.map(([v,n])=>[v,v,n]),f.role||'','All roles')}</select></label>
       <label class="field"><span>Experience asked</span><select class="select" data-filter="exp">${optionList([['0-1','0–1 years'],['1-2','up to 2 years'],['3+','3+ years'],['unknown','Not stated']],f.exp||'','Any')}</select></label>
       <label class="field"><span>Employment type</span><select class="select" data-filter="employment">${optionList(employment.map(([v,n])=>[v,v,n]),f.employment||'','Any type')}</select></label>
-      <label class="field"><span>Source</span><select class="select" data-filter="source">${optionList([['board','Employer job board (verified)'],['career','Company career page'],['web','Job portal / web search'],['index','Expanded from index page']],f.source||'','All sources')}</select></label>
+      <label class="field"><span>Source</span><select class="select" data-filter="source">${optionList([['ats','Employer ATS board'],['career','Employer career page'],['portal','Job portal'],['web','Open web search'],['index','Expanded from index page']],f.source||'','All sources')}</select></label>
+      <label class="field"><span>Listing status</span><select class="select" data-filter="life">${optionList([['verified','Open · employer verified'],['third','Open · third-party only'],['unverified','Unverified / pending'],['inaccessible','Inaccessible'],['closed','Closed / expired']],f.life||'','Any status')}</select></label>
       <label class="field"><span>Freshness</span><select class="select" data-filter="fresh">${optionList([['new','New (≤3 days)'],['fresh','Fresh (≤14 days)'],['recent','Recent (≤30 days)'],['aging','Aging (31–60 days)'],['stale','Stale (60+ days)'],['unknown','Date not stated']],f.fresh||'','Any freshness')}</select></label>
       <label class="field"><span>Eligibility</span><select class="select" data-filter="eligibility">${optionList([['eligible','Eligible'],['uncertain','Uncertain'],['not_eligible','Not eligible']],f.eligibility||'','Any (not eligible hidden)')}</select></label>
       <label class="field"><span>Profile match ≥</span><select class="select" data-filter="minMatch">${optionList([['40','40'],['50','50'],['60','60'],['70','70'],['80','80']],String(f.minMatch||''),'Any')}</select></label>
@@ -481,6 +504,10 @@ function jobFilters(base){
       <label class="chip"><input type="checkbox" data-action="job-undated" ${f.undated?'checked':''}> include undated</label>
       <label class="chip"><input type="checkbox" data-filter-check="startup" ${f.startup?'checked':''}> Indian startups only</label>
       <label class="chip"><input type="checkbox" data-filter-check="tracked" ${f.tracked?'checked':''}> saved / applied only</label>
+      <label class="chip"><input type="checkbox" data-filter-check="verifiedRecent" ${f.verifiedRecent?'checked':''}> verified in last 7 days</label>
+      <label class="chip"><input type="checkbox" data-filter-check="intern" ${f.intern?'checked':''}> internships</label>
+      <label class="chip"><input type="checkbox" data-filter-check="fresher" ${f.fresher?'checked':''}> fresher roles</label>
+      <label class="chip"><input type="checkbox" data-filter-check="remote" ${f.remote?'checked':''}> remote</label>
       <label class="chip"><input type="checkbox" data-action="job-expired" ${f.showExpired?'checked':''}> show closed & expired</label>
     </div>
     <div class="filter-row">
@@ -534,6 +561,9 @@ function jobSection(title,note,list,key,{collapsed=false}={}){
   }
   return `<section class="job-section"><h2>${esc(title)} <span>${list.length} · ${esc(note)}</span></h2>${body}</section>`;
 }
+const SOURCE_TYPE_LABEL={ats:'employer ATS',career:'career page',portal:'job portal',web:'web search'};
+const SOURCE_TYPE_HINT={ats:'Read from the employer’s public applicant-tracking board',career:'Found on the employer’s own career page',portal:'Seen on a job portal (search result or portal page)',web:'Found through open web search'};
+function tentative(job){const e=elig(job);return e.confidence_label==='low'||e.status==='uncertain'||e.status==='unknown';}
 const ELIG_LABEL={eligible:'Eligible',uncertain:'Eligibility uncertain',not_eligible:'Not eligible'};
 function eligBadge(status){return `<span class="dim elig-${esc(status||'unknown')}" title="Eligibility gate (separate from the match score)">${esc(ELIG_LABEL[status]||'Eligibility unknown')}</span>`;}
 function freshBadge(fr){
@@ -559,11 +589,11 @@ function jobRow(job){
   const oldCls=['aging','stale'].includes(fr.label)?' is-old':'';
   const closed=['closed','expired'].includes((job.lifecycle||{}).state)?' is-closed':'';
   return `<div class="job-row${oldCls}${closed}">
-    <span class="score ${tier}" title="Profile match against your active resume (eligibility is shown separately)">${job.match_score??'—'}</span>
+    <span class="score ${tier}${tentative(job)?' tentative':''}" title="${tentative(job)?'Profile match only — evidence is incomplete or eligibility is uncertain, so this is not a recommendation':'Profile match against your active resume (eligibility is shown separately)'}">${job.match_score??'—'}</span>
     <div class="job-main">
       <div class="item-title"><a href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a> ${isNew(job)?'<span class="badge new">new</span>':''}</div>
       <div class="item-meta">${meta(job.employer||'Employer not stated')}${meta(job.location||'Location not stated')}${job.posted_date?meta('posted '+fmtDate(job.posted_date)):meta('posting date not stated')}${job.last_verified?meta(((job.lifecycle||{}).state==='open_verified'?'verified ':'checked ')+ageLabel(job.last_verified)):''}${meta(job.discovered_via||job.source_platform||'')}${sources>1?meta(sources+' sources'):''}</div>
-      <div class="dims">${eligBadge(e.status)}${freshBadge(fr)}${confBadge(e.confidence,e.confidence_label)}${lifeBadge(job.lifecycle)}${current&&current!=='dismissed'?`<span class="dim app-state">${esc(current)}</span>`:''}</div>
+      <div class="dims">${eligBadge(e.status)}${freshBadge(fr)}${confBadge(e.confidence,e.confidence_label)}${lifeBadge(job.lifecycle)}${(job.source_types||[]).map(t=>`<span class="dim src-type" title="${esc(SOURCE_TYPE_HINT[t]||'')}">${esc(SOURCE_TYPE_LABEL[t]||t)}</span>`).join('')}${current&&current!=='dismissed'?`<span class="dim app-state">${esc(current)}</span>`:''}</div>
       ${(e.gates||[]).length?`<div class="warning-line bad">✕ ${e.gates.map(esc).join(' · ')}</div>`:''}
       ${matched.length||partial.length||missM.length||missP.length?`<div class="item-meta">${matched.slice(0,6).map(s=>`<span class="tag have" title="On your resume">${esc(s)}</span>`).join('')}${partial.slice(0,3).map(s=>`<span class="tag part" title="Only inferred from your projects">${esc(s)} ½</span>`).join('')}${missM.slice(0,4).map(s=>`<span class="tag miss" title="Required, not on your resume">${esc(s)}</span>`).join('')}${missP.slice(0,3).map(s=>`<span class="tag pref" title="Preferred, not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
       ${(e.warnings||[]).length?`<div class="warning-line">⚠ ${e.warnings.map(esc).join(' ')}</div>`:''}
@@ -629,6 +659,7 @@ function jobDetail(job){
       ${kv('Reposted from',job.repost_of?'listing #'+job.repost_of:'')}
     </div>
     ${history.length?`<div class="view-note section-space">Verification history: ${history.map(h=>`${esc(fmtDate(h.at))} ${esc(h.outcome)} (${esc(h.status)})`).join(' · ')}</div>`:''}
+    ${sourceDetails(job)}
     <div class="item-actions section-space">
       <a class="link-button" href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">Original listing</a>
       ${job.application_url?`<a class="link-button primary" href="${esc(job.application_url)}" target="_blank" rel="noopener">Official application page</a>`:''}
@@ -639,6 +670,25 @@ function jobDetail(job){
     ${state.tailor[job.id]?tailorBox(state.tailor[job.id]):''}
   </div>`;
 }
+function sourceDetails(job){
+  const sources=job.sources||[];
+  const conflicts=job.conflicts||[];
+  return `<div class="section-title section-space">Where this listing came from</div>
+    <div class="kv-grid">
+      ${kv('Extraction method',job.extraction_method||'not recorded (older listing)')}
+      ${kv('Evidence confidence',job.evidence_confidence!=null?String(job.evidence_confidence):'')}
+      ${kv('Verification source',job.verification_source||'not verified')}
+      ${kv('Employer ATS',job.ats_ref||'')}
+      ${kv('Retrieved',job.retrieved_at?fmtDateTime(job.retrieved_at):'')}
+      ${kv('Salary currency',job.salary_currency||'')}
+      ${kv('Education',job.education||'')}
+    </div>
+    ${sources.length?`<div class="table-wrap section-space"><table class="data-table"><thead><tr><th>Source</th><th>Found via</th><th>Method</th><th>Access policy</th><th>Seen</th></tr></thead><tbody>
+      ${sources.map(s=>`<tr><td><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.portal||s.platform||hostOf(s.url))}</a>${s.url===job.original_url?' <span class="view-note">(canonical)</span>':''}</td><td>${esc(s.via||s.kind||'')}</td><td class="view-note">${esc(s.method||'')}</td><td class="view-note">${esc(s.policy==='search_results_only'?'search results only — not fetched':s.policy==='provider_fetch'?'fetched only via search provider':'')}</td><td class="view-note">${esc(s.retrieved_at?fmtDate(s.retrieved_at):'')}</td></tr>`).join('')}
+    </tbody></table></div>`:''}
+    ${conflicts.length?`<div class="banner warn section-space"><b>Sources disagree:</b> ${conflicts.map(c=>`${esc(c.field)}: stored “${esc(c.stored)}” vs “${esc(c.value)}” (${esc(hostOf(c.source))})`).join('; ')}</div>`:''}`;
+}
+function hostOf(url){try{return new URL(url).hostname.replace(/^www\./,'');}catch(e){return String(url||'');}}
 function coverageStages(s){
   // Five honest stages per source: targeted → returned results → page fetched → listing extracted → verified on the employer's system.
   const rows={};
@@ -654,9 +704,52 @@ function coverageStages(s){
   });
   return Object.values(rows).sort((a,b)=>b.stored-a.stored||b.returned-a.returned||a.name.localeCompare(b.name));
 }
+const CATEGORY_LABEL={search_engine:'Search',ats_board:'ATS board',career_page:'Career page',job_portal:'Job portal',employer_discovery:'Employer discovery',browser_render:'Browser',third_party_extractor:'Extractor'};
+function stateClass(state){
+  if(['extraction_successful','fetch_successful','search_successful','partially_successful'].includes(state))return 'status-ok';
+  if(['no_results','targeted','not_targeted','skipped_by_access_policy'].includes(state))return 'status-warn';
+  return 'status-bad';
+}
+function acquisitionPanel(s){
+  const a=s.acquisition||{};
+  const f=state.filters.jobs;
+  const funnel=a.funnel_stages||[];
+  const get=k=>(funnel.find(x=>x.stage===k)||{}).count||0;
+  const rows=(a.sources||[]).filter(r=>!f.covCat||r.category===f.covCat);
+  const limit=state.expanded.covall?rows.length:40;
+  const cats=Array.from(new Set((a.sources||[]).map(r=>r.category)));
+  const res=s.resources||{};const http=res.http||{};const br=res.browser||{};const t=res.timings||{};
+  const reasons=Object.entries(a.exclusion_reasons||{});
+  const ex=state.exclusions;
+  const cell=v=>v?`<td class="num">${esc(v)}</td>`:'<td class="num view-note">–</td>';
+  return `<details class="collapsible" ${state.expanded.coverage?'open':''} data-details="coverage"><summary>Source coverage — ${esc(a.sources_successful??0)} of ${esc(a.sources_targeted??0)} sources returned data · ${esc(get('search_results'))} search results + ${esc(get('ats_openings'))} board openings + ${esc(get('career_page_listings'))} career-page listings → ${esc(s.unique_candidates)} unique → ${esc(get('relevant_jobs'))} relevant → ${esc(s.stored)} stored <span class="view-note">· ${esc(fmtDateTime(s.created_at))} · ${esc(s.duration_seconds)}s · resume ${esc(s.resume||'none')}</span></summary>
+    <div class="view-note">A source counts as reached only when it returned data. Job portals whose terms forbid automated access (LinkedIn, Indeed, Glassdoor, Naukri, Wellfound) are used only through search-engine results and are never fetched. Coverage is never complete: this shows exactly what was attempted and what came back.</div>
+    <div class="funnel section-space">${funnel.map((x,i)=>`<div class="funnel-step"><div class="funnel-count">${esc(x.count)}</div><div class="funnel-label">${esc(x.label)}</div></div>${i<funnel.length-1?'<span class="funnel-arrow">→</span>':''}`).join('')}</div>
+    <div class="filter-row section-space"><label class="field"><span>Source type</span><select class="select" data-filter="covCat">${optionList(cats.map(c=>[c,CATEGORY_LABEL[c]||c,(a.sources||[]).filter(r=>r.category===c).length]),f.covCat||'','All source types')}</select></label>
+      <span class="view-note">Paths searched: ${esc((s.search_paths||[]).join(', '))} · ${esc(s.search_calls)} search calls · ${esc(s.boards_discovered??0)} new boards found</span></div>
+    <div class="table-wrap section-space"><table class="data-table coverage-table"><thead><tr><th>Source</th><th>Type</th><th>Method</th><th>State</th><th class="num">Results</th><th class="num">Listings</th><th class="num">Unique</th><th class="num">Dup.</th><th class="num">Rejected</th><th class="num">Stored</th><th class="num">Verified</th><th class="num">ms</th><th>Detail</th></tr></thead><tbody>
+      ${rows.slice(0,limit).map(r=>`<tr><td>${esc(r.name)}</td><td class="view-note">${esc(CATEGORY_LABEL[r.category]||r.category)}</td><td class="view-note">${esc(r.method)}</td><td class="${stateClass(r.state)}">${esc(r.state_label)}${r.http_status?' ('+esc(r.http_status)+')':''}</td>${cell(r.search_results)}${cell(r.listings)}${cell(r.unique)}${cell(r.duplicates)}${cell(r.rejected)}${cell(r.stored)}${cell(r.verified)}${cell(r.duration_ms)}<td class="view-note">${esc(r.failure_reason||r.detail||'')}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${rows.length>limit?`<button class="link-button" data-action="expand" data-key="covall">Show all ${rows.length} sources</button>`:''}
+    <div class="grid grid-2 section-space">
+      <div>
+        <div class="section-title">Inaccessible or failed (${esc((a.sources_inaccessible||[]).length)})</div>
+        ${(a.sources_inaccessible||[]).length?`<div class="table-wrap"><table class="data-table"><tbody>${a.sources_inaccessible.slice(0,30).map(r=>`<tr><td>${esc(r.name)}</td><td class="status-bad">${esc(r.state)}</td><td class="view-note">${esc(r.reason||'')}</td></tr>`).join('')}</tbody></table></div>`:'<div class="view-note">None in this run.</div>'}
+        <div class="section-title section-space">Resources</div>
+        <div class="kv-grid">${kv('Time by stage',Object.entries(t).map(([k,v])=>`${k.replace(/_s$/,'').replace(/_/g,' ')} ${v}s`).join(' · '))}${kv('App memory (peak)',res.peak_app_rss_mb!=null?res.peak_app_rss_mb+' MB':'')}${kv('Direct HTTP',http.requests!=null?`${http.requests} requests · ${http.cache_hits} cache hits · ${http.revalidated} revalidated · ${http.robots_blocked} robots-blocked · ${http.challenges} bot challenges`:'not used')}${kv('Browser',br.launched?`${br.engine} · ${br.renders} renders · peak ${br.peak_concurrent} page(s) · ${br.peak_browser_rss_mb??'?'} MB · closed ${br.closed_cleanly?'cleanly':'with errors'}`:(br.unavailable_reason||'not needed'))}</div>
+      </div>
+      <div>
+        <div class="section-title">Why results were not stored (${esc(reasons.reduce((n,[,c])=>n+c,0))})</div>
+        <div class="view-note">Click a reason to inspect the individual results.</div>
+        <div class="reason-list">${reasons.map(([name,count])=>`<button class="chip ${ex&&ex.reason===name?'active':''}" data-action="load-exclusions" data-reason="${esc(name)}" data-session="${esc(s.session_id||'')}">${esc(name)} <span class="chip-count">${esc(count)}</span></button>`).join('')}</div>
+        ${ex?`<div class="table-wrap section-space exclusion-scroll"><table class="data-table"><thead><tr><th>Result</th><th>Source</th><th>Detail</th></tr></thead><tbody>${ex.loading?'<tr><td colspan="3">Loading…</td></tr>':(ex.items||[]).map(e=>`<tr><td>${e.url?`<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title||e.url)}</a>`:esc(e.title||'')}${e.employer?`<div class="view-note">${esc(e.employer)}</div>`:''}</td><td class="view-note">${esc(e.source||'')}</td><td class="view-note">${esc(e.detail||e.stage||'')}</td></tr>`).join('')}</tbody></table></div><div class="view-note">${esc(ex.total??0)} result(s) for “${esc(ex.reason)}”${(ex.items||[]).length<(ex.total||0)?` — showing first ${esc(ex.items.length)}`:''}.</div>`:''}
+      </div>
+    </div></details>`;
+}
 function coveragePanel(){
   const s=D().job_search;
   if(!s)return '';
+  if(s.acquisition)return acquisitionPanel(s);
   const stages=coverageStages(s);
   const excluded=Object.entries(s.excluded||{}).sort((a,b)=>b[1]-a[1]);
   const inel=Object.entries(s.ineligible_reasons||{}).sort((a,b)=>b[1]-a[1]);
@@ -1498,8 +1591,10 @@ function viewStartups(){
   const news=(D().news||[]).filter(n=>String(n.region||'')==='India'&&/funding|hiring|product|startup/i.test(String(n.topic||'')));
   const newSince=D().last_visit;
   const stat=(label,value)=>statCard(label,value);
-  const sigFiltered=signals.filter(s=>!f.signal||s.signal_type===f.signal);
-  const sigTypes=Array.from(new Set(signals.map(s=>s.signal_type)));
+  const events=D().signal_events||signals.map(s=>({...s,sources:[{url:s.source_url,publisher:s.publisher}],source_count:1}));
+  const sigFiltered=events.filter(s=>!f.signal||s.signal_type===f.signal);
+  const sigTypes=Array.from(new Set(events.map(s=>s.signal_type)));
+  const outcomes=counted(all.filter(e=>e.career_outcome),e=>(e.career_discovery||{}).outcome_label||e.career_outcome);
   return heading('Jobs','Indian startup intelligence',
     'Employers discovered dynamically from startup publications, directories and accelerators, VC portfolios and job platforms. Each company’s website, career page and public job board are found from links that actually exist — never guessed. Funding and hiring news are <b>signals</b>, kept apart from vacancies.',
     '') + progressBox() +
@@ -1508,6 +1603,7 @@ function viewStartups(){
       <input class="input" name="topic" style="width:140px" placeholder="Topic (AI)" value="${esc(state.lastQuery.employerTopic||'')}">
       <select class="select" name="search_calls" title="Search budget">${[[4,'4 searches'],[6,'6 searches'],[10,'10 searches']].map(([n,l])=>`<option value="${n}" ${n===6?'selected':''}>${l}</option>`).join('')}</select>
       <button class="primary-button" type="submit">${icon('search')} Discover employers</button>
+      <button class="quiet-button" type="button" data-action="rediscover-due" title="Re-run career-page discovery for employers whose retry time has come">Re-check career pages</button>
     </form><div class="view-note" style="margin-top:6px">The search budget is the number of web searches; more searches find more companies but use more of the free-tier quota.</div></div>
     <div class="grid grid-3 section-space">
       ${stat('Employers discovered',all.filter(e=>!(e.discovery_sources||[]).includes('built-in verified board list')).length)}
@@ -1515,18 +1611,20 @@ function viewStartups(){
       ${stat('Based in India',all.filter(e=>e.country==='India').length)}
       ${stat('Career pages found',all.filter(e=>e.career_url).length)}
       ${stat('Readable public job boards',all.filter(e=>e.ats_slug).length)}
-      ${stat('Hiring signals',signals.length)}
+      ${stat('Signal events (articles clustered)',`${events.length} <span class="view-note">from ${signals.length} articles</span>`)}
     </div>
+    ${outcomes.length?`<div class="filter-row section-space"><span class="filter-label">Career discovery</span>${outcomes.map(([k,n])=>`<span class="chip">${esc(k)} <span class="chip-count">${n}</span></span>`).join('')}</div>`:''}
     ${last?employerCoverage(last):''}
     <div class="grid grid-2 section-space">
       <div class="panel">
         <div class="panel-head"><h3 class="panel-title">Signals</h3><span class="panel-kicker">not vacancies</span></div>
-        <div class="filter-row" style="margin-top:0"><button class="chip ${!f.signal?'active':''}" data-action="startup-signal" data-value="">All <span class="chip-count">${signals.length}</span></button>${sigTypes.map(t=>`<button class="chip ${f.signal===t?'active':''}" data-action="startup-signal" data-value="${esc(t)}">${esc(SIGNAL_LABEL[t]||t)} <span class="chip-count">${signals.filter(s=>s.signal_type===t).length}</span></button>`).join('')}</div>
-        ${sigFiltered.length?`<div class="source-list">${sigFiltered.slice(0,30).map(s=>`<div class="source-card">
-          <div class="market-recent-head"><a class="source-title" href="${esc(s.source_url)}" target="_blank" rel="noopener">${esc(s.title||s.company_name)}</a><span class="dim sig">${esc(SIGNAL_LABEL[s.signal_type]||s.signal_type)}</span></div>
-          <div class="item-meta">${meta(s.company_name)}${s.amount?meta(s.amount):''}${s.publisher?meta(s.publisher):''}${meta(s.signal_date?fmtDate(s.signal_date):'seen '+fmtDate(s.first_seen))}${newSince&&s.first_seen>newSince?'<span class="badge new">new</span>':''}</div>
-          ${s.evidence?`<div class="req-evidence">“${esc(String(s.evidence).slice(0,200))}”</div>`:''}
-        </div>`).join('')}</div>`:'<div class="empty-state">No signals yet. Run “Discover employers”.</div>'}
+        <div class="view-note">Several articles about the same funding round or announcement count as one event. Funding and hiring news are not vacancies.</div>
+        <div class="filter-row"><button class="chip ${!f.signal?'active':''}" data-action="startup-signal" data-value="">All <span class="chip-count">${events.length}</span></button>${sigTypes.map(t=>`<button class="chip ${f.signal===t?'active':''}" data-action="startup-signal" data-value="${esc(t)}">${esc(SIGNAL_LABEL[t]||t)} <span class="chip-count">${events.filter(s=>s.signal_type===t).length}</span></button>`).join('')}</div>
+        ${sigFiltered.length?`<div class="source-list">${sigFiltered.slice(0,30).map(s=>{const src=(s.sources||[]);return `<div class="source-card">
+          <div class="market-recent-head"><a class="source-title" href="${esc((src[0]||{}).url||s.source_url||'#')}" target="_blank" rel="noopener">${esc(s.title||s.company_name)}</a><span class="dim sig">${esc(SIGNAL_LABEL[s.signal_type]||s.signal_type)}</span></div>
+          <div class="item-meta">${meta(s.company_name)}${s.amount?meta(s.amount):''}${meta(s.signal_date?fmtDate(s.signal_date):'date not stated')}${src.length>1?meta(src.length+' articles'):''}</div>
+          ${src.length?`<div class="view-note">${src.slice(0,5).map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.publisher||hostOf(x.url))}</a>`).join(' · ')}</div>`:''}
+        </div>`;}).join('')}</div>`:'<div class="empty-state">No signals yet. Run “Discover employers”.</div>'}
       </div>
       <div class="panel">
         <div class="panel-head"><h3 class="panel-title">Indian startup news</h3><span class="panel-kicker">funding · hiring · launches</span></div>
@@ -1545,7 +1643,7 @@ function viewStartups(){
       ${list.slice(0,f.all?list.length:60).map(e=>{const jobs=jobsByEmp[e.id]||[];const funding=(e.funding||[])[0];
         return `<tr><td><b>${e.website?`<a href="${esc(e.website)}" target="_blank" rel="noopener">${esc(e.name)}</a>`:esc(e.name)}</b>${newSince&&e.first_discovered>newSince?' <span class="badge new">new</span>':''}${e.industry?`<div class="view-note">${esc(e.industry)}</div>`:''}</td>
           <td>${esc(e.classification||'unknown')}${e.country?' · '+esc(e.country):''}</td>
-          <td>${e.career_url?`<a href="${esc(e.career_url)}" target="_blank" rel="noopener">career page</a>`:''}${e.ats_provider?`${e.career_url?' · ':''}${esc(e.ats_provider)}${e.ats_slug?' (readable)':''}`:''}<div class="view-note">${esc(e.career_status||'')}</div></td>
+          <td>${e.career_url?`<a href="${esc(e.career_url)}" target="_blank" rel="noopener">career page</a>`:''}${e.ats_provider?`${e.career_url?' · ':''}${esc(e.ats_provider)}${e.ats_slug?' (readable)':''}`:''}<div class="view-note">${esc(e.career_status||'')}</div>${careerDiscoveryCell(e)}</td>
           <td class="num">${jobs.length?`<button class="link-button" data-action="startup-jobs" data-name="${esc(e.name)}">${jobs.length} stored</button>`:''}${e.open_jobs?`<div class="view-note">${esc(e.open_jobs)} on board</div>`:''}${!jobs.length&&!e.open_jobs?'–':''}</td>
           <td>${e.signal_count?esc(e.signal_count):''}${funding?`<div class="view-note">${esc(funding.amount||funding.title||'funding')}</div>`:''}</td>
           <td class="view-note">${esc((e.discovery_sources||[]).filter(s=>!s.startsWith('category:')).slice(0,2).join(', '))}</td>
@@ -1556,6 +1654,15 @@ function viewStartups(){
     ${last&&(last.career_listings||[]).length?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Vacancy links found on career pages</h3><span class="panel-kicker">last discovery · not yet ranked</span></div>
       <div class="source-list">${last.career_listings.slice(0,30).map(l=>`<div class="source-card"><a class="source-title" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title||l.url)}</a><div class="item-meta">${meta(l.employer)}</div></div>`).join('')}</div>
       <div class="view-note">Run “Discover jobs” with “startups” in the request to fetch, rank and store these against your resume.</div></div>`:''}`;
+}
+function careerDiscoveryCell(e){
+  const d=e.career_discovery;
+  if(!d&&!e.website)return '';
+  const open=state.expanded['cd-'+e.id];
+  const methods=(d&&d.methods)||[];
+  return `<div class="view-note">${d?`${esc(methods.length)} method(s) tried${d.last_method?' · last success: '+esc(d.last_method):''}${d.next_retry_at?' · next check '+esc(fmtDate(d.next_retry_at)):''}`:'career discovery not run yet'}
+    ${d?`<button class="link-button" data-action="expand" data-key="cd-${e.id}">${open?'hide':'details'}</button>`:''}${e.website?`<button class="link-button" data-action="rediscover" data-id="${e.id}">re-check</button>`:''}</div>
+    ${open?`<div class="table-wrap"><table class="data-table"><tbody>${methods.map(m=>`<tr><td>${esc(m.stage)}</td><td>${esc(m.method)}</td><td class="${stateClass(m.state)}">${esc((m.state||'').replace(/_/g,' '))}</td><td class="view-note">${esc(m.detail||'')}</td></tr>`).join('')}</tbody></table></div>`:''}`;
 }
 function employerCoverage(s){
   return `<details class="collapsible section-space" ${state.expanded.empcov?'open':''} data-details="empcov"><summary>Last employer discovery${s.via?' (inside a job search)':''}: ${esc(s.results??0)} search results → ${esc(s.companies_found??0)} companies → ${esc(s.with_website??0)} websites → ${esc(s.with_career_page??0)} career pages → ${esc(s.ats_readable??0)} readable job boards <span class="view-note">· ${esc(fmtDateTime(s.created_at))}${s.duration_seconds?' · '+esc(s.duration_seconds)+'s':''}${s.new_employers!=null?' · '+esc(s.new_employers)+' new employers, '+esc(s.signals_saved??0)+' signals':''}</span></summary>
@@ -1770,11 +1877,21 @@ document.addEventListener('click',async event=>{
       await api('/api/data/clear-intel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
       await refresh();render();toast('Discovered intelligence cleared');
     }
+    else if(action==='load-exclusions'){
+      const reason=button.dataset.reason,session=button.dataset.session;
+      state.exclusions={reason,loading:true};render();
+      try{const r=await api(`/api/sources/exclusions?session=${encodeURIComponent(session)}&reason=${encodeURIComponent(reason)}`);
+        state.exclusions={reason,items:r.items||[],total:r.total};}
+      catch(err){state.exclusions={reason,items:[],total:0};toast(err.message||'Could not load exclusions',true);}
+      render();
+    }
+    else if(action==='rediscover'){await startJobRequest('/api/employers/rediscover',{employer_ids:[Number(button.dataset.id)]},'Re-running career-page discovery');}
+    else if(action==='rediscover-due'){await startJobRequest('/api/employers/rediscover',{limit:10},'Career-page discovery for employers that are due');}
     else if(action==='reverify'){await startJobRequest('/api/jobs/reverify',{limit:40},'Re-verifying saved and shortlisted listings');}
     else if(action==='reverify-one'){await startJobRequest('/api/jobs/reverify',{job_ids:[Number(button.dataset.id)]},'Re-verifying listing');}
     else if(action==='job-clear-filters'){
-      const f=state.filters.jobs;['role','city','exp','employment','source','fresh','eligibility','minMatch','q'].forEach(k=>f[k]='');
-      f.startup=false;f.tracked=false;f.recency='all';render();
+      const f=state.filters.jobs;['role','city','exp','employment','source','life','fresh','eligibility','minMatch','q'].forEach(k=>f[k]='');
+      ['startup','tracked','verifiedRecent','intern','fresher','remote'].forEach(k=>f[k]=false);f.recency='all';render();
     }
     else if(action==='app-new'){state.editApp=state.editApp==='new'?null:'new';render();}
     else if(action==='app-edit'){const id=button.dataset.id==='new'?'new':Number(button.dataset.id);state.editApp=state.editApp===id?null:id;render();}

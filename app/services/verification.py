@@ -51,6 +51,11 @@ def lifecycle(job: dict[str, Any], today: date | None = None) -> dict[str, Any]:
         return {"state": status, "label": status.capitalize(), "detail": job.get("status_evidence") or ""}
     if job.get("repost_of") and status in {"open", "unverified"}:
         return {"state": "reposted", "label": "Reposted", "detail": f"Re-listed; earlier listing #{job['repost_of']}"}
+    history = job.get("verify_history") or []
+    recent = [h.get("outcome") for h in history[-2:]]
+    if len(recent) == 2 and all(outcome == "unreachable" for outcome in recent):
+        return {"state": "inaccessible", "label": "Inaccessible",
+                "detail": f"Could not be retrieved in the last two checks ({history[-1].get('evidence') or ''})".strip()}
     verified = parse_date(str(job.get("last_verified") or "")[:10])
     if status == "open":
         if verified and (today - verified).days <= VERIFIED_DAYS:
@@ -60,13 +65,23 @@ def lifecycle(job: dict[str, Any], today: date | None = None) -> dict[str, Any]:
             if on_board:
                 return {"state": "open_verified", "label": "Open · verified on employer board",
                         "detail": f"Listed on the employer's job board on {verified.isoformat()}{suffix}"}
-            return {"state": "open_page_checked", "label": "Open · listing page checked",
+            if str(job.get("verification_source") or "").startswith("employer"):
+                return {"state": "open_verified", "label": "Open · verified on employer page",
+                        "detail": f"The employer's own page showed an apply option on {verified.isoformat()}{suffix}"}
+            return {"state": "open_page_checked", "label": "Open · third-party source only",
                     "detail": f"Listing page showed an apply option on {verified.isoformat()}; "
                               f"not confirmed on the employer's own system{suffix}"}
         return {"state": "open_not_recent", "label": "Open · not recently verified",
                 "detail": f"Last verified {verified.isoformat()}" if verified else "Never re-verified"}
     if status == "unknown":
         return {"state": "unknown", "label": "Unknown", "detail": job.get("status_evidence") or ""}
+    if job.get("conflicts"):
+        fields = sorted({c.get("field") for c in job["conflicts"] if isinstance(c, dict)})
+        return {"state": "unverified", "label": "Unverified · conflicting sources",
+                "detail": "Sources disagree on " + ", ".join(fields)}
+    if not job.get("last_verified") and not history:
+        return {"state": "pending_verification", "label": "Pending verification",
+                "detail": "Discovered; not yet checked against the original page"}
     return {"state": "unverified", "label": "Unverified", "detail": "Open status not confirmed from the source"}
 
 
@@ -92,7 +107,10 @@ def select_for_verification(store: Store, *, limit: int = 40, job_ids: list[int]
 
 def _ats_key(job: dict[str, Any]) -> tuple[str, str] | None:
     platform = str(job.get("source_platform") or "")
-    if ":" in platform and platform.split(":", 1)[0] in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters"}:
+    if ":" not in platform and job.get("ats_ref"):
+        platform = str(job["ats_ref"])
+    if ":" in platform and platform.split(":", 1)[0] in {"greenhouse", "lever", "ashby", "workable", "smartrecruiters",
+                                                          "recruitee"}:
         ats, slug = platform.split(":", 1)
         return ats, slug
     return None
@@ -101,13 +119,13 @@ def _ats_key(job: dict[str, Any]) -> tuple[str, str] | None:
 async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any]], *,
                       progress: Callable[[str], None] | None = None, cancel: Callable[[], None] | None = None,
                       retriever: Any | None = None, ats_fetcher: Callable[..., Any] | None = None,
-                      today: date | None = None) -> dict[str, Any]:
+                      today: date | None = None, http: Any | None = None) -> dict[str, Any]:
     from app.services.ats_sources import fetch_company_jobs, _CACHE
 
     progress = progress or (lambda _: None)
     today = today or date.today()
     counts = {"checked": 0, "verified_open": 0, "closed": 0, "expired": 0, "missing_once": 0,
-              "unreachable": 0, "unchanged": 0}
+              "unreachable": 0, "unchanged": 0, "not_checked": 0}
     details: list[dict[str, Any]] = []
 
     def record(job, outcome, *, status=None, evidence="", missing=False, raw_text=None, posted=None):
@@ -163,7 +181,25 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
                            evidence=f"Not on {ats.capitalize()} board '{slug}' on {today.isoformat()}; "
                                     "will be marked closed if still missing next check")
 
-    # 2) Other listings: re-fetch pages through Parallel MCP in small chunks.
+    # 2) Other listings. Employer pages are checked first and directly (robots-respecting fetcher);
+    #    portals with a search-results-only policy are never fetched; the rest go through Parallel MCP.
+    from app.services.job_sources import portals as portal_policy
+    direct_jobs, provider_jobs = [], []
+    for job in web_jobs:
+        target = _employer_page(job)
+        if target:
+            direct_jobs.append((job, target))
+            continue
+        allowed, reason = portal_policy.may_fetch(str(job.get("original_url") or ""), via="provider")
+        if not allowed:
+            counts["checked"] += 1
+            record(job, "not_checked", evidence=f"{reason}. Open the original listing to check it.")
+            continue
+        provider_jobs.append(job)
+    if direct_jobs:
+        progress(f"Checking {len(direct_jobs)} listings on employer pages")
+        await _verify_direct(direct_jobs, record, counts, today, http=http)
+    web_jobs = provider_jobs
     if web_jobs:
         from app.mcp.retrieval import ParallelWebRetriever, RetrievalError
         owns = retriever is None
@@ -231,3 +267,60 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
                     pass
     return {"kind": "reverify", "status": "complete", **counts, "details": details[:200],
             "at": datetime.now(timezone.utc).isoformat()}
+
+
+def _employer_page(job: dict[str, Any]) -> str | None:
+    """The employer's own page for a listing (official application page, career page or employer URL), if known."""
+    from app.services.job_sources import portals as portal_policy
+    for candidate in (job.get("application_url"), job.get("employer_url"),
+                      job.get("original_url") if job.get("discovered_via") == "company career page" else None):
+        if candidate and portal_policy.portal_for(str(candidate)) is None:
+            return str(candidate)
+    for source in job.get("sources") or []:
+        if source.get("via") in {"Company career page", "company career page"} and source.get("url"):
+            return str(source["url"])
+    return None
+
+
+async def _verify_direct(pairs, record, counts, today: date, *, http: Any | None = None) -> None:
+    from app.services.job_sources import structured
+    from app.services.job_sources.models import SourceState
+    from app.services.job_sources.safe_http import SafeFetcher
+
+    owns = http is None
+    if owns:
+        http = SafeFetcher(concurrency=4, per_host_interval=1.0)
+        await http.__aenter__()
+    try:
+        results = await http.get_many([target for _, target in pairs], use_cache=False)
+        for (job, target), page in zip(pairs, results):
+            counts["checked"] += 1
+            if page.state in {SourceState.NOT_FOUND}:
+                if int(job.get("missing_count") or 0) >= 1:
+                    record(job, "closed", status="closed", missing=True,
+                           evidence=f"Employer page returned HTTP {page.status} in two consecutive checks")
+                else:
+                    record(job, "missing_once", missing=True, evidence=f"Employer page returned HTTP {page.status} once")
+                continue
+            if not page.ok:
+                record(job, "unreachable", evidence=f"Employer page: {SourceState.LABELS.get(page.state, page.state)}"
+                                                     f"{' — ' + page.error if page.error else ''}")
+                continue
+            text = structured.visible_text(page.text, 30000)
+            postings = structured.job_postings(page.text, page.final_url or target)
+            valid = next((parse_date(p.get("deadline")) for p in postings if p.get("deadline")), None)
+            closed = CLOSED_WORDS.search(text)
+            if closed:
+                record(job, "closed", status="closed", evidence=f"Employer page says: “{closed.group(0)}”")
+            elif valid and valid < today:
+                record(job, "expired", status="expired", evidence=f"JobPosting validThrough {valid.isoformat()} has passed")
+            elif postings or OPEN_WORDS.search(text):
+                record(job, "verified_open", status="open",
+                       evidence=("Employer page has JobPosting data" if postings else "Employer page shows an apply option")
+                                + f" ({today.isoformat()})", raw_text=text[:8000],
+                       posted=next((p.get("posted_date") for p in postings if p.get("posted_date")), None))
+            else:
+                record(job, "unchanged", evidence="Employer page reachable; no apply or closure wording found")
+    finally:
+        if owns:
+            await http.__aexit__(None, None, None)
