@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from datetime import date
@@ -32,6 +33,8 @@ from app.services.news_taxonomy import classify_region, classify_topic
 from app.services.preferences import load_preferences, scan_roles
 from app.services.query_plan import build_plan, classify_source
 from app.services.resume import find_skills
+
+log = logging.getLogger(__name__)
 
 
 CATEGORIES = {"jobs", "government", "exams", "news", "papers"}
@@ -859,7 +862,7 @@ class DiscoveryEngine:
                 from app.services.employer_discovery import signals_from_news
                 signals_from_news(self.store, saved)
             except Exception:  # signals are additive; never fail the news run
-                pass
+                log.warning("employer signals from news failed", exc_info=True)
         return saved, fallback
 
     def _source_for(self, record: dict[str, Any], by_url: dict[str, dict[str, Any]]) -> dict[str, Any] | None:

@@ -232,8 +232,18 @@ class Store:
             finally:
                 target.close()
             self.backup_path = target_path
+            self._prune_backups(backups)
         finally:
             source.close()
+
+    BACKUPS_KEPT = 5
+
+    @classmethod
+    def _prune_backups(cls, backups: Path) -> None:
+        """Keep the newest migration backups; called only after a new one was written successfully."""
+        files = sorted(backups.glob("daily-intelligence-*-schema*.sqlite3"), key=lambda p: p.name, reverse=True)
+        for old in files[cls.BACKUPS_KEPT:]:
+            old.unlink(missing_ok=True)
 
     @staticmethod
     def _migrate(db: sqlite3.Connection) -> None:

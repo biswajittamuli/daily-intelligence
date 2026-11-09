@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import ollama
 
 log = logging.getLogger(__name__)
@@ -46,7 +47,10 @@ class OllamaProvider:
         if think is None:
             think = os.getenv("OLLAMA_THINK", "").strip().lower() in {"1", "true", "yes", "on"}
         self.think = think
-        self._client = ollama.AsyncClient(host=self.host, timeout=self.timeout)
+        # No keep-alive: providers are created per job and each job runs in its own event loop, so pooled
+        # connections would outlive their loop and leak a socket per job. Localhost connects are cheap.
+        self._client = ollama.AsyncClient(host=self.host, timeout=self.timeout,
+                                          limits=httpx.Limits(max_keepalive_connections=0))
         self._capability_cache: dict[str, tuple[str, ...]] = {}
 
     @staticmethod

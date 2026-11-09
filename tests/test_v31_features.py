@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import sqlite3
+from contextlib import closing
 import tempfile
 import threading
 import unittest
@@ -297,8 +298,20 @@ class StoreUpgradeTests(unittest.TestCase):
             self.assertEqual(backup.execute("SELECT text FROM tasks").fetchone()[0], "Keep me")
             backup.close()
             self.assertIsNone(Store(root).backup_path)  # already current: no second backup
-            with sqlite3.connect(root / "daily-intelligence.sqlite3") as conn:
+            with closing(sqlite3.connect(root / "daily-intelligence.sqlite3")) as conn:
                 self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
+
+    def test_only_the_newest_migration_backups_are_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backups = Path(tmp) / "backups"
+            backups.mkdir()
+            names = [f"daily-intelligence-2026110{day}-120000-schema{day}.sqlite3" for day in range(1, 8)]
+            for name in names:
+                (backups / name).write_bytes(b"x")
+            (backups / "notes.txt").write_text("not a backup")
+            Store._prune_backups(backups)
+            kept = sorted(p.name for p in backups.iterdir())
+            self.assertEqual(kept, sorted(names[-Store.BACKUPS_KEPT:]) + ["notes.txt"])
 
 
 class ApiV31Tests(unittest.TestCase):

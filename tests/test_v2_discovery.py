@@ -349,6 +349,22 @@ class DiscoveryEngineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(notice["status"], "open")
             self.assertEqual(notice["notification_url"], url)
 
+    async def test_government_notice_with_unrecognised_eligibility_is_not_verified(self):
+        url = "https://recruitment.example.gov.in/mech"
+        body = "Example PSU invites applications for Assistant Engineer (Mechanical). B.E. in Mechanical Engineering."
+        retriever = FakeRetriever([source("Example PSU mechanical", url, ["Example PSU invites applications."])],
+                                  {url: {"title": "Example PSU mechanical", "content": body}})
+        provider = FakeProvider({"notices": [{
+            "source_id": "S1", "organization": "Example PSU", "post_name": "Assistant Engineer (Mechanical)",
+            "qualifications": "B.E. in Mechanical Engineering", "cse_eligibility": "probably fine",
+            "document_type": "advertisement", "application_url": url,
+            "evidence_quote": "B.E. in Mechanical Engineering.",
+        }]})
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.engine(tmp, retriever, provider)
+            await engine.run("government", "PSU vacancies for CSE graduates", freshness="all")
+            self.assertEqual(engine.store.notices()[0]["cse_eligibility"], "not_verified")
+
     async def test_extraction_reattributes_misattributed_quote(self):
         pdf_url = "https://gate.example.ac.in/brochure.pdf"
         pdf = ("GATE 2027 dates. Application Portal opening Friday, August 14, 2026. "
@@ -710,9 +726,11 @@ class ApiWiringTests(unittest.TestCase):
     def test_invalid_category_and_item_state_are_rejected(self):
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/intel/search", {"category": "unknown", "query": "x"})
+        context.exception.close()
         self.assertEqual(context.exception.code, 400)
         with self.assertRaises(urllib.error.HTTPError) as context:
             self.request("/api/items/state", {"kind": "unknown", "id": 1, "state": "saved"})
+        context.exception.close()
         self.assertEqual(context.exception.code, 400)
 
 

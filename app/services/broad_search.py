@@ -20,6 +20,7 @@ returned, what failed. Nothing is claimed for platforms that were not reached.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import time
@@ -42,6 +43,8 @@ from app.services.listing_links import harvest_listings, is_listing_url, looks_l
 from app.services.preferences import portal_domains
 from app.services.query_plan import classify_source
 from app.services.resume import find_skills
+
+log = logging.getLogger(__name__)
 
 POOL_SIZES = (50, 100, 200)
 
@@ -1268,7 +1271,8 @@ class BroadJobSearch:
                     "source_kind": "job_listing"} for item in items]
         try:
             records = await engine._extract("jobs", "", sources, max_sources=4)
-        except Exception:
+        except Exception:  # enrichment only fills gaps; the listings stand without it
+            log.warning("local-model enrichment of %d listings failed", len(items), exc_info=True)
             return
         by_url = {canonicalize_url(item["url"]): item for item in items}
         for record in records:
