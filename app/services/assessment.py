@@ -19,8 +19,10 @@ from typing import Any
 
 from app.services.freshness import parse_date
 from app.services.requirements import DEGREE_RANK, DEGREES, extract_requirements
-from app.services.skills_taxonomy import canonical, canonical_set, detect_skills
+from app.services.skills_taxonomy import canonical, canonical_set, detect_skills, implied_by
 
+PROGRAMMING_LANGUAGES = {"python", "java", "javascript", "typescript", "c", "c++", "c#", "go", "golang", "rust", "ruby",
+                         "kotlin", "swift", "scala", "php", "r", "sql", "dart", "haskell", "elixir"}
 DEFAULT_WEIGHTS = {"role": 20, "mandatory_skills": 25, "preferred_skills": 15, "experience": 15,
                    "education": 10, "location_employment": 10, "freshness": 5}
 
@@ -47,9 +49,19 @@ def candidate_from_profile(profile: dict[str, Any] | None, preferences: dict[str
     profile = profile or {}
     explicit_raw = [item for key in ("skills", "languages", "frameworks") for item in profile.get(key) or []]
     explicit = canonical_set(explicit_raw)
+    # Compound entries ("Deep Learning (CNNs, Transformers)") are read with the same detector as listings.
+    explicit |= canonical_set(detect_skills(" ; ".join(str(item) for item in explicit_raw)))
+    # Programming languages named in the resume's keywords come from the resume text itself (often a
+    # "Languages: Python, Java" line the extractor filed as keywords), so they count as explicit.
+    explicit |= canonical_set([item for item in profile.get("keywords") or []
+                               if str(item).strip().casefold() in PROGRAMMING_LANGUAGES])
     context_text = " ".join(str(item) for key in ("projects", "keywords", "certifications")
                             for item in profile.get(key) or [])
-    inferred = canonical_set(detect_skills(context_text)) - explicit
+    implied = {key: source for key, source in implied_by(explicit).items() if key not in explicit}
+    # Implications can chain (PyTorch -> Deep Learning -> Machine Learning); one more pass is enough.
+    implied.update({key: source for key, source in implied_by(implied.keys()).items()
+                    if key not in explicit and key not in implied})
+    inferred = canonical_set(detect_skills(context_text)) - explicit - set(implied)
     degree_rank, degree_name, field_cs = 0, None, False
     for line in profile.get("education") or []:
         for name, pattern in DEGREES:
@@ -66,7 +78,7 @@ def candidate_from_profile(profile: dict[str, Any] | None, preferences: dict[str
     except (TypeError, ValueError):
         grad = None
     jobs = preferences.get("jobs", {})
-    return {"explicit": explicit, "inferred": inferred, "years": years, "degree_rank": degree_rank,
+    return {"explicit": explicit, "implied": implied, "inferred": inferred, "years": years, "degree_rank": degree_rank,
             "degree": degree_name, "field_cs": field_cs, "graduation_year": grad,
             "has_profile": bool(explicit), "skill_count": len(explicit),
             "authorization": [str(item).casefold() for item in jobs.get("work_authorization") or ["India"]],
@@ -75,7 +87,7 @@ def candidate_from_profile(profile: dict[str, Any] | None, preferences: dict[str
 
 def _skill_status(skill: str, candidate: dict[str, Any]) -> str:
     key = canonical(skill).casefold()
-    if key in candidate["explicit"]:
+    if key in candidate["explicit"] or key in candidate.get("implied", {}):
         return "satisfied"
     if key in candidate["inferred"]:
         return "partial"
@@ -104,8 +116,10 @@ def assess(listing: dict[str, Any], profile: dict[str, Any] | None, preferences:
         score, missing, matched, partial = 0.0, [], [], []
         for item in items:
             status = _skill_status(item["name"], candidate)
+            via = candidate.get("implied", {}).get(canonical(item["name"]).casefold())
             add("skill", item["name"], priority, status, item.get("evidence"),
-                "inferred from your projects, not listed as a skill" if status == "partial" else None)
+                "inferred from your projects, not listed as a skill" if status == "partial"
+                else f"shown by {via} on your resume" if via and status == "satisfied" else None)
             if status == "satisfied":
                 score += 1
                 matched.append(item["name"])
@@ -164,7 +178,7 @@ def assess(listing: dict[str, Any], profile: dict[str, Any] | None, preferences:
         if status == "satisfied" and edu.get("field_cs") and not candidate["field_cs"]:
             status = "partial"
         detail = f"you have {candidate['degree'] or 'no degree recorded'}"
-        if status == "satisfied" and candidate["graduation_year"] and candidate["graduation_year"] >= today.year:
+        if status == "satisfied" and candidate["graduation_year"] and candidate["graduation_year"] > today.year:
             detail += f" (expected {candidate['graduation_year']})"
         add("education", edu["degree"] + (" (CS/IT or related)" if edu.get("field_cs") else ""), edu["priority"],
             status, edu.get("evidence"), detail)

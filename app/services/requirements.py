@@ -71,6 +71,18 @@ DEGREES = [
                               r"\bBE\b(?=\s*(?:/|in\b|\())|\bB\.?Sc\b|\bBCA\b|\bB\.S\.")),
     ("Diploma", re.compile(r"(?i:\bdiploma\b)")),
 ]
+# Bachelor's named explicitly (not just "degree in computer science", which also describes a Master's).
+BACHELOR_EXPLICIT = re.compile(r"(?i:\bbachelor(?:'|’)?s?\b|\bundergraduate degree\b)|\bB\.?\s?Tech\b|\bB\.E\.?(?=[\s/,(])|"
+                               r"\bBE\b(?=\s*(?:/|in\b|\(|,|or\b))|\bB\.?Sc\b|\bBCA\b|\bB\.S\.")
+
+
+def _named_degrees(text: str) -> list[str]:
+    named = [degree for degree, pattern in DEGREES if pattern.search(text)]
+    if "Bachelor's" in named and len(named) > 1 and not BACHELOR_EXPLICIT.search(text):
+        named.remove("Bachelor's")
+    return named
+
+
 DEGREE_CONTEXT = re.compile(r"(?i:\b(degree|bachelor|master|ph\.?d|graduate|diploma|qualification|education)\b)|"
                             r"\bB\.?\s?Tech\b|\bM\.?\s?Tech\b|\bB\.E\.|\bMCA\b|\bBCA\b")
 DEGREE_RANK = {"Diploma": 1, "Bachelor's": 2, "Master's": 3, "PhD": 4}
@@ -210,19 +222,29 @@ def extract_requirements(text: str, *, title: str = "", today: date | None = Non
                         (this_priority == exp_priority and low < exp_min[0]):
                     exp_min, exp_max, exp_priority = (low, sentence[:220]), high, this_priority
         # education
-        for degree, pattern in DEGREES:
-            if pattern.search(sentence) and DEGREE_CONTEXT.search(sentence):
-                education.append({"degree": degree, "priority": "preferred" if (priority == "preferred" or
-                                                                                 EQUIVALENT.search(sentence)) else "mandatory",
-                                  "field_cs": bool(FIELD_CS.search(sentence)), "evidence": sentence[:220]})
-                break
+        # Alternatives in one sentence ("B.Tech, BE or M.Tech") mean the lowest listed degree qualifies.
+        named = _named_degrees(sentence)
+        if named and DEGREE_CONTEXT.search(sentence):
+            degree = min(named, key=lambda name: DEGREE_RANK[name])
+            education.append({"degree": degree, "priority": "preferred" if (priority == "preferred" or
+                                                                             EQUIVALENT.search(sentence)) else "mandatory",
+                              "field_cs": bool(FIELD_CS.search(sentence)), "evidence": sentence[:220]})
     if not education:
+        found = []
         for degree, pattern in DEGREES:
             match = pattern.search(text)
             if match and DEGREE_CONTEXT.search(text[max(0, match.start() - 80):match.end() + 80]):
-                education.append({"degree": degree, "priority": "listed", "field_cs": bool(FIELD_CS.search(text)),
-                                  "evidence": text[max(0, match.start() - 80):match.end() + 80].strip()})
-                break
+                found.append((match.start(), degree, match))
+        if found:
+            # The first-mentioned degree and any alternatives within the same short span: keep the lowest.
+            found.sort()
+            first = found[0][0]
+            near = [item for item in found if item[0] - first <= 60]
+            if len(near) > 1 and not BACHELOR_EXPLICIT.search(text[max(0, first - 20):first + 80]):
+                near = [item for item in near if item[1] != "Bachelor's"] or near
+            _, degree, match = min(near, key=lambda item: DEGREE_RANK[item[1]])
+            education.append({"degree": degree, "priority": "listed", "field_cs": bool(FIELD_CS.search(text)),
+                              "evidence": text[max(0, match.start() - 80):match.end() + 80].strip()})
     auth = []
     for match in AUTH.finditer(text):
         country = (match.group(2) or match.group(3) or "").strip()

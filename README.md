@@ -11,6 +11,36 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 3.2
+
+- **Honest job scoring.** Every job shows four separate measures: **profile match** (weighted,
+  configurable), an **eligibility gate** (experience, degree, graduation batch, location, work
+  authorization, deadline), **freshness** and **evidence confidence**. Requirements are split into
+  mandatory and preferred, and each is marked satisfied / partial / not satisfied / unknown, with the
+  listing's own wording as evidence. A job that fails a mandatory requirement is never a strong match.
+- **Indian startup intelligence.** A new *Startups* page discovers employers dynamically from startup
+  publications, directories and accelerators, VC portfolios and job platforms. It resolves each one's
+  website, career page and public job board (Greenhouse, Lever, Ashby, Workable, SmartRecruiters;
+  Workday, Freshteam, Zoho Recruit and others are detected and reported). Funding, launch and hiring
+  news is stored as **signals**, never as vacancies. Requests that mention startups put startup
+  employers' listings first.
+- **Listing lifecycle.** First seen, posted, updated, last verified, deadline and status, with
+  re-verification on a schedule or on request. *Open · verified on employer board* is reserved for
+  listings read from the employer's own job system; a third-party page with an apply button is
+  *Open · listing page checked*. A listing is closed only on evidence (page wording, or two
+  consecutive misses from the employer's board). Reposts are linked; the same job on several portals
+  is merged with every source kept, and different requisition IDs are never merged.
+- **Source coverage.** For each source, the Jobs page shows whether it was targeted, returned
+  results, was fetched, yielded extracted listings, was stored and was verified.
+- **Applications.** Ten statuses, resume used, recruiter, interview and follow-up dates, next action,
+  notes and status history. Follow-ups and interviews become Planning tasks. Nothing is ever
+  submitted for you.
+- **Skills Market v2.** Deduplicated counts, sample sizes and date range, skills by location /
+  experience / employer, skills in new listings, week-by-week changes, and a skill gap that is hidden
+  when the resume extraction looks incomplete.
+- **AI News:** ten topic categories and cleaner article text. **Daily Briefing:** ten actionable
+  sections showing only what changed since the previous briefing.
+
 ## What's new in 3.1
 
 - **Broad discovery, smart shortlist.** Each job search collects a large candidate pool
@@ -235,6 +265,10 @@ JSON accepts an array or an object with a `tasks` array. Each task can use `text
 | POST | `/api/planning/interpret` | Local-model note interpretation (suggestions) |
 | POST | `/api/tasks/{id}/delete` | Delete a manual task |
 | GET | `/api/export/calendar.ics`, `/api/export/jobs.csv` | Calendar and CSV exports |
+| POST | `/api/employers/discover` | Employer discovery job (`request`, `topic`, `search_calls`) |
+| GET | `/api/employers` | Employers and hiring signals |
+| POST | `/api/jobs/reverify` | Re-verify saved/shortlisted listings (`job_ids` or `limit`) |
+| GET/POST | `/api/applications`, `/api/applications/{id}/delete` | Application records |
 | POST | `/api/visit` | Record a visit for "new since last visit" |
 
 ## Data
@@ -262,7 +296,7 @@ fetch, and prints per-stage timing. Credentials are never printed.
 ## Tests
 
 ```bash
-./.venv/bin/python -m unittest discover -q      # 71 tests
+./.venv/bin/python -m unittest discover -q      # 132 tests (network mocked)
 ./.venv/bin/python -m compileall -q app tests
 ```
 
@@ -284,6 +318,12 @@ fetch, and prints per-stage timing. Credentials are never printed.
 
 ## Current limitations
 
+- Many startup homepages are rendered by JavaScript, so their career link is not in the HTML.
+  Those companies are listed with "no career link found on homepage"; nothing is guessed.
+- LinkedIn and Indeed `site:` searches often return nothing through the search provider, and
+  Indeed pages frequently time out when re-verified. Both are reported as such, never as searched.
+- Company names in startup news are extracted by patterns plus one small local-model pass. A few
+  foreign companies covered by Indian publications may be tagged India; the evidence is shown.
 - Discovery quality depends on the local model and on what MCP returns. Index pages
   are expanded into individual listings where their links are recognisable; pages
   that cannot be expanded are kept in a collapsed "Search pages to check" group.

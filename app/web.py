@@ -302,6 +302,7 @@ class Application:
             "news_presets": {"regions": ["Global", *NEWS_REGIONS.keys()], "topics": list(NEWS_TOPICS.keys())},
             "scan_roles": scan_roles(self.discovery_preferences),
             "job_search": self.last_job_search(),
+            "employer_search": self.last_employer_search(),
             "companies": (self.discovery_preferences.get("jobs", {}).get("companies")
                           or __import__("app.services.ats_sources", fromlist=["x"]).DEFAULT_COMPANIES),
             "themes": sorted(THEMES),
@@ -319,6 +320,16 @@ class Application:
             "planning": self.planning_state(notes),
             "search_sessions": self.store.search_sessions(10),
         }
+
+    def last_employer_search(self) -> dict | None:
+        for session in self.store.search_sessions(30):
+            summary = session.get("summary") or {}
+            if session.get("category") == "employers" or summary.get("kind") == "employer_discovery":
+                return {**summary, "created_at": session.get("created_at")}
+            nested = summary.get("employer_discovery") if summary.get("kind") == "broad_search" else None
+            if nested:
+                return {**nested, "created_at": session.get("created_at"), "via": "job search"}
+        return None
 
     def last_job_search(self) -> dict | None:
         for session in self.store.search_sessions(30):
@@ -646,6 +657,11 @@ class Application:
                         search_calls=max(2, min(12, int(payload.get("search_calls") or 6))),
                         progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
                     self.store.link_jobs_to_employers()
+                    session_id = self.store.start_search_session("employers", request)
+                    self.store.update_search_session(session_id, status=result.get("status") or "complete", summary={
+                        **{k: v for k, v in result.items() if k != "career_listings"},
+                        "companies": (result.get("companies") or [])[:80],
+                        "career_listings": (result.get("career_listings") or [])[:60]})
                 elif job["kind"] == "auto_refresh":
                     engine = DiscoveryEngine(self.settings, self.store, preferences=self.discovery_preferences)
                     categories = (self.discovery_preferences.get("automation") or {}).get("categories") or ["jobs", "news"]

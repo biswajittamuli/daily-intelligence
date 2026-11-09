@@ -225,7 +225,7 @@ NON_TECH_TITLE = _re.compile(
     r"customer success|customer support|support specialist|office manager|executive assistant|"
     r"facilities|procurement|compliance|risk analyst|copywriter|content writer|brand|"
     r"public relations|communications manager|events?|partnerships?|growth marketing|"
-    r"collections|underwriter|merchandis\w*|store|warehouse|driver|nurse|teacher|gtm|go-to-market|"
+    r"collections|underwriter|fraud|credit analyst|kyc|aml|loan|merchandis\w*|store|warehouse|driver|nurse|teacher|gtm|go-to-market|"
     r"strategy|strategic|operations|ops manager|program manager|product marketing|designer)\b", _re.I)
 TECH_TITLE = _re.compile(
     r"\b(engineer\w*|developer|programmer|sde|swe|scientist|data|ml|ai|machine learning|"

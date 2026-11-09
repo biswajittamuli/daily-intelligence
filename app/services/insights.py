@@ -128,11 +128,30 @@ def _portal_kind(domain: str) -> str:
     return "Job board" if any(hint in domain for hint in JOB_BOARD_HINTS) else "Company / other"
 
 
+_CITY_NAMES = {"bangalore": "Bengaluru", "bengaluru": "Bengaluru", "gurgaon": "Gurugram", "gurugram": "Gurugram",
+               "bombay": "Mumbai", "mumbai": "Mumbai", "new delhi": "Delhi", "delhi": "Delhi", "delhi ncr": "Delhi NCR",
+               "madras": "Chennai", "chennai": "Chennai", "calcutta": "Kolkata", "kolkata": "Kolkata",
+               "cochin": "Kochi", "kochi": "Kochi", "hyderabad": "Hyderabad", "pune": "Pune", "noida": "Noida",
+               "ahmedabad": "Ahmedabad", "jaipur": "Jaipur", "india": "India"}
+_LOCATION_NOISE = re.compile(r"^(?:on-?site|in-?office|hybrid|based)\s*(?:in|at|-|:)?\s*", re.I)
+
+
 def _location(value: str) -> str:
+    """City-level label; spelling variants (Bangalore/Bengaluru, "Onsite in Bangalore") collapse to one name."""
     clean = " ".join(str(value or "").split())
     if not clean:
         return "Not stated"
-    return clean.split(",")[0].strip()[:60] or "Not stated"
+    first = _LOCATION_NOISE.sub("", clean.split(",")[0].split("/")[0].split("|")[0].strip())
+    if re.search(r"\bremote\b", clean, re.I) and not re.search(r"\b(hybrid|on-?site)\b", clean, re.I):
+        return "Remote"
+    key = re.sub(r"[^a-z ]+", " ", first.casefold())
+    key = " ".join(key.split())
+    if key in _CITY_NAMES:
+        return _CITY_NAMES[key]
+    for name, label in _CITY_NAMES.items():
+        if re.search(rf"\b{name}\b", clean.casefold()):
+            return label
+    return first[:60].strip() or "Not stated"
 
 
 def _freshness_bucket(posted: Any, today: date) -> str:
@@ -224,15 +243,18 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
         week = start.fromordinal(start.toordinal() - 7 * offset)
         weeks.append({"name": week.isoformat(), "count": weekly.get(week.isoformat(), 0)})
 
+    # Same reading of a resume as job matching: canonical names, compound entries, specific -> general
+    # implications (PostgreSQL shows SQL) and skills used in projects all count as present.
+    from app.services.assessment import candidate_from_profile
+    from app.services.skills_taxonomy import canonical
     resume_skills: set[str] = set()
     for resume in resumes:
-        profile = resume.get("profile") or {}
-        for key in ("skills", "frameworks", "languages", "keywords"):
-            resume_skills.update(" ".join(str(item).split()).casefold() for item in profile.get(key) or [])
+        candidate = candidate_from_profile(resume.get("profile") or {}, {})
+        resume_skills |= candidate["explicit"] | set(candidate["implied"]) | candidate["inferred"]
     gap = [{"name": item["name"], "count": item["count"]} for item in _top(skills, 30)
-           if resumes and item["name"].casefold() not in resume_skills][:10]
+           if resumes and canonical(item["name"]).casefold() not in resume_skills][:10]
     have = [{"name": item["name"], "count": item["count"]} for item in _top(skills, 30)
-            if resumes and item["name"].casefold() in resume_skills][:10]
+            if resumes and canonical(item["name"]).casefold() in resume_skills][:10]
 
     resume_fit: list[dict[str, Any]] = []
     if resumes:
@@ -277,7 +299,7 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
             weekly_skill.setdefault(_week_start(seen_on).isoformat(), Counter()).update(job_skills)
     top_skill_names = [item["name"] for item in _top(skills, 8)]
 
-    def matrix(groups: dict[str, Counter[str]], names: list[str]) -> dict[str, Any]:
+    def skill_matrix(groups: dict[str, Counter[str]], names: list[str]) -> dict[str, Any]:
         return {"rows": names, "skills": top_skill_names,
                 "matrix": [[groups.get(name, Counter()).get(skill, 0) for skill in top_skill_names] for name in names]}
 
@@ -336,9 +358,9 @@ def job_market(jobs: list[dict[str, Any]], *, today: date | None = None,
         "skill_strengths": have,
         "resume_fit": resume_fit,
         "dataset": dataset,
-        "skills_by_location": matrix(by_city, top_cities),
-        "skills_by_experience": matrix(by_exp, exp_order),
-        "skills_by_employer": matrix(by_employer, top_employers),
+        "skills_by_location": skill_matrix(by_city, top_cities),
+        "skills_by_experience": skill_matrix(by_exp, exp_order),
+        "skills_by_employer": skill_matrix(by_employer, top_employers),
         "new_listing_skills": _top(new_skills, 10),
         "skill_trend": trend,
         "resume_complete": resume_complete,

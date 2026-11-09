@@ -579,19 +579,22 @@ class Store:
                                  "WHERE canonical_url=?", (url,)).fetchone()
                 repost_of = row["repost_of"] if row else None
                 if row is None and key:
-                    twin = db.execute("SELECT id, canonical_url, status, requisition_id, sources_json FROM job_listings "
-                                      "WHERE dedup_key=? ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+                    twins = db.execute("SELECT id, canonical_url, status, requisition_id, sources_json FROM job_listings "
+                                       "WHERE dedup_key=? ORDER BY id DESC", (key,)).fetchall()
                     req = record.get("requisition_id")
-                    conflict = twin is not None and req and twin["requisition_id"] and req != twin["requisition_id"]
-                    if twin is not None and not conflict:
+                    # Same requisition id first; then a twin without one. A different id is a different opening.
+                    twin = next((t for t in twins if req and t["requisition_id"] == req), None) or \
+                        next((t for t in twins if not req or not t["requisition_id"]), None)
+                    if twin is not None:
                         if twin["status"] in {"closed", "expired"}:
                             repost_of = twin["id"]
                         else:
                             merged = _merge_sources(_loads(twin["sources_json"], []),
                                                     (record.get("sources") or []) + [{"platform": record.get("source_platform"),
                                                                                       "url": original, "via": "duplicate"}])
-                            db.execute("UPDATE job_listings SET sources_json=?, last_seen=? WHERE id=?",
-                                       (_json(merged), now, twin["id"]))
+                            db.execute("UPDATE job_listings SET sources_json=?, last_seen=?, "
+                                       "requisition_id=COALESCE(requisition_id, ?) WHERE id=?",
+                                       (_json(merged), now, req, twin["id"]))
                             saved.append(self._row(db.execute("SELECT * FROM job_listings WHERE id=?",
                                                               (twin["id"],)).fetchone(), "job_listings"))
                             continue
@@ -968,8 +971,19 @@ class Store:
 
     def link_jobs_to_employers(self) -> int:
         """Attach stored listings to employers by normalized employer name (no fuzzy guessing)."""
+        from app.services.listing_links import infer_employer
         linked = 0
         with self.connect() as db:
+            # Backfill employers that are evident from the URL, recruitment subdomain, title or page links.
+            for row in db.execute("SELECT id, original_url, title, raw_json, evidence_json FROM job_listings "
+                                  "WHERE employer IS NULL OR employer=''").fetchall():
+                name, how = infer_employer(row["original_url"] or "", row["title"] or "",
+                                           f"{row['evidence_json'] or ''} {row['raw_json'] or ''}"[:40000])
+                if name:
+                    raw = _loads(row["raw_json"], {}) or {}
+                    if isinstance(raw, dict):
+                        raw["employer_source"] = how
+                    db.execute("UPDATE job_listings SET employer=?, raw_json=? WHERE id=?", (name, _json(raw), row["id"]))
             employers = {row["normalized_name"]: row["id"] for row in db.execute("SELECT id, normalized_name FROM employers")}
             for row in db.execute("SELECT id, employer FROM job_listings WHERE employer_id IS NULL AND employer IS NOT NULL").fetchall():
                 employer_id = employers.get(self._norm_company(row["employer"]))

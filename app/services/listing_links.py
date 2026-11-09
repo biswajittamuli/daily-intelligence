@@ -46,7 +46,8 @@ LISTING_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 INDEX_PATTERNS = re.compile(
-    r"(/role/l/|/jobs/?$|/jobs\?|/search|[?&](q|query|keywords?)=|/jobs-in-|-jobs-in-|/l/|/location/)",
+    r"(/role/l/|/role/[a-z0-9-]+/?$|/job-openings/|/jobs/?$|/jobs\?|/search|[?&](q|query|keywords?)=|/jobs-in-|"
+    r"-jobs-in-|/l/|/location/)",
     re.I)
 
 ROLE_WORDS = re.compile(
@@ -85,7 +86,8 @@ def looks_like_index(url: str, title: str = "") -> bool:
         return False
     lowered = title.casefold()
     return bool(INDEX_PATTERNS.search(url)) or bool(re.search(
-        r"\b(\d[\d,]*\+?\s+)?(jobs|vacancies|openings)\b.*\b(in|for|at)\b|\bjobs in\b|careers\s*\||grow with us", lowered))
+        r"\b(\d[\d,]*\+?\s+)?(jobs|vacancies|openings)\b.*\b(in|for|at)\b|\bjobs in\b|careers\s*\||grow with us|"
+        r"^[\w\s/+.&-]{2,60}\b(jobs|vacancies|openings)\s*($|[(|\-–—:])|job portal", lowered))
 
 
 def _clean_title(text: str) -> str:
@@ -202,3 +204,76 @@ def harvest_career_page(page_url: str, content: str, employer: str, *, limit: in
         if len(found) >= limit:
             break
     return list(found.values())
+
+
+# ------------------------------------------------------------------ employer inference
+_CITY_SLUGS = ("bengaluru", "bangalore", "hyderabad", "pune", "chennai", "mumbai", "delhi", "new-delhi", "gurugram",
+               "gurgaon", "noida", "ahmedabad", "kochi", "kolkata", "jaipur", "remote", "india", "chandigarh",
+               "indore", "coimbatore", "thiruvananthapuram", "trivandrum", "mysuru", "mysore", "nagpur", "vadodara")
+_FILLER = {"hiring", "urgent", "urgently", "opening", "openings", "immediate", "immediately", "joiner", "joiners",
+           "walk", "walkin", "in", "wfh", "work", "from", "home", "for", "at", "with", "we", "are", "job", "role",
+           "freshers", "fresher", "required", "requirement", "opportunity", "only"}
+_ATS_SUBDOMAIN = re.compile(r"^(?:www\.)?([a-z0-9-]+)\.(?:zohorecruit\.(?:in|com)|freshteam\.com|keka\.com|darwinbox\.in|"
+                            r"recruitee\.com|bamboohr\.com|breezy\.hr|teamtailor\.com)$", re.I)
+_ICIMS = re.compile(r"^(?:careers-|jobs-|india-)?([a-z0-9]+)\.icims\.com$", re.I)
+_TITLE_EMPLOYER = re.compile(r"(?:job details|careers?|jobs)\s*[|\-–—]\s*([A-Z][\w&.,' ]{1,60}?)\s*$", re.I)
+_TITLE_PREFIX = re.compile(r"^([A-Z][\w&.' ]{1,40}?)\s+-\s+.+\bin\s+[A-Z]")
+_INDEED_CMP = re.compile(r"indeed\.[a-z.]+/cmp/([A-Za-z0-9][A-Za-z0-9\-]{1,60})", re.I)
+_WELLFOUND_CO = re.compile(r"wellfound\.com/company/([a-z0-9][a-z0-9-]{1,60})", re.I)
+_LEGAL = re.compile(r"\b(inc|llc|ltd|limited|pvt|private|corp|corporation|services)\.?$", re.I)
+
+
+def _slug_to_name(slug: str) -> str:
+    words = [w for w in re.split(r"[-_]+", slug) if w]
+    return " ".join(w.upper() if len(w) <= 3 and w.isalpha() and w not in {"and", "the", "of"} else w.capitalize()
+                    for w in words)
+
+
+def infer_employer(url: str, title: str = "", text: str = "") -> tuple[str | None, str | None]:
+    """Employer name from evidence already in hand: URL slug, ATS subdomain, page title or page links.
+
+    Returns (name, how) — ``how`` says which evidence was used; (None, None) when nothing is reliable.
+    """
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path or ""
+    # Naukri: /job-listings-<title>-<company>-<city>-<years>-<id>
+    if host.endswith("naukri.com") and "/job-listings-" in path:
+        slug = path.split("/job-listings-", 1)[1].casefold()
+        rest = None
+        for variant in (title.casefold(), re.sub(r"\(.*?\)", "", title.casefold())):
+            title_slug = re.sub(r"[^a-z0-9+#]+", "-", variant.replace("+", "-").replace("#", "-")).strip("-")
+            title_slug = re.sub(r"-+", "-", title_slug)
+            if title_slug and slug.startswith(title_slug):
+                rest = slug[len(title_slug):].strip("-")
+                break
+        if rest:
+            words = rest.split("-")
+            while words and words[0] in _FILLER:
+                words.pop(0)
+            parts = []
+            for word in words:
+                if word in _CITY_SLUGS or word.isdigit():
+                    break
+                parts.append(word)
+            if 0 < len(parts) <= 6:
+                return _slug_to_name("-".join(parts)), "Naukri listing URL"
+    match = _ATS_SUBDOMAIN.match(host) or _ICIMS.match(host)
+    if match:
+        return _slug_to_name(match.group(1)), "employer recruitment subdomain"
+    match = _TITLE_EMPLOYER.search(title or "")
+    if match and not re.search(r"\b(naukri|indeed|linkedin|wellfound|glassdoor|foundit|aimlroles|startup)\b",
+                               match.group(1), re.I):
+        return _LEGAL.sub("", match.group(1).strip(" ,.")).strip(" ,.") or None, "page title"
+    match = _TITLE_PREFIX.search(title or "")
+    if match:
+        return _LEGAL.sub("", match.group(1).strip()).strip(" ,.") or None, "page title"
+    if "indeed." in host:
+        names = [m.group(1) for m in _INDEED_CMP.finditer(text or "")]
+        if names and len({n.casefold() for n in names}) == 1:
+            return _slug_to_name(names[0]), "Indeed company link on the listing page"
+    if host.endswith("wellfound.com"):
+        names = [m.group(1) for m in _WELLFOUND_CO.finditer(text or "")]
+        if names and len(set(names)) == 1:
+            return _slug_to_name(names[0]), "Wellfound company link on the listing page"
+    return None, None

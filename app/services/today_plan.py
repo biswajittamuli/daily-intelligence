@@ -81,11 +81,15 @@ def build_today_plan(*, tasks: list[dict[str, Any]], jobs: list[dict[str, Any]],
     candidates = [job for job in jobs
                   if job.get("status") not in {"expired", "closed"}
                   and job.get("match_score") is not None
+                  # Never suggest applying where an explicit requirement fails (eligibility gate).
+                  and (job.get("eligibility") or {}).get("tier", "possible") in {"strong", "possible"}
+                  and (job.get("eligibility") or {}).get("status") != "not_eligible"
                   and job_states.get(int(job.get("id") or 0)) not in {"applied", "interview", "offer",
                                                                       "rejected", "dismissed"}
                   and (job.get("source_kind") or (job.get("raw") or {}).get("source_kind"))
                   not in {"index_page", "search_page"}]
-    candidates.sort(key=lambda job: (job.get("match_score") or 0, job.get("posted_date") or ""), reverse=True)
+    candidates.sort(key=lambda job: ((job.get("eligibility") or {}).get("composite") or job.get("match_score") or 0,
+                                     job.get("posted_date") or ""), reverse=True)
     for job in candidates[:3]:
         resume = f" with your “{job['best_resume_label']}” resume" if job.get("best_resume_label") else ""
         suggestions.append({"kind": "apply", "title": f"Apply to {job.get('title')}"
@@ -94,10 +98,15 @@ def build_today_plan(*, tasks: list[dict[str, Any]], jobs: list[dict[str, Any]],
                             "url": job.get("original_url")})
     for entry in tracker or []:
         applied = parse_date(str(entry.get("applied_at") or "")[:10])
-        if entry.get("state") == "applied" and applied and (today - applied).days >= 7:
-            suggestions.append({"kind": "follow_up", "title": f"Follow up: {entry.get('title')}",
+        status = entry.get("status") or entry.get("state")  # application records or legacy tracker rows
+        if status == "applied" and applied and (today - applied).days >= 7 and not entry.get("follow_up_date"):
+            label = entry.get("role") or entry.get("title")
+            if entry.get("company"):
+                label += f" at {entry['company']}"
+            suggestions.append({"kind": "follow_up", "title": f"Follow up: {label}",
                                 "detail": f"Applied {(today - applied).days} days ago",
-                                "job_id": entry.get("id"), "url": entry.get("original_url")})
+                                "job_id": entry.get("job_id") or entry.get("id"),
+                                "url": entry.get("job_url") or entry.get("original_url")})
     gaps = [item for item in skill_gap or [] if item.get("count", 0) >= 2]
     if gaps:
         top = gaps[0]

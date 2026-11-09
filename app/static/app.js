@@ -2,6 +2,7 @@ const ICONS={
   home:'<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   briefcase:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M3 13h18"/>',
   file:'<path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h6"/>',
+  rocket:'<path d="M5 15c-1 1-2 4-2 6 2 0 5-1 6-2M9 15l-3-3c1-4 5-9 12-9 0 7-5 11-9 12z"/><circle cx="15" cy="9" r="1.5"/>',
   check:'<path d="M9 11l3 3 8-8"/><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h11"/>',
   chart:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   building:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',
@@ -19,6 +20,7 @@ const NAV=[
   {id:'jobs',label:'Jobs',icon:'briefcase',group:'jobs'},
   {id:'resumes',label:'Resumes',icon:'file',group:'jobs'},
   {id:'tracker',label:'Applications',icon:'check',group:'jobs'},
+  {id:'startups',label:'Startups',icon:'rocket',group:'jobs'},
   {id:'job-market',label:'Skills Market',icon:'chart',group:'jobs'},
   {id:'government',label:'Government & PSU',icon:'building',group:'intel'},
   {id:'exams',label:'Exams',icon:'calendar',group:'intel'},
@@ -46,13 +48,15 @@ const state={
   data:null,view:'daily-briefing',activeJob:null,pollTimer:null,toastTimer:null,
   models:[],lastJob:null,tailor:{},note:null,suggestions:null,editResume:null,replaceResume:null,confirmDelete:null,
   expanded:{},
-  lastQuery:{jobs:'',government:'',exams:'',news:'',papers:''},
+  lastQuery:{jobs:'',government:'',exams:'',news:'',papers:'',employers:'',employerTopic:''},editApp:null,
   filters:{
     jobs:{status:'all',q:'',freshness:'30d',recency:'all',role:'',resume:'',sort:'match',layout:'list',undated:true},
     government:{eligibility:'all',doc:'all',q:'',freshness:'90d'},
     exams:{q:'',freshness:'365d'},
     news:{q:'',freshness:'7d',region:'',topic:''},
     papers:{q:'',freshness:'30d'},
+    startups:{kind:'',q:'',signal:'',builtin:false},
+    apps:{status:'active'},
   },
 };
 const $=s=>document.querySelector(s);
@@ -295,6 +299,11 @@ function emptyBriefing(){
     `<button class="primary-button" data-action="briefing">Generate briefing</button><button class="quiet-button" data-action="quick-search" data-category="jobs" data-query="">Search jobs</button>`)}</div>`;
 }
 function briefingBody(content,briefing){
+  if(content.actionable)return actionableBriefing(content.actionable)+legacyBriefing(content,briefing,true);
+  return legacyBriefing(content,briefing,false);
+}
+function legacyBriefing(content,briefing,folded){
+  if(folded)return `<details class="collapsible section-space" data-details="legacy-brief" ${state.expanded['legacy-brief']?'open':''}><summary>Search sections, priorities and execution details</summary>${legacyBriefing(content,briefing,false)}</details>`;
   const priorities=(content.priorities||[]).slice(0,6);
   const deadlines=(content.deadlines||[]).slice(0,8);
   const sections=(content.sections||[]).map(section=>`<div class="panel section-space">
@@ -352,23 +361,81 @@ function ageLabel(value){
   return Math.round(days/30)+' mo ago';
 }
 function tierOf(job){return (job.eligibility||{}).tier||(job.match_score==null?'low':job.match_score>=70?'strong':job.match_score>=50?'possible':'low');}
-function feedJobs(){
+function elig(job){return job.eligibility||{};}
+function employerMap(){
+  const map={};(D().employers||[]).forEach(e=>{map[e.id]=e;});return map;
+}
+function isIndianStartup(job,emps){
+  const e=job.employer_id!=null?emps[job.employer_id]:null;
+  return !!(e&&e.classification==='startup'&&(e.country==='India'||!e.country));
+}
+function sourceKind(job){
+  const via=String(job.discovered_via||'').toLowerCase();
+  if(via.includes('career board'))return 'board';
+  if(via.includes('career page'))return 'career';
+  if(via.includes('index'))return 'index';
+  return 'web';
+}
+function employmentOf(job){
+  const t=String(job.employment_type||'');
+  if(/intern/i.test(t)||/\bintern(ship)?\b/i.test(job.title||''))return 'Internship';
+  if(/contract|freelance|temporary/i.test(t))return 'Contract';
+  if(/part/i.test(t))return 'Part-time';
+  if(/full/i.test(t))return 'Full-time';
+  return t?t.slice(0,30):'Not stated';
+}
+function cityOf(job){
+  const raw=String(job.location||'').trim();
+  if(!raw)return 'Not stated';
+  if(/\bremote\b/i.test(raw)&&!/hybrid|on-?site/i.test(raw))return 'Remote';
+  const aliases={bangalore:'Bengaluru',gurgaon:'Gurugram',bombay:'Mumbai','new delhi':'Delhi',madras:'Chennai',calcutta:'Kolkata',cochin:'Kochi'};
+  let first=raw.split(/[,/|]/)[0].replace(/^(on-?site|in-?office|hybrid|based)\s*(in|at|-|:)?\s*/i,'').trim();
+  const key=first.toLowerCase();
+  if(aliases[key])return aliases[key];
+  return first?first.charAt(0).toUpperCase()+first.slice(1):'Not stated';
+}
+function expBucket(job){
+  const min=(elig(job).experience||{}).required_min;
+  if(min==null)return 'unknown';
+  if(min<=1)return '0-1';if(min<=2)return '1-2';return '3+';
+}
+function feedJobs({includeIneligible=false}={}){
   const f=state.filters.jobs;
   const q=(f.q||'').toLowerCase();
   const days={'week':7,'month':30,'quarter':90,'all':null}[f.recency||'all'];
+  const emps=employerMap();
   return (D().jobs||[]).filter(job=>{
     if(SEARCH_KINDS.has(job.source_kind))return false;
-    if(tierOf(job)==='excluded')return false;
-    if(['expired','closed'].includes(job.status)&&!f.showExpired)return false;
+    const tier=tierOf(job);
+    if(tier==='excluded')return false;
+    if(tier==='ineligible'&&!includeIneligible)return false;
+    const life=(job.lifecycle||{}).state;
+    if(['expired','closed'].includes(life||job.status)&&!f.showExpired)return false;
     if(days!=null){const age=daysAgo(job.posted_date);if(age==null?!f.undated:age>days)return false;}
     if(f.role&&job.role_family!==f.role)return false;
+    if(f.city&&cityOf(job)!==f.city)return false;
+    if(f.exp&&expBucket(job)!==f.exp)return false;
+    if(f.employment&&employmentOf(job)!==f.employment)return false;
+    if(f.source&&sourceKind(job)!==f.source)return false;
+    if(f.fresh&&((elig(job).freshness||{}).label||'unknown')!==f.fresh)return false;
+    if(f.eligibility&&(elig(job).status||'unknown')!==f.eligibility)return false;
+    if(f.minMatch&&(job.match_score??0)<Number(f.minMatch))return false;
+    if(f.startup&&!isIndianStartup(job,emps))return false;
+    if(f.tracked){const s=stateOf('job',job.id);if(!s||s==='dismissed')return false;}
+    else if(stateOf('job',job.id)==='dismissed')return false;
     if(q&&!`${job.title} ${job.employer||''} ${job.location||''} ${(job.skills||[]).join(' ')}`.toLowerCase().includes(q))return false;
     return true;
   });
 }
 function sortJobs(list,key){
-  const by={match:(a,b)=>(b.match_score??-1)-(a.match_score??-1)||String(b.posted_date||'').localeCompare(String(a.posted_date||'')),
-    newest:(a,b)=>String(b.first_seen||'').localeCompare(String(a.first_seen||''))||(b.match_score??-1)-(a.match_score??-1)};
+  const comp=j=>elig(j).composite??j.match_score??-1;
+  const by={
+    match:(a,b)=>comp(b)-comp(a)||String(b.posted_date||'').localeCompare(String(a.posted_date||'')),
+    fit:(a,b)=>(b.match_score??-1)-(a.match_score??-1)||comp(b)-comp(a),
+    posted:(a,b)=>String(b.posted_date||'').localeCompare(String(a.posted_date||''))||comp(b)-comp(a),
+    newest:(a,b)=>String(b.first_seen||'').localeCompare(String(a.first_seen||''))||comp(b)-comp(a),
+    confidence:(a,b)=>(elig(b).confidence??-1)-(elig(a).confidence??-1)||comp(b)-comp(a),
+  };
   return list.slice().sort(by[key]||by.match);
 }
 function activeResumeBar(){
@@ -383,74 +450,125 @@ function activeResumeBar(){
     <a class="link-button" href="#resumes" data-view="resumes" style="margin-left:auto">Manage resumes</a>
   </div>`;
 }
+function optionList(values,current,allLabel){
+  return `<option value="">${esc(allLabel)}</option>`+values.map(([v,l,n])=>`<option value="${esc(v)}" ${current===v?'selected':''}>${esc(l)}${n!=null?` (${n})`:''}</option>`).join('');
+}
+function counted(list,fn){
+  const m={};list.forEach(j=>{const k=fn(j);if(k)m[k]=(m[k]||0)+1;});
+  return Object.entries(m).sort((a,b)=>b[1]-a[1]);
+}
+function jobFilters(base){
+  const f=state.filters.jobs;
+  const families=counted(base,j=>j.role_family);
+  const cities=counted(base,cityOf).slice(0,18);
+  const employment=counted(base,employmentOf);
+  const active=[f.role,f.city,f.exp,f.employment,f.source,f.fresh,f.eligibility,f.minMatch,f.startup,f.tracked,f.q].filter(Boolean).length;
+  return `<details class="collapsible" ${state.expanded.filters?'open':''} data-details="filters"><summary>Filters and sorting${active?` <span class="badge">${active} active</span>`:''}</summary>
+    <div class="filter-grid">
+      <label class="field"><span>Location</span><select class="select" data-filter="city">${optionList(cities.map(([v,n])=>[v,v,n]),f.city||'','Any location')}</select></label>
+      <label class="field"><span>Role family</span><select class="select" data-filter="role">${optionList(families.map(([v,n])=>[v,v,n]),f.role||'','All roles')}</select></label>
+      <label class="field"><span>Experience asked</span><select class="select" data-filter="exp">${optionList([['0-1','0–1 years'],['1-2','up to 2 years'],['3+','3+ years'],['unknown','Not stated']],f.exp||'','Any')}</select></label>
+      <label class="field"><span>Employment type</span><select class="select" data-filter="employment">${optionList(employment.map(([v,n])=>[v,v,n]),f.employment||'','Any type')}</select></label>
+      <label class="field"><span>Source</span><select class="select" data-filter="source">${optionList([['board','Employer job board (verified)'],['career','Company career page'],['web','Job portal / web search'],['index','Expanded from index page']],f.source||'','All sources')}</select></label>
+      <label class="field"><span>Freshness</span><select class="select" data-filter="fresh">${optionList([['new','New (≤3 days)'],['fresh','Fresh (≤14 days)'],['recent','Recent (≤30 days)'],['aging','Aging (31–60 days)'],['stale','Stale (60+ days)'],['unknown','Date not stated']],f.fresh||'','Any freshness')}</select></label>
+      <label class="field"><span>Eligibility</span><select class="select" data-filter="eligibility">${optionList([['eligible','Eligible'],['uncertain','Uncertain'],['not_eligible','Not eligible']],f.eligibility||'','Any (not eligible hidden)')}</select></label>
+      <label class="field"><span>Profile match ≥</span><select class="select" data-filter="minMatch">${optionList([['40','40'],['50','50'],['60','60'],['70','70'],['80','80']],String(f.minMatch||''),'Any')}</select></label>
+      <label class="field"><span>Sort by</span><select class="select" data-filter="sort">${[['match','Overall rank'],['fit','Profile match'],['posted','Posted date'],['newest','First discovered'],['confidence','Evidence confidence']].map(([v,l])=>`<option value="${v}" ${(f.sort||'match')===v?'selected':''}>${l}</option>`).join('')}</select></label>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">Posted</span>
+      ${[['week','7 days'],['month','30 days'],['quarter','90 days'],['all','Any time']].map(([v,l])=>`<button class="chip ${(f.recency||'all')===v?'active':''}" data-action="job-recency" data-value="${v}">${l}</button>`).join('')}
+      <label class="chip"><input type="checkbox" data-action="job-undated" ${f.undated?'checked':''}> include undated</label>
+      <label class="chip"><input type="checkbox" data-filter-check="startup" ${f.startup?'checked':''}> Indian startups only</label>
+      <label class="chip"><input type="checkbox" data-filter-check="tracked" ${f.tracked?'checked':''}> saved / applied only</label>
+      <label class="chip"><input type="checkbox" data-action="job-expired" ${f.showExpired?'checked':''}> show closed & expired</label>
+    </div>
+    <div class="filter-row">
+      <input class="input" style="width:240px" data-action="job-q" placeholder="Filter by text, skill, employer…" value="${esc(f.q||'')}">
+      <span class="filter-gap"></span>
+      ${active?'<button class="link-button" data-action="job-clear-filters">Clear filters</button>':''}
+    </div>
+  </details>`;
+}
 function viewJobs(){
   const f=state.filters.jobs;
-  const all=feedJobs();
+  const showInel=f.eligibility==='not_eligible';
+  const all=feedJobs({includeIneligible:showInel});
   const strong=sortJobs(all.filter(j=>tierOf(j)==='strong'),f.sort);
   const possible=sortJobs(all.filter(j=>tierOf(j)==='possible'),f.sort);
+  const low=sortJobs(all.filter(j=>tierOf(j)==='low'),f.sort);
+  const ineligible=sortJobs(feedJobs({includeIneligible:true}).filter(j=>tierOf(j)==='ineligible'),f.sort);
   const recent=sortJobs(all.filter(j=>isNew(j)||daysAgo(j.first_seen)!=null&&daysAgo(j.first_seen)<=2),'newest').slice(0,15);
-  const states=(D().item_states||{}).job||{};
-  const saved=(D().jobs||[]).filter(j=>states[j.id]==='saved');
-  const families=Array.from(new Set((D().jobs||[]).filter(j=>!SEARCH_KINDS.has(j.source_kind)&&tierOf(j)!=='excluded').map(j=>j.role_family).filter(Boolean))).sort();
+  const base=(D().jobs||[]).filter(j=>!SEARCH_KINDS.has(j.source_kind)&&tierOf(j)!=='excluded');
   const excludedCount=(D().jobs||[]).filter(j=>tierOf(j)==='excluded').length;
   const pool=((D().preferences||{}).jobs||{}).pool_size||100;
+  const lastRe=D().last_reverify;
   return heading('Jobs','Job shortlist',
-    'Broad discovery across job portals, company career boards and the open web, ranked against your active resume. Only relevant vacancies are listed; articles, senior roles and out-of-region jobs are filtered out with reasons.',
-    `<a class="quiet-button" href="/api/export/jobs.csv?fresh=1">Export CSV</a>`) +
+    'Broad discovery across job portals, employer job boards and the open web, ranked against your active resume. Each job shows four separate measures — profile match, eligibility, freshness and evidence confidence — and a requirement-by-requirement breakdown.',
+    `<button class="quiet-button" data-action="reverify" title="Re-check saved, applied and shortlisted listings">Re-verify listings</button><a class="quiet-button" href="/api/export/jobs.csv?fresh=1">Export CSV</a>`) +
     activeResumeBar() + progressBox() +
     `<div class="toolbar section-space"><form data-form="jobsearch">
-      <input class="input" name="query" placeholder="Optional role or focus, e.g. “Python backend”, “ML intern Bengaluru” — blank uses your resume and preferences" value="${esc(state.lastQuery.jobs||'')}">
+      <input class="input" name="query" placeholder="Optional: “entry-level AI engineer Bengaluru”, “fresher Python backend India”, “remote ML internship”, “jobs at funded Indian AI startups”" value="${esc(state.lastQuery.jobs||'')}">
       <select class="select" name="pool_size" title="Candidate pool size">${[50,100,200].map(n=>`<option value="${n}" ${Number(pool)===n?'selected':''}>Pool ${n}</option>`).join('')}</select>
       <button class="primary-button" type="submit">${icon('search')} Discover jobs</button>
-    </form></div>
+    </form>
+    <div class="view-note" style="margin-top:6px">Mention a city, “remote”, “fresher/intern”, “startups” or a company name to steer the search. Your resume never leaves this computer; only short role keywords are sent to the search provider.${lastRe?` Last re-verification: ${esc(fmtDateTime(lastRe))}.`:''}</div></div>
     ${coveragePanel()}
-    <details class="collapsible" ${state.expanded.filters?'open':''} data-details="filters"><summary>Filters and view</summary>
-      <div class="filter-row"><span class="filter-label">Posted</span>
-        ${[['week','7 days'],['month','30 days'],['quarter','90 days'],['all','Any time']].map(([v,l])=>`<button class="chip ${(f.recency||'all')===v?'active':''}" data-action="job-recency" data-value="${v}">${l}</button>`).join('')}
-        <label class="chip"><input type="checkbox" data-action="job-undated" ${f.undated?'checked':''}> include undated</label>
-        <label class="chip"><input type="checkbox" data-action="job-expired" ${f.showExpired?'checked':''}> show expired</label>
-      </div>
-      <div class="filter-row"><span class="filter-label">Role</span>
-        <button class="chip ${!f.role?'active':''}" data-action="job-role" data-value="">All</button>
-        ${families.map(n=>`<button class="chip ${f.role===n?'active':''}" data-action="job-role" data-value="${esc(n)}">${esc(n)}</button>`).join('')}
-      </div>
-      <div class="filter-row">
-        <input class="input" style="width:220px" data-action="job-q" placeholder="Filter by text…" value="${esc(f.q||'')}">
-        <select class="select" style="width:auto" data-action="job-sort"><option value="match" ${f.sort!=='newest'?'selected':''}>Best match first</option><option value="newest" ${f.sort==='newest'?'selected':''}>Newest first</option></select>
-        <span class="filter-gap"></span><span class="view-note">${excludedCount} stored listings hidden as not eligible/relevant</span>
-      </div>
-    </details>` +
-    jobSection('Strong matches','Score 70+, eligible, relevant to your resume',strong,'strong') +
-    jobSection('Possible matches','Score 50–69, or with eligibility warnings',possible,'possible') +
-    jobSection('Recently discovered','New since your last visit or in the last 2 days',recent,'recent') +
-    jobSection('Saved jobs','Saved from any list',saved,'saved') +
-    (!strong.length&&!possible.length?emptyRich('No ranked jobs yet','Run “Discover jobs”. Discovery searches several portals and company career boards, then ranks the pool against your active resume.',`<button class="primary-button" data-action="discover-jobs">Discover jobs</button>`):'');
+    ${jobFilters(base)}
+    <div class="legend-row"><span><span class="score strong">80</span> profile match</span><span>${eligBadge('eligible')} eligibility gate</span><span>${freshBadge({label:'fresh',age_days:5})} freshness</span><span>${confBadge(80,'high')} evidence confidence</span><span class="view-note">${excludedCount} stored listings hidden as irrelevant (articles, search pages, non-technical)</span></div>` +
+    jobSection('Strong matches','eligible, all mandatory skills met, fresh, well-evidenced',strong,'strong') +
+    jobSection('Possible matches','worth a look — see the gaps listed on each card',possible,'possible') +
+    jobSection('Weak matches','low profile match',low,'low',{collapsed:true}) +
+    jobSection('Not eligible (stretch roles)','fails an explicit requirement such as experience, degree, batch or location — never shown as a strong match',ineligible,'ineligible',{collapsed:!showInel}) +
+    jobSection('Recently discovered','new since your last visit or in the last 2 days',recent,'recent',{collapsed:true}) +
+    (!strong.length&&!possible.length&&!(showInel&&ineligible.length)?emptyRich('No ranked jobs match these filters','Run “Discover jobs”, or clear filters. Discovery searches several portals and employer job boards, then ranks the pool against your active resume.',`<button class="primary-button" data-action="discover-jobs">Discover jobs</button>`):'');
 }
-function jobSection(title,note,list,key){
+function jobSection(title,note,list,key,{collapsed=false}={}){
   if(!list.length)return '';
   const limit=state.expanded['section-'+key]?list.length:8;
-  return `<section class="job-section"><h2>${esc(title)} <span>${list.length} · ${esc(note)}</span></h2>
-    <div class="job-list">${list.slice(0,limit).map(jobRow).join('')}</div>
-    ${list.length>limit?`<button class="link-button section-space" data-action="expand" data-key="section-${key}">Show all ${list.length}</button>`:''}</section>`;
+  const body=`<div class="job-list">${list.slice(0,limit).map(jobRow).join('')}</div>
+    ${list.length>limit?`<button class="link-button section-space" data-action="expand" data-key="section-${key}">Show all ${list.length}</button>`:''}`;
+  if(collapsed){
+    const open=state.expanded['open-'+key];
+    return `<section class="job-section"><h2><button class="link-button" data-action="expand" data-key="open-${key}">${open?'▾':'▸'} ${esc(title)}</button> <span>${list.length} · ${esc(note)}</span></h2>${open?body:''}</section>`;
+  }
+  return `<section class="job-section"><h2>${esc(title)} <span>${list.length} · ${esc(note)}</span></h2>${body}</section>`;
+}
+const ELIG_LABEL={eligible:'Eligible',uncertain:'Eligibility uncertain',not_eligible:'Not eligible'};
+function eligBadge(status){return `<span class="dim elig-${esc(status||'unknown')}" title="Eligibility gate (separate from the match score)">${esc(ELIG_LABEL[status]||'Eligibility unknown')}</span>`;}
+function freshBadge(fr){
+  fr=fr||{};const label=fr.label||'unknown';
+  const text=label==='unknown'?'date not stated':`${label}${fr.age_days!=null?' · '+(fr.age_days<=0?'today':fr.age_days+'d'):''}`;
+  return `<span class="dim fresh-${esc(label)}" title="Freshness from the posting date">${esc(text)}</span>`;
+}
+function confBadge(value,label){return `<span class="dim conf-${esc(label||'low')}" title="Evidence confidence: how complete and reliable the listing data is — not your suitability">evidence ${esc(label||'—')}${value!=null?' '+esc(value):''}</span>`;}
+function lifeBadge(life){
+  life=life||{};const s=life.state||'unknown';
+  return `<span class="dim life-${esc(s)}" title="${esc(life.detail||'')}">${esc(life.label||s)}</span>`;
 }
 function jobRow(job){
   const tier=tierOf(job);
   const current=stateOf('job',job.id);
-  const elig=job.eligibility||{};
-  const active=(job.resume_scores||[]).find(s=>s.active)||{};
+  const e=elig(job);
+  const fr=e.freshness||{};
   const others=(job.resume_scores||[]).filter(s=>!s.active&&s.score!=null);
   const better=others.find(s=>s.score>(job.match_score||0)+8);
   const open=state.expanded['job-'+job.id];
   const sources=(job.sources||[]).length;
-  return `<div class="job-row">
-    <span class="score ${tier}" title="Match score against your active resume">${job.match_score??'—'}</span>
+  const matched=(e.matched||[]),partial=(e.partial||[]),missM=(e.missing_mandatory||[]),missP=(e.missing_preferred||[]);
+  const oldCls=['aging','stale'].includes(fr.label)?' is-old':'';
+  const closed=['closed','expired'].includes((job.lifecycle||{}).state)?' is-closed':'';
+  return `<div class="job-row${oldCls}${closed}">
+    <span class="score ${tier}" title="Profile match against your active resume (eligibility is shown separately)">${job.match_score??'—'}</span>
     <div class="job-main">
       <div class="item-title"><a href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a> ${isNew(job)?'<span class="badge new">new</span>':''}</div>
-      <div class="item-meta">${meta(job.employer||'Employer not stated')}${meta(job.location||'Location not stated')}${job.posted_date?meta('posted '+ageLabel(job.posted_date)):meta('date not stated')}${meta(job.discovered_via||job.source_platform||'')}${sources>1?meta(sources+' sources'):''}</div>
-      ${(active.matched||[]).length||(active.missing||[]).length?`<div class="item-meta">${(active.matched||[]).slice(0,6).map(s=>`<span class="tag have">${esc(s)}</span>`).join('')}${(active.missing||[]).slice(0,4).map(s=>`<span class="tag miss" title="Not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
-      ${(elig.warnings||[]).length?`<div class="warning-line">⚠ ${elig.warnings.map(esc).join(' ')}</div>`:''}
+      <div class="item-meta">${meta(job.employer||'Employer not stated')}${meta(job.location||'Location not stated')}${job.posted_date?meta('posted '+fmtDate(job.posted_date)):meta('posting date not stated')}${job.last_verified?meta(((job.lifecycle||{}).state==='open_verified'?'verified ':'checked ')+ageLabel(job.last_verified)):''}${meta(job.discovered_via||job.source_platform||'')}${sources>1?meta(sources+' sources'):''}</div>
+      <div class="dims">${eligBadge(e.status)}${freshBadge(fr)}${confBadge(e.confidence,e.confidence_label)}${lifeBadge(job.lifecycle)}${current&&current!=='dismissed'?`<span class="dim app-state">${esc(current)}</span>`:''}</div>
+      ${(e.gates||[]).length?`<div class="warning-line bad">✕ ${e.gates.map(esc).join(' · ')}</div>`:''}
+      ${matched.length||partial.length||missM.length||missP.length?`<div class="item-meta">${matched.slice(0,6).map(s=>`<span class="tag have" title="On your resume">${esc(s)}</span>`).join('')}${partial.slice(0,3).map(s=>`<span class="tag part" title="Only inferred from your projects">${esc(s)} ½</span>`).join('')}${missM.slice(0,4).map(s=>`<span class="tag miss" title="Required, not on your resume">${esc(s)}</span>`).join('')}${missP.slice(0,3).map(s=>`<span class="tag pref" title="Preferred, not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
+      ${(e.warnings||[]).length?`<div class="warning-line">⚠ ${e.warnings.map(esc).join(' ')}</div>`:''}
       ${better?`<div class="view-note">Your “${esc(better.label)}” resume scores ${esc(better.score)} for this role.</div>`:''}
-      ${open?`<div class="reason">${esc(job.match_reason||'')}</div>${(job.sources||[]).length?`<div class="item-meta">${job.sources.map(s=>`<a class="meta" href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.platform||s.via||'source')}</a>`).join('')}</div>`:''}${state.tailor[job.id]?tailorBox(state.tailor[job.id]):''}`:''}
+      ${open?jobDetail(job):''}
     </div>
     <div class="item-actions">
       <button class="link-button" data-action="expand" data-key="job-${job.id}">${open?'Less':'Why'}</button>
@@ -459,25 +577,110 @@ function jobRow(job){
     </div>
   </div>`;
 }
+const REQ_ICON={satisfied:'✓',not_satisfied:'✕',partial:'½',unknown:'?',not_applicable:'–'};
+const REQ_TEXT={satisfied:'Satisfied',not_satisfied:'Not satisfied',partial:'Partially',unknown:'Unknown',not_applicable:'N/A'};
+const COMPONENT_LABEL={role:'Role relevance',mandatory_skills:'Mandatory skills',preferred_skills:'Preferred skills',experience:'Experience',education:'Education',location_employment:'Location & employment',freshness:'Freshness'};
+function jobDetail(job){
+  const e=elig(job);
+  const reqs=e.requirements||[];
+  const order={not_satisfied:0,partial:1,unknown:2,satisfied:3,not_applicable:4};
+  const sorted=reqs.slice().sort((a,b)=>(a.priority==='mandatory'?0:1)-(b.priority==='mandatory'?0:1)||(order[a.status]??5)-(order[b.status]??5));
+  const unknown=reqs.filter(r=>r.status==='unknown').map(r=>r.name+(r.detail?` (${r.detail})`:''));
+  const ex=e.experience||{};
+  const life=job.lifecycle||{};
+  const history=(job.verify_history||[]).slice(-4).reverse();
+  return `<div class="job-detail">
+    <div class="reason"><b>Why it is ranked here:</b> ${esc(e.why||job.match_reason||'No explanation stored; re-score to compute.')}</div>
+    <div class="grid grid-2 section-space">
+      <div>
+        <div class="section-title">Requirements (${reqs.length})</div>
+        ${reqs.length?`<div class="table-wrap"><table class="data-table req-table"><thead><tr><th></th><th>Requirement</th><th>Priority</th><th>Status</th></tr></thead><tbody>
+        ${sorted.map(r=>`<tr class="req-${esc(r.status)}"><td class="req-icon" aria-label="${esc(REQ_TEXT[r.status]||r.status)}">${REQ_ICON[r.status]||'?'}</td>
+          <td><b>${esc(r.name)}</b> <span class="view-note">${esc(r.type)}</span>${r.detail?`<div class="view-note">${esc(r.detail)}</div>`:''}${r.evidence?`<div class="req-evidence" title="Text from the listing">“${esc(String(r.evidence).replace(/[*#]/g,'').slice(0,160))}”</div>`:''}</td>
+          <td>${esc(r.priority||'not stated')}</td><td>${esc(REQ_TEXT[r.status]||r.status)}</td></tr>`).join('')}
+        </tbody></table></div>`:'<div class="empty-state">No requirements could be read from this listing.</div>'}
+      </div>
+      <div>
+        <div class="section-title">Profile match breakdown</div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Component</th><th class="num">Weight</th><th class="num">Score</th></tr></thead><tbody>
+        ${(e.breakdown||[]).map(b=>`<tr><td>${esc(COMPONENT_LABEL[b.component]||b.component)}</td><td class="num">${esc(b.weight)}%</td><td class="num">${b.value==null?'<span class="view-note">no data — excluded</span>':esc(b.value)}</td></tr>`).join('')}
+        </tbody></table></div>
+        <div class="kv-grid section-space">
+          ${kv('Profile match',job.match_score!=null?job.match_score+' / 100':'')}
+          ${kv('Overall rank score',e.composite!=null?String(e.composite):'')}
+          ${kv('Eligibility',ELIG_LABEL[e.status]||e.status||'')}
+          ${kv('Experience',ex.required_min!=null?`needs ${ex.required_min}${ex.required_max?'–'+ex.required_max:'+'} yrs · you ${ex.candidate} · ${ex.difference>=0?'meets it':'short by '+Math.abs(ex.difference)}`:'not stated in the listing')}
+          ${kv('Mandatory mismatches',(e.gates||[]).join('; ')||((e.missing_mandatory||[]).length?'skills: '+e.missing_mandatory.join(', '):'none'))}
+          ${kv('Missing preferred skills',(e.missing_preferred||[]).join(', '))}
+          ${kv('Unknown requirements',unknown.join(', '))}
+          ${kv('Evidence confidence',e.confidence!=null?`${e.confidence} (${e.confidence_label})${(e.confidence_notes||[]).length?' — '+e.confidence_notes.join('; '):''}`:'')}
+        </div>
+      </div>
+    </div>
+    <div class="section-title section-space">Listing status</div>
+    <div class="kv-grid">
+      ${kv('Status',`${life.label||job.status||'unknown'}${life.detail?' — '+life.detail:''}`)}
+      ${kv('Posted',job.posted_date?fmtDate(job.posted_date):'not stated')}
+      ${kv('Updated',job.updated_date?fmtDate(job.updated_date):'')}
+      ${kv('First discovered',fmtDateTime(job.first_seen))}
+      ${kv('Last verified',job.last_verified?fmtDateTime(job.last_verified):'never')}
+      ${kv('Deadline',job.deadline?fmtDate(job.deadline):'')}
+      ${kv('Requisition ID',job.requisition_id||'')}
+      ${kv('Reposted from',job.repost_of?'listing #'+job.repost_of:'')}
+    </div>
+    ${history.length?`<div class="view-note section-space">Verification history: ${history.map(h=>`${esc(fmtDate(h.at))} ${esc(h.outcome)} (${esc(h.status)})`).join(' · ')}</div>`:''}
+    <div class="item-actions section-space">
+      <a class="link-button" href="${esc(job.original_url||'#')}" target="_blank" rel="noopener">Original listing</a>
+      ${job.application_url?`<a class="link-button primary" href="${esc(job.application_url)}" target="_blank" rel="noopener">Official application page</a>`:''}
+      ${job.employer_url?`<a class="link-button" href="${esc(job.employer_url)}" target="_blank" rel="noopener">Employer site</a>`:''}
+      ${(job.sources||[]).filter(s=>s.url!==job.original_url).map(s=>`<a class="link-button" href="${esc(s.url)}" target="_blank" rel="noopener">Also on ${esc(s.via||s.platform||'source')}</a>`).join('')}
+      <button class="link-button" data-action="reverify-one" data-id="${job.id}">Re-verify now</button>
+    </div>
+    ${state.tailor[job.id]?tailorBox(state.tailor[job.id]):''}
+  </div>`;
+}
+function coverageStages(s){
+  // Five honest stages per source: targeted → returned results → page fetched → listing extracted → verified on the employer's system.
+  const rows={};
+  const get=name=>rows[name]=rows[name]||{name,methods:new Set(),targeted:0,returned:0,fetched:0,extracted:0,stored:0,verified:0,status:new Set()};
+  (s.coverage||[]).forEach(c=>{
+    const r=get(c.platform);r.methods.add(c.method);
+    r.targeted+=c.queries||(/API|board|discovery/i.test(c.method)?1:0);
+    r.returned+=(c.results||0);r.fetched+=(c.fetched||0);r.extracted+=(c.listings||0);
+    if(c.status)r.status.add(c.results===0&&!c.listings&&/^ok/.test(c.status)?'no results':c.status);
+  });
+  Object.entries(s.funnel||{}).forEach(([name,f])=>{
+    const r=get(name);r.extracted=Math.max(r.extracted,f.extracted||0);r.stored+=f.stored||0;r.verified+=f.verified||0;
+  });
+  return Object.values(rows).sort((a,b)=>b.stored-a.stored||b.returned-a.returned||a.name.localeCompare(b.name));
+}
 function coveragePanel(){
   const s=D().job_search;
   if(!s)return '';
-  const cov=s.coverage||[];
+  const stages=coverageStages(s);
   const excluded=Object.entries(s.excluded||{}).sort((a,b)=>b[1]-a[1]);
-  return `<details class="collapsible" ${state.expanded.coverage?'open':''} data-details="coverage"><summary>Last discovery: ${esc(s.raw_results)} results from ${esc(cov.filter(c=>c.results>0||c.listings>0).length)} sources → ${esc(s.unique_candidates)} unique → ${esc(s.strong)} strong, ${esc(s.possible)} possible <span class="view-note">· ${esc(fmtDateTime(s.created_at))} · ${esc(s.duration_seconds)}s · resume ${esc(s.resume||'none')}</span></summary>
-    <div class="grid grid-2">
-      <div>
-        <div class="section-title">Sources searched</div>
-        <div class="table-wrap"><table class="data-table coverage-table"><thead><tr><th>Platform</th><th>Method</th><th>Queries</th><th>Results</th><th>Status</th></tr></thead><tbody>
-        ${cov.map(c=>`<tr><td>${esc(c.platform)}</td><td class="view-note">${esc(c.method)}</td><td>${esc(c.queries||'')}</td><td>${esc((c.results||0)+(c.listings?` (+${c.listings} listings)`:''))}</td><td class="${/^ok/.test(c.status)?(c.results||c.listings?'status-ok':'status-warn'):'status-bad'}">${esc(c.results===0&&!c.listings&&/^ok/.test(c.status)?'no results':c.status)}</td></tr>`).join('')}
-        </tbody></table></div>
-      </div>
+  const inel=Object.entries(s.ineligible_reasons||{}).sort((a,b)=>b[1]-a[1]);
+  const reached=stages.filter(r=>r.returned||r.extracted).length;
+  const blocked=stages.filter(r=>[...r.status].some(x=>/fail|block|not retriev|error|403|429|404/i.test(x)));
+  const cell=(v,ok)=>v?`<td class="num ${ok?'status-ok':''}">${esc(v)}</td>`:'<td class="num view-note">–</td>';
+  const ed=s.employer_discovery;
+  return `<details class="collapsible" ${state.expanded.coverage?'open':''} data-details="coverage"><summary>Source coverage — last discovery: ${esc(s.raw_results)} results from ${esc(reached)} of ${esc(stages.length)} targeted sources → ${esc(s.unique_candidates)} unique → ${esc(s.stored)} stored (${esc(s.strong)} strong, ${esc(s.possible)} possible) <span class="view-note">· ${esc(fmtDateTime(s.created_at))} · ${esc(s.duration_seconds)}s · resume ${esc(s.resume||'none')}</span></summary>
+    <div class="view-note">A source counts as <b>searched</b> only when it returned results. “Targeted” means it was included in a query; “verified” means the listing was read from the employer’s own job system.</div>
+    <div class="table-wrap section-space"><table class="data-table coverage-table"><thead><tr><th>Source</th><th>Method</th><th class="num">Targeted</th><th class="num">Returned</th><th class="num">Fetched</th><th class="num">Extracted</th><th class="num">Stored</th><th class="num">Verified</th><th>Status</th></tr></thead><tbody>
+      ${stages.map(r=>`<tr><td>${esc(r.name)}</td><td class="view-note">${esc([...r.methods].join(', '))}</td>${cell(r.targeted)}${cell(r.returned,1)}${cell(r.fetched,1)}${cell(r.extracted,1)}${cell(r.stored,1)}${cell(r.verified,1)}
+        <td class="${[...r.status].some(x=>/^ok/.test(x))&&(r.returned||r.extracted)?'status-ok':[...r.status].some(x=>/fail|block|not retriev|error/i.test(x))?'status-bad':'status-warn'}">${esc([...r.status].join('; ')||'—')}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="grid grid-2 section-space">
       <div>
         <div class="section-title">How the pool was narrowed</div>
-        <div class="kv-grid">${kv('Raw results',s.raw_results)}${kv('Web search results',s.mcp_results)}${kv('Expanded from index pages',s.harvested)}${kv('Company board openings',s.ats_openings)}${kv('Unique candidates',s.unique_candidates)}${kv('Ranked as relevant',s.ranked)}${kv('Stored (pool size)',`${s.stored} / ${s.pool_size}`)}${kv('Search calls · pages fetched',`${s.search_calls} · ${s.pages_fetched}`)}</div>
-        <div class="section-title section-space">Excluded (${esc(s.excluded_total)})</div>
-        ${barList(excluded.map(([name,count])=>({name,count})),{unit:'listing',series:2,limit:8})}
+        <div class="kv-grid">${kv('Search request',s.request||'(resume and preferences)')}${kv('Role variations searched',(s.targets||[]).join(', '))}${kv('Raw results',s.raw_results)}${kv('Web search results',s.mcp_results)}${kv('Expanded from index pages',s.harvested)}${kv('Employer job-board openings',s.ats_openings)}${kv('Duplicates merged',s.duplicates)}${kv('Unique candidates',s.unique_candidates)}${kv('Excluded as irrelevant',s.excluded_total)}${kv('Ranked as relevant',s.ranked)}${kv('Not eligible (kept as stretch)',`${s.ineligible??0} (${s.ineligible_stored??0} stored)`)}${kv('Stored (pool size)',`${s.stored} / ${s.pool_size}`)}${kv('Search calls · pages fetched',`${s.search_calls} · ${s.pages_fetched}`)}${kv('Inaccessible sources',blocked.map(r=>r.name).join(', ')||'none reported')}</div>
+        ${ed?`<div class="banner section-space">Employer discovery ran in this search: ${esc(ed.companies_found??0)} companies, ${esc(ed.with_website??0)} websites, ${esc(ed.with_career_page??0)} career pages, ${esc(ed.ats_readable??0)} public job boards. <a href="#startups" data-view="startups">Open Startups</a></div>`:''}
         ${(s.failures||[]).length?`<div class="banner warn section-space">${s.failures.map(esc).join('<br>')}</div>`:''}
+      </div>
+      <div>
+        <div class="section-title">Excluded (${esc(s.excluded_total)})</div>
+        ${barList(excluded.map(([name,count])=>({name,count})),{unit:'listing',series:2,limit:8})}
+        ${inel.length?`<div class="section-title section-space">Not eligible, by reason</div>${barList(inel.map(([name,count])=>({name,count})),{unit:'listing',series:2,limit:6})}`:''}
       </div>
     </div></details>`;
 }
@@ -498,26 +701,78 @@ function trackButtons(id,current){
     `<button class="link-button ${current===value?'active':''}" data-action="item-state" data-kind="job" data-id="${id}" data-state="${current===value?'none':value}">${current===value?'✓ ':''}${label}</button>`).join('');
 }
 
-/* ------------------------------------------------------------- tracker */
+/* ------------------------------------------------------------- applications */
+const APP_LABEL={interested:'Interested',saved:'Saved',preparing:'Preparing',applied:'Applied',assessment:'Assessment',interview:'Interview',offer:'Offer',rejected:'Rejected',withdrawn:'Withdrawn',closed:'Closed'};
+const APP_ACTIVE=['interested','saved','preparing','applied','assessment','interview','offer'];
+function appStatuses(){return D().application_statuses||Object.keys(APP_LABEL);}
+function upcoming(item){
+  const today=D().date||new Date().toISOString().slice(0,10);
+  const out=[];
+  if(item.follow_up_date&&!['rejected','withdrawn','closed','offer'].includes(item.status))out.push({at:item.follow_up_date,what:'Follow up',overdue:item.follow_up_date<today});
+  (item.interview_dates||[]).forEach(i=>{if(String(i.at).slice(0,10)>=today)out.push({at:i.at,what:'Interview'+(i.note?' · '+i.note:'')});});
+  return out.sort((a,b)=>String(a.at).localeCompare(String(b.at)));
+}
 function viewTracker(){
-  const items=D().tracker||[];
-  const cols=[['saved','Saved'],['applied','Applied'],['interview','Interview'],['offer','Offer'],['rejected','Rejected']];
-  return heading('Intelligence','Applications',
-    'Your application pipeline. Marking a job “Applied” records the date and adds a follow-up task to Planning seven days later.',
-    `<a class="quiet-button" href="/api/export/jobs.csv">Export all jobs (CSV)</a>`) +
-    (items.length?`<div class="kanban">${cols.map(([key,label])=>{
-      const list=items.filter(item=>item.state===key);
-      return `<div class="kanban-col"><h3>${label}<span class="panel-kicker">${list.length}</span></h3>
-        ${list.map(item=>`<div class="kanban-card">
-          <b><a href="${esc(item.original_url||'#')}" target="_blank" rel="noopener">${esc(item.title)}</a></b>
-          <small>${esc(item.employer||'Employer not stated')}${item.location?' · '+esc(item.location):''}</small>
-          ${item.applied_at?`<small>Applied ${esc(fmtDate(item.applied_at))} (${esc(ageLabel(item.applied_at))})</small>`:''}
-          ${item.best_resume_label?`<small>Resume: ${esc(item.best_resume_label)}${item.match_score!=null?' · '+esc(item.match_score)+'%':''}</small>`:''}
-          <div class="item-actions">${cols.filter(([k])=>k!==key).map(([k,l])=>`<button class="link-button" data-action="item-state" data-kind="job" data-id="${item.id}" data-state="${k}">→ ${l}</button>`).join('')}<button class="link-button danger" data-action="item-state" data-kind="job" data-id="${item.id}" data-state="none">Remove</button></div>
-        </div>`).join('')||'<div class="view-note">Nothing here yet.</div>'}
-      </div>`;}).join('')}</div>`
-      :emptyRich('No applications tracked yet','Use “Save” or “Applied” on any job card to start your pipeline.',
-        `<button class="primary-button" data-view="jobs">Browse jobs</button>`));
+  const items=D().applications||[];
+  const f=state.filters.apps=state.filters.apps||{status:'active'};
+  const shown=items.filter(i=>f.status==='all'?true:f.status==='active'?APP_ACTIVE.includes(i.status):i.status===f.status);
+  const counts=items.reduce((m,i)=>{m[i.status]=(m[i.status]||0)+1;return m;},{});
+  const reminders=items.flatMap(i=>upcoming(i).map(u=>({...u,item:i}))).sort((a,b)=>String(a.at).localeCompare(String(b.at))).slice(0,8);
+  const editing=state.editApp;
+  return heading('Jobs','Applications',
+    'A local record of the applications you make yourself — nothing is ever submitted automatically. Follow-up dates and interviews become Planning tasks and appear in the Daily Briefing.',
+    `<button class="primary-button" data-action="app-new">Add application</button><a class="quiet-button" href="/api/export/jobs.csv">Export jobs (CSV)</a>`) +
+    `<div class="filter-row"><span class="filter-label">Status</span>
+      ${[['active','Active'],['all','All'],...appStatuses().map(s=>[s,APP_LABEL[s]||s])].map(([v,l])=>`<button class="chip ${f.status===v?'active':''}" data-action="app-filter" data-value="${v}">${esc(l)}${v==='all'?` <span class="chip-count">${items.length}</span>`:counts[v]?` <span class="chip-count">${counts[v]}</span>`:''}</button>`).join('')}
+    </div>
+    ${reminders.length?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Upcoming reminders</h3><span class="panel-kicker">${reminders.length}</span></div>
+      <div class="timeline">${reminders.map(r=>`<div class="timeline-row"><div class="timeline-date ${r.overdue?'overdue':''}">${esc(String(r.at).length>10?fmtDateTime(r.at):fmtDate(r.at))}</div><div class="timeline-body"><b>${esc(r.what)}</b> — ${esc(r.item.role)}${r.item.company?' at '+esc(r.item.company):''}${r.overdue?' · overdue':''}</div></div>`).join('')}</div></div>`:''}
+    ${editing==='new'?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">New application</h3></div>${appForm({status:'applied'})}</div>`:''}
+    <div class="section-space">${shown.length?`<div class="app-list">${shown.map(appRow).join('')}</div>`
+      :emptyRich(items.length?'No applications with this status':'No applications tracked yet','Use “Save” or “Applied” on any job card, or add one you applied to elsewhere.',`<button class="primary-button" data-action="app-new">Add application</button><button class="quiet-button" data-view="jobs">Browse jobs</button>`)}</div>`;
+}
+function appRow(item){
+  const open=state.editApp===item.id;
+  const life=item.job_status;
+  const e=item.eligibility||{};
+  const next=upcoming(item)[0];
+  const resume=(D().resumes||[]).find(r=>r.id===item.resume_id);
+  return `<div class="app-row status-${esc(item.status)}">
+    <div class="app-main">
+      <div class="item-title">${item.job_url?`<a href="${esc(item.job_url)}" target="_blank" rel="noopener">${esc(item.role)}</a>`:esc(item.role)}</div>
+      <div class="item-meta">${meta(item.company||'Company not recorded')}${item.location?meta(item.location):''}${item.applied_at?meta('applied '+fmtDate(item.applied_at)+' ('+ageLabel(item.applied_at)+')'):''}${resume?meta('resume: '+resume.label):''}${item.match_score!=null?meta('match '+item.match_score):''}${e.status?meta(ELIG_LABEL[e.status]||e.status):''}${life&&['closed','expired'].includes(life)?`<span class="dim life-closed">listing ${esc(life)}</span>`:''}</div>
+      ${item.next_action||next?`<div class="view-note">${item.next_action?'Next: '+esc(item.next_action):''}${item.next_action&&next?' · ':''}${next?`${esc(next.what)} ${esc(fmtDate(next.at))}${next.overdue?' (overdue)':''}`:''}</div>`:''}
+      ${item.recruiter_name||item.recruiter_contact?`<div class="view-note">Recruiter: ${esc([item.recruiter_name,item.recruiter_contact].filter(Boolean).join(' · '))}</div>`:''}
+      ${open?appForm(item):''}
+    </div>
+    <div class="item-actions">
+      <select class="select app-status" data-action="app-status" data-id="${item.id}" aria-label="Application status">${appStatuses().map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${esc(APP_LABEL[s]||s)}</option>`).join('')}</select>
+      <button class="link-button" data-action="app-edit" data-id="${item.id}">${open?'Close':'Edit'}</button>
+      <button class="link-button danger" data-action="app-delete" data-id="${item.id}">Delete</button>
+    </div>
+  </div>`;
+}
+function appForm(item){
+  const resumes=D().resumes||[];
+  const interviews=(item.interview_dates||[]).map(i=>`${i.at}${i.note?' '+i.note:''}`).join('\n');
+  return `<form class="app-form section-space" data-form="application" data-id="${esc(item.id||'')}">
+    <div class="field-grid">
+      <label class="field"><span>Role *</span><input class="input" name="role" required value="${esc(item.role||'')}"></label>
+      <label class="field"><span>Company</span><input class="input" name="company" value="${esc(item.company||'')}"></label>
+      <label class="field"><span>Job URL</span><input class="input" name="job_url" type="url" value="${esc(item.job_url||'')}"></label>
+      <label class="field"><span>Resume used</span><select class="select" name="resume_id"><option value="">—</option>${resumes.map(r=>`<option value="${r.id}" ${item.resume_id===r.id?'selected':''}>${esc(r.label)}</option>`).join('')}</select></label>
+      <label class="field"><span>Status</span><select class="select" name="status">${appStatuses().map(s=>`<option value="${s}" ${item.status===s?'selected':''}>${esc(APP_LABEL[s]||s)}</option>`).join('')}</select></label>
+      <label class="field"><span>Application date</span><input class="input" name="applied_at" type="date" value="${esc(String(item.applied_at||'').slice(0,10))}"></label>
+      <label class="field"><span>Follow-up date</span><input class="input" name="follow_up_date" type="date" value="${esc(item.follow_up_date||'')}"></label>
+      <label class="field"><span>Next action</span><input class="input" name="next_action" value="${esc(item.next_action||'')}" placeholder="e.g. finish the take-home"></label>
+      <label class="field"><span>Recruiter name</span><input class="input" name="recruiter_name" value="${esc(item.recruiter_name||'')}"></label>
+      <label class="field"><span>Recruiter contact</span><input class="input" name="recruiter_contact" value="${esc(item.recruiter_contact||'')}" placeholder="email or phone you entered yourself"></label>
+    </div>
+    <label class="field"><span>Interview dates — one per line: YYYY-MM-DD or YYYY-MM-DDTHH:MM, then an optional note</span><textarea class="textarea" name="interviews" rows="2">${esc(interviews)}</textarea></label>
+    <label class="field"><span>Notes</span><textarea class="textarea" name="notes" rows="3">${esc(item.notes||'')}</textarea></label>
+    ${(item.history||[]).length?`<div class="view-note">History: ${item.history.map(h=>`${esc(APP_LABEL[h.status]||h.status)} ${esc(fmtDate(h.at))}`).join(' → ')}</div>`:''}
+    <div class="item-actions"><button class="primary-button" type="submit">Save</button><button class="link-button" type="button" data-action="app-edit" data-id="${esc(item.id||'new')}">Cancel</button></div>
+  </form>`;
 }
 
 /* ------------------------------------------------------------- job market */
@@ -576,7 +831,7 @@ function weeklyColumns(weeks){
     <div class="view-note" style="margin-top:6px">Listings by posting week (or first seen when undated). The current week is highlighted in orange.</div>`;
 }
 function resumeFitTable(fit){
-  if(!(fit||[]).length)return '<div class="empty-state">Upload resumes in Settings to compare how each fits each role family.</div>';
+  if(!(fit||[]).length)return '<div class="empty-state">Upload resumes on the Resumes page to compare how each fits each role family.</div>';
   const families=Array.from(new Set(fit.flatMap(r=>Object.keys(r.families||{})))).filter(f=>f!=='Other');
   return `<div class="table-wrap"><table class="data-table fit-table"><thead><tr><th>Resume</th>${families.map(f=>`<th>${esc(f)}</th>`).join('')}</tr></thead>
     <tbody>${fit.map(r=>`<tr><td><b>${esc(r.label)}</b></td>${families.map(f=>{const v=(r.families||{})[f];
@@ -589,7 +844,7 @@ function viewMarket(){
   const recent=market.recent||[];
   const hasResumes=(D().resumes||[]).length>0;
   return heading('Intelligence','Skills market',
-    'Which skills and roles are in demand right now, computed only from fresh stored listings across job boards and company career pages. Counts are per listing. Run a market scan to widen coverage.',
+    'Which skills and roles appear in the listings this app has discovered. Each unique listing is counted once (cross-posted duplicates are merged), skill names are normalised through an alias dictionary, and sample sizes are shown so you can judge how much to trust each chart.',
     `<button class="primary-button" data-action="market-scan">Scan the market</button>`) +
     progressBox() +
     `<div class="market-hero">
@@ -599,6 +854,7 @@ function viewMarket(){
       ${statCard('Role families',totals.roles??0,'◧')}
       ${statCard('Distinct skills',totals.skills??0,'✳')}
     </div>
+    ${datasetPanel(market)}
     <div class="market-grid section-space">
       <div class="panel">
         <div class="panel-head"><h3 class="panel-title">Most-requested skills</h3><span class="panel-kicker">listings mentioning</span></div>
@@ -606,7 +862,7 @@ function viewMarket(){
       </div>
       <div class="panel">
         <div class="panel-head"><h3 class="panel-title">Your skill gap</h3><span class="panel-kicker">in demand · not on your resumes</span></div>
-        ${hasResumes?barList(market.skill_gap,{empty:'Your resumes already cover the most-requested skills.',series:2}):'<div class="empty-state">Upload a resume in Settings to see which in-demand skills it is missing.</div>'}
+        ${hasResumes&&market.resume_complete===false?'<div class="empty-state">Skill gap hidden: the active resume\u2019s extracted profile looks incomplete. Review it on the Resumes page.</div>':hasResumes?barList(market.skill_gap,{empty:'Your resumes already cover the most-requested skills.',series:2}):'<div class="empty-state">Upload a resume on the Resumes page to see which in-demand skills it is missing.</div>'}
         ${hasResumes&&(market.skill_strengths||[]).length?`<div class="item-meta">${market.skill_strengths.slice(0,8).map(s=>`<span class="meta skill-have">✓ ${esc(s.name)} · ${esc(s.count)}</span>`).join('')}</div>`:''}
       </div>
       <div class="panel">
@@ -618,6 +874,7 @@ function viewMarket(){
         ${weeklyColumns(market.weekly)}
       </div>
     </div>
+    ${marketV2(market)}
     <div class="panel section-space">
       <div class="panel-head"><h3 class="panel-title">Skills × role family</h3><span class="panel-kicker">which roles ask for which skills</span></div>
       ${heatmap(market.skills_by_role||{},{rowKey:'roles',rowLabel:'role family',empty:'Scan more roles to build this matrix.'})}
@@ -1220,6 +1477,134 @@ function sourcesPanel(prefs){
   </div>`;
 }
 
+
+/* --------------------------------------------------------------- startups */
+const SIGNAL_LABEL={funding:'Funding',hiring:'Hiring announcement',launch:'Product launch',product_launch:'Product launch',expansion:'Expansion',office:'New office',acquisition:'Acquisition',team:'New team'};
+function viewStartups(){
+  const emps=(D().employers||[]).filter(e=>!(e.discovery_sources||[]).includes('built-in verified board list')||state.filters.startups.builtin);
+  const all=D().employers||[];
+  const signals=D().signals||[];
+  const f=state.filters.startups;
+  const last=D().employer_search;
+  const jobsByEmp={};(D().jobs||[]).forEach(j=>{if(j.employer_id!=null&&!SEARCH_KINDS.has(j.source_kind)&&tierOf(j)!=='excluded')(jobsByEmp[j.employer_id]=jobsByEmp[j.employer_id]||[]).push(j);});
+  const list=emps.filter(e=>{
+    if(f.kind==='startup'&&e.classification!=='startup')return false;
+    if(f.kind==='india'&&e.country!=='India')return false;
+    if(f.kind==='careers'&&!e.career_url&&!e.ats_provider)return false;
+    if(f.kind==='jobs'&&!(jobsByEmp[e.id]||[]).length&&!e.open_jobs)return false;
+    if(f.q&&!`${e.name} ${e.website||''} ${e.industry||''}`.toLowerCase().includes(f.q.toLowerCase()))return false;
+    return true;
+  }).sort((a,b)=>String(b.last_discovery||'').localeCompare(String(a.last_discovery||'')));
+  const news=(D().news||[]).filter(n=>String(n.region||'')==='India'&&/funding|hiring|product|startup/i.test(String(n.topic||'')));
+  const newSince=D().last_visit;
+  const stat=(label,value)=>statCard(label,value);
+  const sigFiltered=signals.filter(s=>!f.signal||s.signal_type===f.signal);
+  const sigTypes=Array.from(new Set(signals.map(s=>s.signal_type)));
+  return heading('Jobs','Indian startup intelligence',
+    'Employers discovered dynamically from startup publications, directories and accelerators, VC portfolios and job platforms. Each company’s website, career page and public job board are found from links that actually exist — never guessed. Funding and hiring news are <b>signals</b>, kept apart from vacancies.',
+    '') + progressBox() +
+    `<div class="toolbar"><form data-form="employers">
+      <input class="input" name="request" placeholder="e.g. “Indian AI startups”, “recently funded fintech startups Bengaluru”, “Sarvam AI”" value="${esc(state.lastQuery.employers||'')}">
+      <input class="input" name="topic" style="width:140px" placeholder="Topic (AI)" value="${esc(state.lastQuery.employerTopic||'')}">
+      <select class="select" name="search_calls" title="Search budget">${[[4,'4 searches'],[6,'6 searches'],[10,'10 searches']].map(([n,l])=>`<option value="${n}" ${n===6?'selected':''}>${l}</option>`).join('')}</select>
+      <button class="primary-button" type="submit">${icon('search')} Discover employers</button>
+    </form><div class="view-note" style="margin-top:6px">The search budget is the number of web searches; more searches find more companies but use more of the free-tier quota.</div></div>
+    <div class="grid grid-3 section-space">
+      ${stat('Employers discovered',all.filter(e=>!(e.discovery_sources||[]).includes('built-in verified board list')).length)}
+      ${stat('Startups',all.filter(e=>e.classification==='startup').length)}
+      ${stat('Based in India',all.filter(e=>e.country==='India').length)}
+      ${stat('Career pages found',all.filter(e=>e.career_url).length)}
+      ${stat('Readable public job boards',all.filter(e=>e.ats_slug).length)}
+      ${stat('Hiring signals',signals.length)}
+    </div>
+    ${last?employerCoverage(last):''}
+    <div class="grid grid-2 section-space">
+      <div class="panel">
+        <div class="panel-head"><h3 class="panel-title">Signals</h3><span class="panel-kicker">not vacancies</span></div>
+        <div class="filter-row" style="margin-top:0"><button class="chip ${!f.signal?'active':''}" data-action="startup-signal" data-value="">All <span class="chip-count">${signals.length}</span></button>${sigTypes.map(t=>`<button class="chip ${f.signal===t?'active':''}" data-action="startup-signal" data-value="${esc(t)}">${esc(SIGNAL_LABEL[t]||t)} <span class="chip-count">${signals.filter(s=>s.signal_type===t).length}</span></button>`).join('')}</div>
+        ${sigFiltered.length?`<div class="source-list">${sigFiltered.slice(0,30).map(s=>`<div class="source-card">
+          <div class="market-recent-head"><a class="source-title" href="${esc(s.source_url)}" target="_blank" rel="noopener">${esc(s.title||s.company_name)}</a><span class="dim sig">${esc(SIGNAL_LABEL[s.signal_type]||s.signal_type)}</span></div>
+          <div class="item-meta">${meta(s.company_name)}${s.amount?meta(s.amount):''}${s.publisher?meta(s.publisher):''}${meta(s.signal_date?fmtDate(s.signal_date):'seen '+fmtDate(s.first_seen))}${newSince&&s.first_seen>newSince?'<span class="badge new">new</span>':''}</div>
+          ${s.evidence?`<div class="req-evidence">“${esc(String(s.evidence).slice(0,200))}”</div>`:''}
+        </div>`).join('')}</div>`:'<div class="empty-state">No signals yet. Run “Discover employers”.</div>'}
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3 class="panel-title">Indian startup news</h3><span class="panel-kicker">funding · hiring · launches</span></div>
+        ${news.length?`<div class="source-list">${news.slice(0,12).map(n=>`<div class="source-card"><a class="source-title" href="${esc(n.original_url)}" target="_blank" rel="noopener">${esc(n.title)}</a><div class="item-meta">${meta(n.publisher||'')}${meta(n.topic||'')}${n.published_date?meta(fmtDate(n.published_date)):''}</div></div>`).join('')}</div>`
+          :`<div class="empty-state">No Indian startup stories stored. <button class="link-button" data-action="startup-news">Search Indian startup funding news</button></div>`}
+      </div>
+    </div>
+    <div class="panel section-space">
+      <div class="panel-head"><h3 class="panel-title">Employers</h3><span class="panel-kicker">${list.length} shown</span></div>
+      <div class="filter-row" style="margin-top:0">
+        ${[['','All'],['startup','Startups'],['india','India'],['careers','Career page / job board'],['jobs','With vacancies']].map(([v,l])=>`<button class="chip ${(f.kind||'')===v?'active':''}" data-action="startup-kind" data-value="${v}">${l}</button>`).join('')}
+        <label class="chip"><input type="checkbox" data-filter-check="startups-builtin" ${f.builtin?'checked':''}> include built-in boards</label>
+        <span class="filter-gap"></span><input class="input" style="width:200px" data-action="startup-q" placeholder="Filter companies…" value="${esc(f.q||'')}">
+      </div>
+      ${list.length?`<div class="table-wrap"><table class="data-table employer-table"><thead><tr><th>Company</th><th>Type</th><th>Career page / job system</th><th class="num">Vacancies</th><th>Signals</th><th>Discovered via</th><th>Last check</th></tr></thead><tbody>
+      ${list.slice(0,f.all?list.length:60).map(e=>{const jobs=jobsByEmp[e.id]||[];const funding=(e.funding||[])[0];
+        return `<tr><td><b>${e.website?`<a href="${esc(e.website)}" target="_blank" rel="noopener">${esc(e.name)}</a>`:esc(e.name)}</b>${newSince&&e.first_discovered>newSince?' <span class="badge new">new</span>':''}${e.industry?`<div class="view-note">${esc(e.industry)}</div>`:''}</td>
+          <td>${esc(e.classification||'unknown')}${e.country?' · '+esc(e.country):''}</td>
+          <td>${e.career_url?`<a href="${esc(e.career_url)}" target="_blank" rel="noopener">career page</a>`:''}${e.ats_provider?`${e.career_url?' · ':''}${esc(e.ats_provider)}${e.ats_slug?' (readable)':''}`:''}<div class="view-note">${esc(e.career_status||'')}</div></td>
+          <td class="num">${jobs.length?`<button class="link-button" data-action="startup-jobs" data-name="${esc(e.name)}">${jobs.length} stored</button>`:''}${e.open_jobs?`<div class="view-note">${esc(e.open_jobs)} on board</div>`:''}${!jobs.length&&!e.open_jobs?'–':''}</td>
+          <td>${e.signal_count?esc(e.signal_count):''}${funding?`<div class="view-note">${esc(funding.amount||funding.title||'funding')}</div>`:''}</td>
+          <td class="view-note">${esc((e.discovery_sources||[]).filter(s=>!s.startsWith('category:')).slice(0,2).join(', '))}</td>
+          <td class="view-note">${esc(fmtDate(e.last_career_check||e.last_discovery))}</td></tr>`;}).join('')}
+      </tbody></table></div>${list.length>60&&!f.all?'<button class="link-button section-space" data-action="startup-all">Show all '+list.length+'</button>':''}`
+      :emptyRich('No employers discovered yet','Run “Discover employers”. The engine searches startup publications (YourStory, Inc42, Entrackr…), directories and accelerators (Startup India, YC, Techstars…), VC portfolios and job platforms, then resolves each company’s website, career page and job board.','')}
+    </div>
+    ${last&&(last.career_listings||[]).length?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Vacancy links found on career pages</h3><span class="panel-kicker">last discovery · not yet ranked</span></div>
+      <div class="source-list">${last.career_listings.slice(0,30).map(l=>`<div class="source-card"><a class="source-title" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title||l.url)}</a><div class="item-meta">${meta(l.employer)}</div></div>`).join('')}</div>
+      <div class="view-note">Run “Discover jobs” with “startups” in the request to fetch, rank and store these against your resume.</div></div>`:''}`;
+}
+function employerCoverage(s){
+  return `<details class="collapsible section-space" ${state.expanded.empcov?'open':''} data-details="empcov"><summary>Last employer discovery${s.via?' (inside a job search)':''}: ${esc(s.results??0)} search results → ${esc(s.companies_found??0)} companies → ${esc(s.with_website??0)} websites → ${esc(s.with_career_page??0)} career pages → ${esc(s.ats_readable??0)} readable job boards <span class="view-note">· ${esc(fmtDateTime(s.created_at))}${s.duration_seconds?' · '+esc(s.duration_seconds)+'s':''}${s.new_employers!=null?' · '+esc(s.new_employers)+' new employers, '+esc(s.signals_saved??0)+' signals':''}</span></summary>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Source category</th><th>Queries</th><th class="num">Results</th><th>Publishers returned</th><th>Status</th></tr></thead><tbody>
+    ${(s.coverage||[]).map(c=>`<tr><td>${esc(c.source)}</td><td class="view-note">${esc((c.queries||[]).join(' | '))}</td><td class="num">${esc(c.results??0)}</td><td class="view-note">${esc((c.domains||[]).slice(0,6).join(', '))}</td><td class="${c.results?'status-ok':/fail/.test(c.status||'')?'status-bad':'status-warn'}">${esc(c.status||'')}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${(s.failures||[]).length?`<div class="banner warn section-space">${s.failures.slice(0,8).map(esc).join('<br>')}</div>`:''}
+  </details>`;
+}
+
+/* ------------------------------------------------------------- briefing v2 */
+function actionableBriefing(a){
+  const sections=(a.sections||[]);
+  const total=a.total_new||0;
+  return `<div class="banner section-space">${total?`${esc(total)} new item${total===1?'':'s'} since the previous briefing`:'Nothing new since the previous briefing'}${a.since?` (${esc(fmtDateTime(a.since))})`:''}. Older items that are still relevant are counted, not repeated. Closed and expired listings are never suggested.</div>
+  <div class="briefing-grid section-space">${sections.map(s=>`<div class="panel brief-${esc(s.key)}">
+    <div class="panel-head"><h3 class="panel-title">${esc(s.title)}</h3><span class="panel-kicker">${s.new_count?`<span class="badge new">${esc(s.new_count)} new</span>`:''}${s.still_relevant?` +${esc(s.still_relevant)} earlier`:''}</span></div>
+    ${s.note?`<div class="view-note">${esc(s.note)}</div>`:''}
+    ${(s.items||[]).length?`<div class="brief-list">${s.items.map(i=>`<div class="brief-item">${i.url?`<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title||'item')}</a>`:`<b>${esc(i.title||'item')}</b>`}${i.detail?`<div class="view-note">${esc(i.detail)}</div>`:''}</div>`).join('')}</div>`:'<div class="empty-state">Nothing new.</div>'}
+  </div>`).join('')}</div>`;
+}
+
+/* --------------------------------------------------------- skills market v2 */
+function datasetPanel(market){
+  const d=market.dataset||{};
+  if(!d.unique_listings)return '';
+  return `<div class="banner section-space"><b>Observations from the listings this app has discovered — not a complete picture of the Indian job market.</b>
+    ${esc(d.unique_listings)} unique listings${d.duplicates_removed?` (${esc(d.duplicates_removed)} duplicates removed)`:''} · ${esc(d.unique_employers)} employers named${d.listings_without_employer?` (${esc(d.listings_without_employer)} listings don’t name one)`:''} · ${esc(d.unique_sources)} sources · ${esc(d.reliable_dates)} with a reliable posting date${d.date_from?` · posted ${esc(fmtDate(d.date_from))} – ${esc(fmtDate(d.date_to))}`:''}.
+    ${(d.geography||[]).length?`<div class="view-note" style="margin-top:4px">Geography: ${d.geography.map(g=>`${esc(g.name)} ${esc(g.count)}`).join(' · ')}</div>`:''}</div>`;
+}
+function trendLines(trend){
+  trend=(trend||[]).filter(t=>(t.weeks||[]).some(w=>w.count));
+  if(!trend.length)return '<div class="empty-state">Not enough dated listings to show changes over time.</div>';
+  return `<div class="table-wrap"><table class="data-table trend-table"><thead><tr><th>Skill</th>${trend[0].weeks.map(w=>`<th class="num">${esc(new Date(w.week).toLocaleDateString(undefined,{month:'short',day:'numeric'}))}</th>`).join('')}</tr></thead>
+    <tbody>${trend.map(t=>{const max=Math.max(1,...t.weeks.map(w=>w.count));return `<tr><th scope="row">${esc(t.skill)}</th>${t.weeks.map(w=>`<td class="num"><span class="heat-cell ${w.count/max>.6?'hot':''}" style="--heat:${w.count?Math.max(.15,w.count/max):0}" data-tip="${esc(t.skill)} · week of ${esc(w.week)}: ${w.count}">${w.count||''}</span></td>`).join('')}</tr>`;}).join('')}</tbody></table></div>
+    <div class="view-note" style="margin-top:6px">Listings mentioning each skill, by posting week. Undated listings are left out.</div>`;
+}
+function marketV2(market){
+  const gapNote=market.resume_complete===false?'<div class="banner warn">Your active resume looks incomplete (few skills extracted), so no skill gap is shown — a missing extraction is not a missing skill. Review it on the Resumes page.</div>':'';
+  return `<div class="market-grid section-space">
+      <div class="panel"><div class="panel-head"><h3 class="panel-title">Skills in newly discovered listings</h3><span class="panel-kicker">last 7 days</span></div>${barList(market.new_listing_skills,{empty:'No listings discovered in the last 7 days.'})}</div>
+      <div class="panel"><div class="panel-head"><h3 class="panel-title">Changes over time</h3><span class="panel-kicker">top skills by week</span></div>${trendLines(market.skill_trend)}</div>
+    </div>
+    ${gapNote}
+    <div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Skills × location</h3><span class="panel-kicker">city-level, spelling variants merged</span></div>${heatmap({portals:(market.skills_by_location||{}).rows||[],skills:(market.skills_by_location||{}).skills||[],matrix:(market.skills_by_location||{}).matrix||[]},{rowLabel:'location',empty:'Not enough located listings.'})}</div>
+    <div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Skills × experience asked</h3><span class="panel-kicker">from each listing’s stated requirement</span></div>${heatmap({portals:(market.skills_by_experience||{}).rows||[],skills:(market.skills_by_experience||{}).skills||[],matrix:(market.skills_by_experience||{}).matrix||[]},{rowLabel:'experience',empty:'Not enough listings state experience.'})}</div>
+    <div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Employer-level skill demand</h3><span class="panel-kicker">named employers only</span></div>${heatmap({portals:(market.skills_by_employer||{}).rows||[],skills:(market.skills_by_employer||{}).skills||[],matrix:(market.skills_by_employer||{}).matrix||[]},{rowLabel:'employer',empty:'Too few listings name their employer.'})}</div>`;
+}
+
 const VIEWS={
   'daily-briefing':viewBriefing,
   'ask-intelligence':viewAsk,
@@ -1227,6 +1612,7 @@ const VIEWS={
   jobs:viewJobs,
   'job-market':viewMarket,
   tracker:viewTracker,
+  startups:viewStartups,
   resumes:viewResumes,
   government:viewGovernment,
   exams:viewExams,
@@ -1384,6 +1770,33 @@ document.addEventListener('click',async event=>{
       await api('/api/data/clear-intel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
       await refresh();render();toast('Discovered intelligence cleared');
     }
+    else if(action==='reverify'){await startJobRequest('/api/jobs/reverify',{limit:40},'Re-verifying saved and shortlisted listings');}
+    else if(action==='reverify-one'){await startJobRequest('/api/jobs/reverify',{job_ids:[Number(button.dataset.id)]},'Re-verifying listing');}
+    else if(action==='job-clear-filters'){
+      const f=state.filters.jobs;['role','city','exp','employment','source','fresh','eligibility','minMatch','q'].forEach(k=>f[k]='');
+      f.startup=false;f.tracked=false;f.recency='all';render();
+    }
+    else if(action==='app-new'){state.editApp=state.editApp==='new'?null:'new';render();}
+    else if(action==='app-edit'){const id=button.dataset.id==='new'?'new':Number(button.dataset.id);state.editApp=state.editApp===id?null:id;render();}
+    else if(action==='app-filter'){state.filters.apps.status=button.dataset.value;render();}
+    else if(action==='app-delete'){
+      const id=button.dataset.id;
+      if(state.confirmDelete!=='app'+id){state.confirmDelete='app'+id;toast('Click Delete again to remove this application record');setTimeout(()=>{if(state.confirmDelete==='app'+id)state.confirmDelete=null;},5000);return;}
+      state.confirmDelete=null;
+      await api(`/api/applications/${id}/delete`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      await refresh();render();toast('Application removed');
+    }
+    else if(action==='startup-signal'){state.filters.startups.signal=button.dataset.value||'';render();}
+    else if(action==='startup-kind'){state.filters.startups.kind=button.dataset.value||'';render();}
+    else if(action==='startup-all'){state.filters.startups.all=true;render();}
+    else if(action==='startup-jobs'){
+      const f=state.filters.jobs;['role','city','exp','employment','source','fresh','eligibility','minMatch'].forEach(k=>f[k]='');
+      f.q=button.dataset.name||'';f.recency='all';f.undated=true;setView('jobs');
+    }
+    else if(action==='startup-news'){
+      state.filters.news.region='India';state.filters.news.topic='Startup funding';
+      await startJobRequest('/api/intel/search',{category:'news',query:'Indian AI startup',freshness:'30d',region:'India',topic:'Startup funding'},'Searching Indian startup news');
+    }
   }catch(err){toast(err.message,true);}
 });
 
@@ -1424,6 +1837,25 @@ document.addEventListener('submit',async event=>{
       const request=String(data.get('request')||'').trim();
       if(!request){toast('Type what you are looking for',true);return;}
       await startJobRequest('/api/search/universal',{request},'Searching across sections');
+    }
+    else if(kind==='employers'){
+      const request=String(data.get('request')||'').trim()||'Indian AI startups';
+      const topic=String(data.get('topic')||'').trim();
+      state.lastQuery.employers=request;state.lastQuery.employerTopic=topic;
+      await startJobRequest('/api/employers/discover',{request,topic:topic||null,search_calls:Number(data.get('search_calls')||6)},'Discovering employers');
+    }
+    else if(kind==='application'){
+      const id=form.dataset.id?Number(form.dataset.id):null;
+      const interviews=String(data.get('interviews')||'').split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{const [at,...note]=l.split(/\s+/);return {at,note:note.join(' ')||null};});
+      const body={id,role:String(data.get('role')||'').trim(),company:String(data.get('company')||'').trim()||null,
+        job_url:String(data.get('job_url')||'').trim()||null,resume_id:data.get('resume_id')?Number(data.get('resume_id')):null,
+        status:String(data.get('status')||'interested'),applied_at:String(data.get('applied_at')||'')||null,
+        follow_up_date:String(data.get('follow_up_date')||'')||null,next_action:String(data.get('next_action')||'').trim()||null,
+        recruiter_name:String(data.get('recruiter_name')||'').trim()||null,recruiter_contact:String(data.get('recruiter_contact')||'').trim()||null,
+        interview_dates:interviews,notes:String(data.get('notes')||'')};
+      if(!body.role){toast('An application needs a role',true);return;}
+      await api('/api/applications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      state.editApp=null;await refresh();render();toast('Application saved; reminders updated in Planning');
     }
     else if(kind==='jobsearch'){
       const query=String(data.get('query')||'').trim();
@@ -1508,10 +1940,10 @@ document.addEventListener('submit',async event=>{
 let inputTimer=null;
 document.addEventListener('input',event=>{
   const target=event.target;const action=target.dataset&&target.dataset.action;
-  if(action!=='job-q'&&action!=='news-q')return;
+  if(action!=='job-q'&&action!=='news-q'&&action!=='startup-q')return;
   clearTimeout(inputTimer);
   inputTimer=setTimeout(()=>{
-    (action==='job-q'?state.filters.jobs:state.filters.news).q=target.value;
+    ({'job-q':state.filters.jobs,'news-q':state.filters.news,'startup-q':state.filters.startups}[action]).q=target.value;
     const pos=target.selectionStart;render();
     const again=document.querySelector(`[data-action="${action}"]`);if(again){again.focus();again.setSelectionRange(pos,pos);}
   },250);
@@ -1527,6 +1959,13 @@ document.addEventListener('change',event=>{
       .then(refresh).then(()=>{render();toast('Ranking now uses '+((activeResume()||{}).label||'this resume'));}).catch(err=>toast(err.message,true));
   }
   if(target.dataset.action==='job-undated'){state.filters.jobs.undated=target.checked;render();}
+  if(target.dataset.filter){state.filters.jobs[target.dataset.filter]=target.value;render();}
+  if(target.dataset.filterCheck==='startups-builtin'){state.filters.startups.builtin=target.checked;render();}
+  else if(target.dataset.filterCheck){state.filters.jobs[target.dataset.filterCheck]=target.checked;render();}
+  if(target.dataset.action==='app-status'){
+    api('/api/applications',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:Number(target.dataset.id),status:target.value})})
+      .then(refresh).then(()=>{render();toast('Status: '+(APP_LABEL[target.value]||target.value));}).catch(err=>toast(err.message,true));
+  }
 });
 
 async function saveProfile(){

@@ -1,5 +1,52 @@
 # Changelog
 
+## 3.2.0 — 2026-11-09
+
+### Job matching repair
+- `requirements.py`: mandatory / preferred / listed skills, experience range, degree (the lowest of
+  listed alternatives, e.g. "B.Tech, BE or M.Tech" means Bachelor's), batch, work authorization,
+  location rules, deadline and requisition ID, each with evidence.
+- `assessment.py`: four separate measures (profile match with configurable weights, eligibility gate,
+  freshness, evidence confidence), with a per-requirement status and a "why" explanation. Never
+  strong with a mandatory miss.
+- Resume reading: compound entries ("Deep Learning (CNNs, Transformers)") are parsed; a specific
+  skill demonstrates its general parent (PostgreSQL → SQL, PyTorch → Deep Learning → Machine
+  Learning), never the reverse (Python does not imply FastAPI). Programming languages named in the
+  resume's keywords count; the local model can no longer replace programming languages with spoken
+  ones.
+- Search pages ("Python Developer Jobs", job-portal pages, `/role/…`) and fraud/credit roles are
+  excluded with reasons.
+
+### Employers, startups and lifecycle (schema v5, automatic backup)
+- `employer_discovery.py`: publications, directories/accelerators, VC portfolios and job platforms →
+  companies → websites (verified to mention the company) → career pages (real links) → ATS
+  detection → verified public boards. Signals are stored separately from vacancies.
+- Employer names inferred only from evidence: Naukri URL slug, recruitment subdomain (Zoho Recruit,
+  iCIMS, …), page title, Indeed/Wellfound company links. The source is recorded.
+- Startup requests put startup employers' listings first; internship requests search intern titles.
+- `verification.py`: board presence / two-miss closure / page wording / deadlines; scheduled and
+  manual re-verification; "verified on employer board" vs "listing page checked".
+- Cross-source dedup by employer|title|city that respects requisition IDs; reposts linked.
+
+### UI
+- Jobs: separate match / eligibility / freshness / confidence badges, requirement table, score
+  breakdown, listing status and verification history, links to the original listing and the
+  official application page, per-job re-verify; filters for location, role, experience, employment
+  type, source, freshness, eligibility, minimum match and Indian startups; sorting by rank, match,
+  posted date, discovery date and confidence; aging/stale listings shaded, closed ones struck through;
+  a collapsed "not eligible (stretch)" section.
+- Source coverage table: targeted → returned → fetched → extracted → stored → verified, plus
+  inaccessible sources and the reasons listings were narrowed or excluded.
+- New Startups page (employers, signals, career pages, vacancies, discovery coverage).
+- Applications editor with reminders; Skills Market v2 panels; actionable 10-section briefing.
+
+### Fixes
+- Skills Market: a nested helper shadowed the portal matrix (the Skills × source heatmap crashed);
+  city spelling variants are merged (Bangalore = Bengaluru); the skill gap uses the matcher's reading
+  of the resume.
+- Today's plan never suggests applying to an ineligible job; application follow-up suggestions work
+  with the new applications table.
+
 ## 3.1.0 — 2026-11-08
 
 ### Two-stage job discovery

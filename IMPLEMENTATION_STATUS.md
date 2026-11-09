@@ -1,6 +1,48 @@
 # Implementation Status
 
-Updated: 2026-11-08 (v3.1.0)
+Updated: 2026-11-09 (v3.2.0)
+
+## V3.2 results (2026-11-09, this host)
+
+Automated tests: `./.venv/bin/python -m unittest discover -q` → **132 pass**, including
+`tests/test_v32_features.py`, which covers the 17 Indian job scenarios with the network mocked
+(Parallel MCP, ATS APIs and company websites are fakes; nothing is fetched live).
+
+Live verification ran through the real app on port 8799, on a scratch copy of the real data, with
+Parallel MCP (free tier) and Ollama `qwen3:4b`. The v4→v5 migration ran there first, with an
+automatic backup (`backups/…-schema4.sqlite3`). These are live observations, separate from the
+mocked tests:
+
+| Scenario | Live result |
+| --- | --- |
+| Employer discovery "Indian AI startups" (6 searches) | 52.8 s · 60 results from 4 source categories (inc42, entrackr, yourstory/economictimes, peakxv, antler, wellfound, ycombinator…) → 14 new companies, 7 websites, 1 career page, 8 funding/launch signals |
+| "entry-level AI engineer jobs at Indian startups in Bengaluru" (pool 100) | 263 s · 5,891 raw → 4,938 unique → 4,593 excluded with reasons, 232 not eligible (experience 145, seniority 172, education 12, batch 2, work authorization 1) → 120 stored. Inner employer discovery: 12 companies, 5 career pages, 3 readable boards |
+| "AI engineer jobs at recently funded Indian startups" (after startup-first ranking) | 256 s · 120 stored, **27 from startup employers placed first** (previously 4) |
+| Fresher Python backend, India (pool 50) | 248 s · 4,899 unique → 95 relevant, 265 not eligible → 60 stored |
+| Remote AI internships, India (pool 50) | 207 s · real intern roles (Finzo AI, Fluexy, CRUV, Certa, The AI Signal, Langslide, GetKarta.ai) |
+| PSU technical recruitment, CSE eligible | 20 s · 10 sources, 4 pages, 4 records; CSE eligibility is explicit only when the notice states it (DRDO explicit; 3 not eligible; 4 not verified) |
+| Re-verify 40 listings | 253 s · 14 open (listing page checked), **1 closed on evidence** (NTT DATA: "this position has been filled"), 25 unreachable (MCP fetch timeouts on Indeed; left unchanged, not closed) |
+| Daily briefing | 10 sections; 32 new items since the previous briefing; closed/expired jobs excluded |
+| UI | Every view checked in headless Chrome (console clean) at 1400 px and 400 px; interactions driven through DevTools: requirement panel, filters, applications create → status change → history and Planning reminders |
+
+Totals in the scratch database after these runs: **18 employers discovered** (13 startups, 9 in
+India, 7 career pages, 4 readable public job boards, plus 25 built-in boards), **9 signals**,
+**276 stored listings** (92 open and verified on the employer's board, 25 open by listing-page check,
+3 open but not recently verified, 1 closed, 155 unverified), and 4,500+ candidates per search rejected as
+irrelevant or stale (reasons listed in each search's coverage report).
+
+Sources that returned results: Naukri, Wellfound, Indeed (via open searches), YC Work at a Startup,
+startup.jobs, company career sites, 25 employer boards (Greenhouse / Lever / Ashby), plus
+publications and portfolios (Inc42, Entrackr, YourStory, Economic Times, Peak XV, Antler, YC).
+Targeted but returned nothing in these runs: LinkedIn (`site:` search) and Indeed (`site:` search).
+Inaccessible: Applied Compute's Ashby board (404), some Wellfound detail pages, and Indeed pages
+during re-verification (fetch timeouts).
+
+Bugs found and fixed during verification: the Skills Market crash (shadowed matrix), city
+spelling variants, a degree requirement read as Master's when B.Tech was an alternative, Python
+not recognised from the resume (spoken languages in "languages"), PostgreSQL not satisfying SQL,
+two different requisition IDs merged, ineligible jobs in "Suggested next actions", search pages and
+a fraud-analyst role ranked, and web-page checks labelled as "verified".
 
 ## V3.1 acceptance results (2026-11-08, this host)
 

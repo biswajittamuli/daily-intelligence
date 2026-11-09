@@ -1,7 +1,9 @@
 """Listing re-verification and lifecycle status.
 
 Statuses shown to the user (``lifecycle()``):
-  open_verified       open, verified within VERIFIED_DAYS
+  open_verified       open, listed on the employer's own job board within VERIFIED_DAYS
+  open_page_checked   open, the listing page itself showed an apply option within VERIFIED_DAYS
+                      (a third-party page, so weaker evidence than the employer's board)
   open_not_recent     was verified open, but not recently
   closed / expired / reposted / unverified / unknown
 
@@ -52,8 +54,15 @@ def lifecycle(job: dict[str, Any], today: date | None = None) -> dict[str, Any]:
     verified = parse_date(str(job.get("last_verified") or "")[:10])
     if status == "open":
         if verified and (today - verified).days <= VERIFIED_DAYS:
-            return {"state": "open_verified", "label": "Open · verified",
-                    "detail": f"Verified {verified.isoformat()}" + (" (reposted)" if job.get("repost_of") else "")}
+            on_board = str(job.get("status_evidence") or "").startswith("Listed on") or \
+                job.get("discovered_via") == "company career board"
+            suffix = " (reposted)" if job.get("repost_of") else ""
+            if on_board:
+                return {"state": "open_verified", "label": "Open · verified on employer board",
+                        "detail": f"Listed on the employer's job board on {verified.isoformat()}{suffix}"}
+            return {"state": "open_page_checked", "label": "Open · listing page checked",
+                    "detail": f"Listing page showed an apply option on {verified.isoformat()}; "
+                              f"not confirmed on the employer's own system{suffix}"}
         return {"state": "open_not_recent", "label": "Open · not recently verified",
                 "detail": f"Last verified {verified.isoformat()}" if verified else "Never re-verified"}
     if status == "unknown":

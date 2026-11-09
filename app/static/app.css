@@ -382,4 +382,60 @@ details.collapsible>*:not(summary){margin-top:10px}
   .resume-row{grid-template-columns:auto 1fr}
   .resume-row .item-actions{grid-column:1/-1}
 }
+
+/* ------------------------------------------------------------- v3.2 additions */
+.score.ineligible,.score.low{background:var(--surface-2);color:var(--muted)}
+.dims{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.dim{display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;font-size:11.5px;line-height:20px;border:1px solid var(--border);color:var(--text-2);background:var(--surface);white-space:nowrap}
+.dim.elig-eligible,.dim.fresh-new,.dim.fresh-fresh,.dim.conf-high,.dim.life-open_verified{background:var(--good-soft);color:var(--good);border-color:transparent}
+.dim.elig-uncertain,.dim.fresh-aging,.dim.conf-medium,.dim.life-unverified,.dim.life-open_not_recent,.dim.life-reposted{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.dim.elig-not_eligible,.dim.fresh-stale,.dim.conf-low,.dim.life-closed,.dim.life-expired{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.dim.app-state,.dim.sig{background:var(--accent-soft);color:var(--accent-text);border-color:transparent;text-transform:capitalize}
+.tag.part{background:var(--warn-soft);color:var(--warn)}
+.tag.miss{background:var(--bad-soft);color:var(--bad)}
+.tag.pref{background:var(--surface-2);color:var(--muted);text-decoration:line-through;text-decoration-color:var(--border-strong)}
+.warning-line.bad{color:var(--bad)}
+.job-row.is-old .item-title a{color:var(--text-2)}
+.job-row.is-old{background:var(--surface-2)}
+.job-row.is-old .score{opacity:.75}
+.job-row.is-closed{opacity:.6}
+.job-row.is-closed .item-title a{text-decoration:line-through}
+.job-detail{margin-top:8px;min-width:0}
+.job-detail .data-table{min-width:0}
+.job-detail .grid{min-width:0}
+.job-detail .grid>div{min-width:0}
+.section-title{font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px}
+.req-table td{vertical-align:top}
+.req-icon{font-weight:700;width:18px;text-align:center}
+.req-satisfied .req-icon{color:var(--good)}
+.req-not_satisfied .req-icon{color:var(--bad)}
+.req-partial .req-icon,.req-unknown .req-icon{color:var(--warn)}
+.req-evidence{font-size:11.5px;color:var(--muted);font-style:italic;margin-top:2px;overflow-wrap:anywhere}
+.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:8px 12px;margin-top:10px}
+.filter-grid .field span{font-size:11.5px;color:var(--muted)}
+.legend-row{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-top:10px;font-size:12px;color:var(--text-2)}
+.legend-row>span{display:inline-flex;gap:5px;align-items:center}
+.app-list{display:grid;gap:6px}
+.app-row{display:flex;gap:12px;justify-content:space-between;align-items:flex-start;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;border-left:3px solid var(--border-strong)}
+.app-row.status-applied,.app-row.status-assessment,.app-row.status-interview{border-left-color:var(--accent)}
+.app-row.status-offer{border-left-color:var(--good)}
+.app-row.status-rejected,.app-row.status-withdrawn,.app-row.status-closed{border-left-color:var(--bad);opacity:.8}
+.app-main{min-width:0;flex:1}
+.app-row>.item-actions{margin-top:0;flex:0 0 auto}
+.select.app-status{width:auto;min-height:26px;padding-block:0}
+.app-form{display:grid;gap:10px;border-top:1px solid var(--border);padding-top:10px}
+.app-form .field span{font-size:11.5px;color:var(--muted)}
+.timeline-date.overdue{color:var(--bad)}
+.briefing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:var(--gap)}
+.brief-list{display:grid;gap:6px}
+.brief-item{font-size:12.5px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.brief-item:last-child{border-bottom:0;padding-bottom:0}
+.brief-deadlines{border-top:2px solid var(--bad)}
+.brief-jobs{border-top:2px solid var(--accent)}
+.employer-table td{vertical-align:top}
+.trend-table td,.trend-table th{padding:3px 4px}
+@media (max-width:600px){
+  .app-row{flex-direction:column}
+  .filter-grid{grid-template-columns:1fr 1fr}
+}
 @media (forced-colors:active){.chart-fill,.split-bar span,.column span{forced-color-adjust:none;background:CanvasText}}

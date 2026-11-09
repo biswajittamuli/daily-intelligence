@@ -55,6 +55,34 @@ CANONICAL: dict[str, list[str]] = {
     "Security": ["application security", "appsec", "cybersecurity"], "Blockchain": [],
 }
 
+# Specific skill -> the general skills it demonstrates (one direction only: PostgreSQL shows SQL,
+# SQL never shows PostgreSQL; Python never implies FastAPI or PyTorch).
+IMPLIES: dict[str, list[str]] = {
+    "PostgreSQL": ["SQL"], "MySQL": ["SQL"], "SQLite": ["SQL"], "PL/pgSQL": ["SQL"], "Snowflake": ["SQL"],
+    "BigQuery": ["SQL"],
+    "Deep Learning": ["Machine Learning"], "PyTorch": ["Deep Learning", "Machine Learning"],
+    "TensorFlow": ["Deep Learning", "Machine Learning"], "Keras": ["Deep Learning", "Machine Learning"],
+    "JAX": ["Deep Learning", "Machine Learning"], "scikit-learn": ["Machine Learning"],
+    "Computer Vision": ["Machine Learning"], "NLP": ["Machine Learning"], "Reinforcement Learning": ["Machine Learning"],
+    "FastAPI": ["Python", "REST APIs"], "Django": ["Python"], "Flask": ["Python"], "Pandas": ["Python"],
+    "React": ["JavaScript"], "Next.js": ["React", "JavaScript"], "Vue": ["JavaScript"], "Angular": ["TypeScript"],
+    "Node.js": ["JavaScript"], "Express": ["Node.js", "JavaScript"], "NestJS": ["Node.js", "TypeScript"],
+    "Spring Boot": ["Java", "Spring"], "Ruby on Rails": ["Ruby"], "Kafka": [], "Helm": ["Kubernetes"],
+    "LangChain": ["LLMs"], "LangGraph": ["LLMs", "Agentic AI"], "LlamaIndex": ["LLMs"], "RAG": ["LLMs"],
+    "OpenAI API": ["LLMs"], "Fine-tuning": ["LLMs"],
+}
+
+
+def implied_by(skills: Iterable[str]) -> dict[str, str]:
+    """canonical-casefold general skill -> the specific skill on the resume that demonstrates it."""
+    output: dict[str, str] = {}
+    for skill in skills:
+        name = canonical(skill)
+        for parent in IMPLIES.get(name, []):
+            output.setdefault(parent.casefold(), name)
+    return output
+
+
 # Display/alias -> canonical (built once; extended at runtime from preferences).
 _ALIAS: dict[str, str] = {}
 

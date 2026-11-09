@@ -29,6 +29,8 @@ from datetime import date
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from app.services.listing_links import infer_employer
+
 from app.config import Settings
 from app.mcp.normalizer import canonicalize_url
 from app.mcp.retrieval import ParallelWebRetriever, RetrievalError
@@ -165,8 +167,16 @@ class BroadJobSearch:
         targets = ([request_role] if request_role else []) + list(jobs.get("roles") or [])
         if profile and not request_role:
             targets += infer_job_titles(profile)
-        if intent["intern"] and request_role and "intern" not in request_role.casefold():
-            targets.insert(0, f"{request_role} Intern")
+        if intent["intern"]:
+            # An internship request searches intern titles first ("AI internships" -> "AI Intern", "ML Intern").
+            base = re.sub(r"\b(intern(ship)?s?|trainee)\b", " ", request_role or "", flags=re.I)
+            base = " ".join(base.split()) or "Software Engineering"
+            base = base[:1].upper() + base[1:]
+            interns = [f"{base} Intern", f"{base} Internship"]
+            if re.search(r"\b(ai|ml|machine learning|data|llm|genai)\b", base, re.I):
+                interns += ["Machine Learning Intern", "Data Science Intern"]
+            interns.append("Software Engineering Intern")
+            targets = interns + [t for t in targets if t.casefold() != (request_role or "").casefold()]
         if not targets:
             targets = list(jobs.get("scan_roles") or ["Software Engineer"])
         variants = role_variants(targets)
@@ -482,7 +492,20 @@ class BroadJobSearch:
             else:
                 ranked.append(item)
         excluded["Articles / hiring news (not vacancies)"] += len(articles)
-        key = lambda job: ((job.get("eligibility") or {}).get("composite") or 0, job.get("posted_date") or "")
+        # A request about startups puts listings from known startup employers first (ranking within each
+        # group is unchanged); other relevant listings still follow.
+        startup_ids, startup_names = set(), set()
+        if intent["startup"] or intent["funded"]:
+            for employer in self.store.employers(limit=2000):
+                if employer.get("classification") == "startup":
+                    startup_ids.add(employer["id"])
+                    startup_names.add(Store._norm_company(employer["name"]))
+
+        def is_startup(job: dict[str, Any]) -> bool:
+            return bool(startup_ids) and (job.get("employer_id") in startup_ids or
+                                          Store._norm_company(str(job.get("employer") or "")) in startup_names)
+        key = lambda job: (is_startup(job), (job.get("eligibility") or {}).get("composite") or 0,
+                           job.get("posted_date") or "")
         ranked.sort(key=key, reverse=True)
         ineligible.sort(key=key, reverse=True)
         # Keep a few high-match ineligible roles visible as "stretch" roles; never as strong matches.
@@ -492,6 +515,23 @@ class BroadJobSearch:
         self.store.link_jobs_to_employers()
         rescore_stored(self.store, self.preferences)  # keep older listings consistent with this ranking
         tiers = Counter((item.get("eligibility") or {}).get("tier") for item in shortlist)
+        # Per-source funnel: which sources produced extracted listings, and which made the stored shortlist.
+        funnel: dict[str, dict[str, int]] = {}
+        shown_ids = {id(item) for item in shortlist}
+        relevant_ids = {id(item) for item in ranked + ineligible}
+        for item in candidates:
+            names = set()
+            for source in item.get("sources") or []:
+                if source.get("via") == "Company career board":
+                    names.add(str(item.get("employer") or source.get("platform") or "company board"))
+                else:
+                    names.add(_platform(urlparse(str(source.get("url") or "")).hostname or ""))
+            for name in names:
+                entry = funnel.setdefault(name, {"extracted": 0, "relevant": 0, "stored": 0, "verified": 0})
+                entry["extracted"] += 1
+                entry["relevant"] += int(id(item) in relevant_ids)
+                entry["stored"] += int(id(item) in shown_ids)
+                entry["verified"] += int(id(item) in shown_ids and item.get("discovered_via") == "company career board")
 
         summary = {
             "category": "jobs", "kind": "broad_search", "status": "complete" if saved else "empty",
@@ -506,9 +546,11 @@ class BroadJobSearch:
             "strong": tiers.get("strong", 0), "possible": tiers.get("possible", 0), "low": tiers.get("low", 0),
             "pages_fetched": fetched_pages, "sources_found": raw_total,
             "coverage": sorted(coverage.values(), key=lambda entry: (-entry.get("results", 0), entry["platform"])),
+            "funnel": funnel,
             "intent": intent, "employer_discovery": {k: v for k, v in (discovery_summary or {}).items()
                                                       if k not in {"companies", "career_listings"}} or None,
             "employers_considered": len(companies),
+            "startup_listings": sum(1 for job in shortlist if is_startup(job)) if startup_ids else None,
             "failures": failures, "steps": steps,
             "duration_seconds": round(time.perf_counter() - started, 1),
         }
@@ -551,6 +593,8 @@ class BroadJobSearch:
             match = AT_EMPLOYER.search(title) or HIRING.search(excerpts[:200])
             if match:
                 employer = match.group(1).strip(" ,.-")
+            else:
+                employer, _how = infer_employer(str(result.get("url") or ""), title, f"{excerpts} {content[:20000]}")
             location = LOCATION_RE.search(f"{title} {excerpts}")
             posted = (parse_date(result.get("publish_date")) or parse_relative_date(text, today))
             add({"title": title[:200] or "Untitled role", "url": result["url"], "employer": employer,
@@ -561,7 +605,8 @@ class BroadJobSearch:
                  "discovered_via": "web search", "source_kind": "job_listing",
                  "_content": content, "evidence": result.get("evidence") or []})
         for link in harvested:
-            add({"title": link["title"], "url": link["url"], "employer": link.get("employer"),
+            add({"title": link["title"], "url": link["url"],
+                 "employer": link.get("employer") or infer_employer(link["url"], link["title"])[0],
                  "location": link.get("location"), "posted_date": link.get("posted_date"),
                  "skills": link.get("skills") or [], "raw_text": link.get("context") or "",
                  "source_platform": urlparse(link["url"]).hostname, "_via": link.get("_via"),
