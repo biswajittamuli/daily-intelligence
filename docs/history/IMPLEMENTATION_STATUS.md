@@ -1,5 +1,8 @@
 # Implementation Status
 
+> **Historical record** of the v3.2 live verification (2026-11-09). Current behaviour is described in
+> `README.md`, `ARCHITECTURE.md` and `CHANGELOG.md`.
+
 Updated: 2026-11-09 (v3.2.0)
 
 ## V3.2 results (2026-11-09, this host)

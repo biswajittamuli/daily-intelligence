@@ -368,10 +368,9 @@ JSON accepts an array or an object with a `tasks` array. Each task can use `text
 SQLite history is stored at `data/daily-intelligence.sqlite3` (or under
 `DAILY_INTELLIGENCE_DATA_DIR`). Schema changes are **additive**
 (`CREATE TABLE IF NOT EXISTS`); existing tasks, history, briefings and source
-snapshots are preserved. Existing JSON artifacts are preserved. Legacy standalone MCP
-scripts (`app/mcp/pipeline.py`, `parallel_search.py`, `parallel_fetch.py`,
-`job_intelligence.py`, `job_parser.py`, `filter.py`, `quality.py`) are kept for
-provenance but are not used at runtime.
+snapshots are preserved. Before a schema upgrade the database is copied to `data/backups/`;
+the five newest backups are kept. JSON files left in `data/` by the legacy standalone MCP
+scripts (removed in 4.1; they remain in git history) are never read or deleted.
 
 ## CLI
 
@@ -388,7 +387,9 @@ fetch, and prints per-stage timing. Credentials are never printed.
 ## Tests
 
 ```bash
-./.venv/bin/python -m unittest discover -s tests -q   # 187 tests (network mocked; browser tests use a local fixture site)
+uv sync --dev                                         # installs pytest
+./.venv/bin/python -m pytest -q                       # 201 tests (network mocked; browser tests use a local fixture site)
+./.venv/bin/python -m unittest discover -s tests -q   # same suite without pytest
 ./.venv/bin/python -m compileall -q app tests
 ```
 
@@ -430,5 +431,5 @@ fetch, and prints per-stage timing. Credentials are never printed.
 - Local extraction uses a small model (`qwen3:4b`) with a 4096-token context, so very
   long PDFs are truncated to the first bounded excerpt.
 - Live jobs, exams, news and briefing flows have been verified end-to-end on this host
-  (see `IMPLEMENTATION_STATUS.md`). Live papers discovery currently stores honest
+  (see `docs/history/IMPLEMENTATION_STATUS.md`). Live papers discovery currently stores honest
   fallback records rather than structured summaries.

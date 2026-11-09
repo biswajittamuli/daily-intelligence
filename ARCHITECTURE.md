@@ -165,4 +165,4 @@ page do not overwrite each other. Job canonical keys are the canonical listing U
 The MCP diagnostic checks endpoint TCP, tool discovery, a search and a fetch. On this
 host (2026-11-08) it passed with six tools, 10 results and a successful fetch. Ollama
 reported `qwen3:4b`. Live jobs, exams and briefing flows were verified through the
-real UI; see `IMPLEMENTATION_STATUS.md` for details and known limitations.
+real UI; see `docs/history/IMPLEMENTATION_STATUS.md` for details and known limitations.

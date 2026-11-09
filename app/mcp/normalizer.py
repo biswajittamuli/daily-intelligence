@@ -1,7 +1,6 @@
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 from datetime import datetime, timezone
 import json
-from pathlib import Path
 
 
 TRACKING_KEYS = {
@@ -92,17 +91,3 @@ def normalize_fetch_results(raw_results):
                 })
 
     return normalized
-
-
-def save_results(results, output_path="data/normalized_results.json"):
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(results, file, indent=2, ensure_ascii=False)
-
-    print(f"Saved {len(results)} normalized results to {path}")
-
-
-if __name__ == "__main__":
-    print("Normalizer module ready.")

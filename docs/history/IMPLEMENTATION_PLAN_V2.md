@@ -1,5 +1,8 @@
 # Daily Intelligence V2 — Implementation Plan
 
+> **Historical record** of the v2 plan (2026-11-08). The legacy `app/mcp` scripts it mentions were
+> removed in 4.1; see `CHANGELOG.md`.
+
 ## Audit findings (2026-11-08)
 
 - Working: Ollama provider (installed-model only, thinking disabled by default), Parallel MCP

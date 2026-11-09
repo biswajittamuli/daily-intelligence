@@ -160,11 +160,9 @@ class IndianJobScenarioTests(unittest.TestCase):
         a = rank("Requirements:\n* Python\n* Currently pursuing B.Tech", title="AI Intern", location="Remote, India")["assessment"]
         self.assertNotEqual(a["eligibility"], "not_eligible")
 
-    # 9
-    def test_09_psu_cse_explicit_eligibility(self):
-        from app.mcp.filter import classify_cse_eligibility
-        self.assertEqual(classify_cse_eligibility("b.e./b.tech in computer science engineering"), "explicit_cse_or_it_mention")
-        self.assertEqual(classify_cse_eligibility("b.e. in mechanical engineering"), "needs_eligibility_verification")
+    # 9 — PSU CSE eligibility is decided at extraction time; covered in tests/test_v2_discovery.py
+    # (test_government_run_extracts_notice_and_cse_eligibility and
+    # test_government_notice_with_unrecognised_eligibility_is_not_verified).
 
     # 10 + 11 + 12
     def test_10_11_12_reverify_expire_and_inaccessible(self):
