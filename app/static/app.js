@@ -1851,7 +1851,9 @@ function viewHome(){
         <section class="mini"><h2>Deadlines</h2>${deadlineList((f.deadlines||[]).slice(0,5),true)}</section>
         <section class="mini"><h2>Today</h2>${[...(plan.schedule||[]),...(plan.suggestions||[])].slice(0,5).map(t=>`<div class="mini-row"><span>${t.url?`<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.title||'')}</a>`:esc(t.title||'')}</span><span class="mini-sub">${esc(t.time||t.detail||'')}</span></div>`).join('')||'<div class="mini-empty">Nothing scheduled for today.</div>'}<a class="link-button" href="#planning" data-view="planning">Plan</a></section>
         <section class="mini"><h2>AI developments</h2>${(f.news||[]).slice(0,4).map(n=>`<div class="mini-row"><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a><span class="mini-sub">${esc(n.publisher||'')}</span></div>`).join('')||'<div class="mini-empty">No stories yet.</div>'}</section>
-        <section class="mini"><h2>Last discovery</h2>${disc?discoverySummary(disc):'<div class="mini-empty">Not run yet.</div>'}<a class="link-button" href="#sources" data-view="sources">Sources &amp; coverage</a></section>
+        ${(f.alerts||[]).length?`<section class="mini"><h2>Alerts</h2>${f.alerts.slice(0,5).map(a=>`<div class="mini-row"><a href="${esc(a.url||'#')}" target="_blank" rel="noopener">${esc(a.title)}</a><span class="mini-sub">${esc(a.score??'')}</span></div>`).join('')}<button class="link-button" data-action="alerts-read">Mark read</button></section>`:''}
+        <section class="mini"><h2>Last discovery</h2>${disc?discoverySummary(disc):'<div class="mini-empty">Not run yet.</div>'}
+          ${(f.automation||{}).daily_refresh?`<div class="mini-kv"><span>Daily discovery</span><b>${esc((f.automation||{}).refresh_time||'08:00')}</b></div>`:`<div class="mini-empty">Daily discovery is off. <button class="link-button" data-action="auto-on">Turn on</button></div>`}<a class="link-button" href="#sources" data-view="sources">Sources &amp; coverage</a></section>
       </aside>
     </div>`;
 }
@@ -1978,6 +1980,9 @@ document.addEventListener('click',async event=>{
   try{
     if(action==='discover'){await startJobRequest('/api/discover',{},'Discovering opportunities');}
     else if(action==='close-drawer'){openDrawer(false);}
+    else if(action==='alerts-read'){await api('/api/alerts/read',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await refresh();render();}
+    else if(action==='auto-on'){const prefs=JSON.parse(JSON.stringify(D().preferences||{}));prefs.automation={...(prefs.automation||{}),daily_refresh:true};
+      await api('/api/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(prefs)});await refresh();render();toast('Daily discovery is on');}
     else if(action==='feed-section'){const f=state.filters.feed=state.filters.feed||{};f.section=button.dataset.value;state.expanded.feedall=false;render();}
     else if(action==='go'){setView(button.dataset.value);}
     else if(action==='feed-clear'){state.filters.feed={section:'all',q:'',fresh:'',elig:'',source:''};render();}

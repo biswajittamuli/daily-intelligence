@@ -269,6 +269,9 @@ class Application:
                           reported=set(self.store.reported_listings()), news=self.store.intel(category="news", limit=10),
                           last_visit=visits.get("previous"), include_hidden=include_hidden)
         feed["last_discovery"] = self.store.get_preference("last_discovery")
+        feed["alerts"] = [a for a in (self.store.get_preference("alerts", []) or []) if not a.get("read")][-10:][::-1]
+        feed["automation"] = {k: (self.discovery_preferences.get("automation") or {}).get(k)
+                              for k in ("daily_refresh", "refresh_time", "followed_hours", "notify")}
         feed["discovery"] = self.last_discovery()
         feed["today_plan"] = self.today_plan(jobs=[j for j in jobs if j.get("source_kind") not in {"search_page", "index_page"}])
         return feed
@@ -306,9 +309,13 @@ class Application:
                            "next_attempt_at": state.get("next_attempt_at")})
         return output
 
-    def after_discovery(self, report: dict) -> None:
-        """Hook run after every orchestrated discovery (notifications are added in a later phase)."""
-        return None
+    def after_discovery(self, report: dict, *, origin: str = "discovery") -> dict:
+        """Alerts for new strong matches, and deadline reminders, after any discovery or monitoring run."""
+        from app.services.monitoring import deadline_reminders, notable_jobs, notify
+        prefs = self.discovery_preferences
+        result = notify(self.store, prefs, notable_jobs(self.store, report.get("new_job_ids") or [], prefs), origin=origin)
+        result["reminders"] = deadline_reminders(self.store)
+        return result
 
     async def rediscover_careers(self, employer_ids: list[int] | None = None, *, limit: int = 10,
                                  progress=None, cancel_event=None) -> dict:
@@ -791,9 +798,14 @@ class Application:
                         str(payload.get("query") or "").strip(), mode=mode,
                         progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
                     self.rescore_jobs()
-                    self.after_discovery(result)
+                    result["alerts"] = self.after_discovery(result)
                     if job["kind"] == "auto_refresh":
                         self.store.set_preference("last_auto_refresh", date.today().isoformat())
+                elif job["kind"] == "followed_check":
+                    from app.services.monitoring import check_followed
+                    result = asyncio.run(check_followed(self.settings, self.store, self.discovery_preferences,
+                                                        progress=lambda message: self._progress(job_id, message)))
+                    result["alerts"] = self.after_discovery(result, origin="followed companies")
                 elif job["kind"] == "mcp_diagnostics":
                     self._progress(job_id, "Connecting to Parallel MCP")
                     result = run_mcp_diagnostic_process(self.settings, job["cancel_event"])
@@ -1299,6 +1311,16 @@ class Application:
                         except ValueError as exc:
                             return self.json(400, {"error": str(exc)})
                         return self.json(200, {"ok": True, "id": listing_id, "reported": True})
+                    if path == "/api/alerts/read":
+                        alerts = app.store.get_preference("alerts", []) or []
+                        for alert in alerts:
+                            alert["read"] = True
+                        app.store.set_preference("alerts", alerts)
+                        return self.json(200, {"ok": True})
+                    if path == "/api/followed/check":
+                        job_id, active = app.start_job("followed_check", "", {})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued"})
                     if path == "/api/discover":
                         query = str(payload.get("query") or "").strip()
                         if len(query) > 500:
@@ -1484,11 +1506,28 @@ class Application:
             self.store.set_preference("last_auto_refresh", now.date().isoformat())
         return job_id
 
+    def maybe_followed_check(self, now: datetime | None = None) -> str | None:
+        """Re-read followed companies every `automation.followed_hours` (0 disables)."""
+        hours = float((self.discovery_preferences.get("automation") or {}).get("followed_hours", 12) or 0)
+        if hours <= 0 or not self.store.followed_employers():
+            return None
+        now = now or datetime.now(timezone.utc)
+        last = self.store.get_preference("last_followed_check")
+        try:
+            if last and (now - datetime.fromisoformat(last)).total_seconds() < hours * 3600:
+                return None
+        except ValueError:
+            pass
+        job_id, _ = self.start_job("followed_check")
+        if job_id:
+            self.store.set_preference("last_followed_check", now.isoformat())
+        return job_id
+
     def start_scheduler(self, interval: float = 60.0) -> threading.Thread:
         def loop():
             while True:
                 try:
-                    self.maybe_auto_refresh() or self.maybe_reverify()
+                    self.maybe_auto_refresh() or self.maybe_followed_check() or self.maybe_reverify()
                 except Exception:
                     log.exception("scheduled refresh check failed")
                 time.sleep(interval)

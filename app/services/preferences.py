@@ -78,7 +78,7 @@ DEFAULT_PREFERENCES: dict[str, Any] = {
     },
     "scan_all": {"categories": ["jobs", "government", "exams", "news", "papers"]},
     "automation": {
-        "daily_refresh": False,
+        "daily_refresh": True,
         "refresh_time": "08:00",
         "categories": ["jobs", "news"],
         "reverify_hours": 24,
@@ -239,7 +239,7 @@ def validate_preferences(payload: dict[str, Any]) -> dict[str, Any]:
     automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else {}
     output["automation"] = {
         "reverify_hours": max(0.0, min(168.0, float(automation.get("reverify_hours", 24) or 0))),
-        "daily_refresh": bool(automation.get("daily_refresh", False)),
+        "daily_refresh": bool(automation.get("daily_refresh", True)),
         "refresh_time": _clock(automation.get("refresh_time")),
         "categories": [item for item in _strings(automation.get("categories"), 5)
                        if item in {"jobs", "news", "papers", "government", "exams"}] or ["jobs", "news"],

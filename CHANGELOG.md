@@ -78,6 +78,17 @@
   legitimate alternatives and enable/disable.
 - Light and dark themes, responsive to phone width without horizontal scrolling.
 
+### Phase 7: scheduling and monitoring
+- Daily orchestrated discovery is on by default for new installs (`automation.daily_refresh`, 08:00, runs
+  once per day after that time — also when the app is opened later). Existing saved preferences are not
+  changed; the home page offers to turn it on.
+- Followed companies are re-checked every 12 h (`automation.followed_hours`): boards re-read fresh and
+  reconciled (new vacancies ranked and stored, removed ones closed after two complete misses), verified
+  career pages re-read.
+- Deadline reminders: saved/applied listings and notices due within 3 days become planning tasks once.
+- Alerts: new strong (or eligible ≥ `notify_min_score`) matches are kept as in-app alerts and shown as one
+  local desktop notification via `notify-send` (`automation.notify`). Nothing leaves the machine.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

@@ -394,6 +394,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 400)
 
     def test_scheduler_starts_once_per_day_only_when_enabled(self):
+        self.app.discovery_preferences = validate_preferences({"automation": {"daily_refresh": False}})
         self.assertIsNone(self.app.maybe_auto_refresh(datetime(2026, 11, 8, 9, 0)))
         self.app.discovery_preferences = validate_preferences(
             {"automation": {"daily_refresh": True, "refresh_time": "08:30"}})
