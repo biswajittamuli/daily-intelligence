@@ -63,6 +63,21 @@
   (`POST /api/listings/{id}/report`, schema v10 `listing_reports`; hidden from the feed, never deleted).
   Saved/applied/hidden states survive rescans.
 
+### Phase 6: interface redesign
+- Opens on a personal home: greeting by local time, date, a one-line status, six metrics (new
+  opportunities, strong matches, deadlines in 14 days, exam updates, AI developments, today's
+  priorities), the opportunity feed, and small panels (deadlines, today, AI developments, last discovery).
+- The permanent sidebar is gone: a compact top bar (brand, command entry, Discover, theme, menu); every
+  existing view stays reachable from a menu drawer and from the command palette (Ctrl K or `/`) — discover,
+  targeted role search, filter the feed, ask, jump to a view, open saved items and deadlines.
+- Feed rows show match, title, company · location · work arrangement, eligibility, freshness and deadline;
+  expanding a row shows why it matches, matched and missing skills, status evidence and actions (open
+  listing or application page, save/applied/hide, follow company, report inaccurate).
+- New Sources & coverage view: last-discovery metrics counted separately (search results are leads, not
+  vacancies), and the registry with per-source state, reliability, last success, backoff, restrictions,
+  legitimate alternatives and enable/disable.
+- Light and dark themes, responsive to phone width without horizontal scrolling.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

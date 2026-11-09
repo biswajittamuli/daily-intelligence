@@ -16,7 +16,8 @@ const ICONS={
 };
 function icon(name){return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]||''}</svg>`;}
 const NAV=[
-  {id:'daily-briefing',label:'Daily Briefing',icon:'home',group:'main'},
+  {id:'home',label:'Home',icon:'home',group:'main'},
+  {id:'daily-briefing',label:'Daily Briefing',icon:'news',group:'main'},
   {id:'jobs',label:'Jobs',icon:'briefcase',group:'jobs'},
   {id:'resumes',label:'Resumes',icon:'file',group:'jobs'},
   {id:'tracker',label:'Applications',icon:'check',group:'jobs'},
@@ -29,6 +30,7 @@ const NAV=[
   {id:'research',label:'Research',icon:'search',group:'intel'},
   {id:'planning',label:'Planning',icon:'list',group:'personal'},
   {id:'history',label:'History',icon:'clock',group:'personal'},
+  {id:'sources',label:'Sources & coverage',icon:'chart',group:'personal'},
   {id:'settings',label:'Settings',icon:'settings',group:'personal'},
 ];
 const HIDDEN_VIEWS=['ask-intelligence'];
@@ -45,7 +47,7 @@ const CATEGORY_META={
   papers:{label:'Research Papers',endpoint:'papers'},
 };
 const state={
-  data:null,view:'daily-briefing',activeJob:null,pollTimer:null,toastTimer:null,
+  data:null,feed:null,sources:null,palette:null,view:'home',activeJob:null,pollTimer:null,toastTimer:null,
   models:[],lastJob:null,tailor:{},note:null,suggestions:null,editResume:null,replaceResume:null,confirmDelete:null,
   expanded:{},
   lastQuery:{jobs:'',government:'',exams:'',news:'',papers:'',employers:'',employerTopic:''},editApp:null,
@@ -186,7 +188,11 @@ async function cancelJob(id){
   }catch(err){toast(err.message,true);}
 }
 async function refresh(){
-  state.data=await api('/api/bootstrap');
+  const [data,feed,sources]=await Promise.all([api('/api/bootstrap'),api('/api/feed').catch(()=>null),
+    api('/api/sources').catch(()=>null)]);
+  state.data=data;
+  if(feed)state.feed=feed;
+  if(sources)state.sources=sources.sources||[];
 }
 async function startJobRequest(path,body,label){
   try{
@@ -230,18 +236,20 @@ function emptyRich(title,text,actions){
 }
 function render(){
   renderNav();
-  const meta=NAV.find(n=>n.id===state.view)||{label:state.view==='ask-intelligence'?'Ask':'Daily Briefing'};
-  const crumb=$('#page-crumb');if(crumb)crumb.textContent=meta.label;
+  const meta=NAV.find(n=>n.id===state.view)||{label:state.view==='ask-intelligence'?'Ask':'Home'};
+  const crumb=$('#page-crumb');if(crumb)crumb.textContent=state.view==='home'?'':meta.label;
+  const line=$('#progress-line');if(line)line.hidden=!activeJob();
+  document.querySelectorAll('[data-action="discover"]').forEach(b=>{b.disabled=!!activeJob();});
   const content=$('#page-content');if(!content)return;
   if(!state.data){content.innerHTML='<div class="empty-state"><strong>Loading workspace</strong>Connecting to local services…</div>';return;}
-  const view=VIEWS[state.view]||VIEWS['daily-briefing'];
+  const view=VIEWS[state.view]||VIEWS.home;
   content.innerHTML=view();
 }
 function setView(view){
-  if(!NAV.some(n=>n.id===view)&&!HIDDEN_VIEWS.includes(view))view='daily-briefing';
+  if(!NAV.some(n=>n.id===view)&&!HIDDEN_VIEWS.includes(view))view='home';
   state.view=view;
   if(location.hash!=='#'+view)history.replaceState(null,'','#'+view);
-  $('#sidebar')?.classList.remove('open');
+  openDrawer(false);
   render();
   window.scrollTo({top:0,behavior:'smooth'});
 }
@@ -704,7 +712,7 @@ function coverageStages(s){
   });
   return Object.values(rows).sort((a,b)=>b.stored-a.stored||b.returned-a.returned||a.name.localeCompare(b.name));
 }
-const CATEGORY_LABEL={search_engine:'Search',ats_board:'ATS board',career_page:'Career page',job_portal:'Job portal',employer_discovery:'Employer discovery',browser_render:'Browser',third_party_extractor:'Extractor'};
+const CATEGORY_LABEL={government:'Government',news:'News',feed:'Public feeds',renderer:'Renderers',search_engine:'Search',ats_board:'ATS board',career_page:'Career page',job_portal:'Job portal',employer_discovery:'Employer discovery',browser_render:'Browser',third_party_extractor:'Extractor'};
 function stateClass(state){
   if(['extraction_successful','fetch_successful','search_successful','partially_successful'].includes(state))return 'status-ok';
   if(['no_results','targeted','not_targeted','skipped_by_access_policy'].includes(state))return 'status-warn';
@@ -1212,7 +1220,7 @@ function viewAsk(){
     progressBox() +
     `<div class="panel">
       <form data-form="research" class="research-box">
-        <textarea class="textarea" name="request" placeholder="e.g. Find current entry-level AI engineer jobs in India. Check Wellfound, Naukri, Indeed, LinkedIn and YC Work at a Startup."></textarea>
+        <textarea class="textarea" name="request" placeholder="e.g. Which of my saved roles close this week? What do startups in Pune ask for in backend roles?">${esc(state.askPrefill||'')}</textarea>
         <div class="item-actions"><button class="primary-button" type="submit">Run request</button></div>
       </form>
       <div class="chips">${[
@@ -1713,6 +1721,8 @@ function marketV2(market){
 }
 
 const VIEWS={
+  home:viewHome,
+  sources:viewSources,
   'daily-briefing':viewBriefing,
   'ask-intelligence':viewAsk,
   research:viewResearch,
@@ -1730,6 +1740,234 @@ const VIEWS={
   settings:viewSettings,
 };
 
+
+/* ------------------------------------------------------------------ home (v4) */
+const FEED_SECTIONS=[['all','All'],['new','New'],['strong','Strong'],['good','Good'],['internship','Internships'],['fresher','Fresher'],
+  ['remote','Remote'],['startup','Startups'],['product','Product cos'],['followed','Following'],['government','Government'],['exam','Exams'],['stretch','Stretch']];
+function greeting(d=new Date()){const h=d.getHours();return h<5?'Good evening':h<12?'Good morning':h<17?'Good afternoon':'Good evening';}
+function longDate(d=new Date()){return d.toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long'});}
+function F(){return state.feed||{items:[],summary:{},deadlines:[],news:[]};}
+function homeStatus(f){
+  const s=f.summary||{};
+  if(!(f.items||[]).length)return 'Nothing discovered yet. Run Discover to build your feed from every enabled source.';
+  const parts=[];
+  if(s.strong_matches)parts.push(`${s.strong_matches} strong match${s.strong_matches===1?'':'es'}`);
+  if(s.new_opportunities)parts.push(`${s.new_opportunities} new opportunit${s.new_opportunities===1?'y':'ies'}`);
+  if(s.deadlines_14d)parts.push(`${s.deadlines_14d} deadline${s.deadlines_14d===1?'':'s'} in the next two weeks`);
+  return parts.length?`${parts.join(', ').replace(/, ([^,]*)$/,' and $1')}. Here’s what matters today.`:'Here’s what matters today.';
+}
+function metric(label,value,hint,action){
+  return `<button class="metric" ${action?`data-action="${action[0]}" data-value="${esc(action[1])}"`:'disabled'} title="${esc(hint||'')}"><span class="metric-value">${esc(value??0)}</span><span class="metric-label">${esc(label)}</span></button>`;
+}
+function feedFilter(){
+  const f=state.filters.feed=state.filters.feed||{section:'all',q:'',fresh:'',elig:'',source:''};
+  const q=(f.q||'').toLowerCase();
+  return (F().items||[]).filter(i=>{
+    if(f.section&&f.section!=='all'&&!(i.sections||[]).includes(f.section))return false;
+    if(f.section==='all'&&i.tier==='ineligible')return false;
+    if(f.fresh&&((i.freshness||{}).key||'')!==f.fresh&&!(f.fresh==='week'&&['new_today','new_24h','new_3d','new_7d'].includes((i.freshness||{}).key)))return false;
+    if(f.elig&&i.eligibility!==f.elig)return false;
+    if(f.source&&i.source_type!==f.source)return false;
+    if(q&&!`${i.title} ${i.org||''} ${i.location||''} ${(i.matched||[]).join(' ')}`.toLowerCase().includes(q))return false;
+    return true;
+  });
+}
+function feedRow(i){
+  const open=state.expanded['feed-'+i.kind+'-'+i.id];
+  const fresh=i.freshness||{};
+  const deadline=i.deadline_days!=null?`<span class="due ${i.deadline_days<=3?'due-soon':''}">${i.deadline_days===0?'due today':i.deadline_days+'d left'}</span>`:'';
+  const score=i.kind==='job'?`<span class="feed-score ${esc(i.tier)}${i.eligibility==='uncertain'||i.confidence==='low'?' tentative':''}" title="Profile match${i.resume?' · '+esc(i.resume):''}">${i.match??'—'}</span>`
+    :`<span class="feed-score kind">${i.kind==='exam'?'Exam':'Gov'}</span>`;
+  const meta=[i.org,i.location,i.arrangement,i.kind==='exam'?(i.event||'').replace(/_/g,' '):null].filter(Boolean).map(esc).join(' · ');
+  return `<article class="feed-row${open?' open':''}">
+    ${score}
+    <div class="feed-main">
+      <button class="feed-title" data-action="expand" data-key="feed-${i.kind}-${i.id}">${esc(i.title||'Untitled')}</button>
+      <div class="feed-meta">${meta}</div>
+      <div class="feed-tags">${i.kind==='job'?`<span class="tag-elig elig-${esc(i.eligibility)}">${esc(i.eligibility_label||'')}</span>`:''}${fresh.label?`<span title="${esc(fresh.basis||'')}">${esc(fresh.label)}</span>`:''}${deadline}${i.state&&i.state!=='dismissed'?`<span class="tag-state">${esc(i.state)}</span>`:''}${(i.sections||[]).includes('followed')?'<span class="tag-state">following</span>':''}</div>
+      ${open?feedDetail(i):''}
+    </div>
+    <div class="feed-actions">${i.url?`<a class="link-button" href="${esc(i.application_url||i.url)}" target="_blank" rel="noopener">Open</a>`:''}</div>
+  </article>`;
+}
+function feedDetail(i){
+  if(i.kind!=='job')return `<div class="feed-detail">${i.eligibility_label?`<div>Eligibility: ${esc(i.eligibility_label)}</div>`:''}<div class="item-actions">${i.url?`<a class="link-button" href="${esc(i.url)}" target="_blank" rel="noopener">Original notice</a>`:''}${i.application_url?`<a class="link-button" href="${esc(i.application_url)}" target="_blank" rel="noopener">Application page</a>`:''}</div></div>`;
+  const current=stateOf('job',i.id);
+  const reporting=state.expanded['report-'+i.id];
+  return `<div class="feed-detail">
+    <p class="why">${esc(i.why||'No explanation stored yet.')}</p>
+    ${(i.matched||[]).length||(i.missing||[]).length?`<div class="skills">${(i.matched||[]).map(s=>`<span class="tag have">${esc(s)}</span>`).join('')}${(i.missing||[]).map(s=>`<span class="tag miss" title="Required, not on your resume">${esc(s)}</span>`).join('')}</div>`:''}
+    <div class="feed-facts">${[(i.lifecycle||{}).label,i.posted?'posted '+fmtDate(i.posted):'posting date not stated',(i.freshness||{}).basis,i.sources>1?i.sources+' sources':null,i.source_type?'via '+i.source_type:null].filter(Boolean).map(esc).join(' · ')}</div>
+    <div class="item-actions">
+      ${i.url?`<a class="link-button" href="${esc(i.url)}" target="_blank" rel="noopener">Original listing</a>`:''}
+      ${i.application_url&&i.application_url!==i.url?`<a class="link-button primary" href="${esc(i.application_url)}" target="_blank" rel="noopener">Application page</a>`:''}
+      ${trackButtons(i.id,current)}
+      ${i.employer_id!=null?`<button class="link-button" data-action="follow" data-id="${i.employer_id}" data-on="${(i.sections||[]).includes('followed')?0:1}">${(i.sections||[]).includes('followed')?'Unfollow':'Follow'} company</button>`:''}
+      <button class="link-button" data-action="expand" data-key="report-${i.id}">Report inaccurate</button>
+      <a class="link-button" href="#jobs" data-view="jobs" title="Full requirement breakdown on the Jobs page">Why this match?</a>
+    </div>
+    ${reporting?`<div class="report-row">${[['closed','No longer open'],['wrong_location','Wrong location'],['wrong_details','Wrong details'],['duplicate','Duplicate'],['not_a_job','Not a job'],['scam','Looks like a scam']].map(([v,l])=>`<button class="chip" data-action="report" data-id="${i.id}" data-reason="${v}">${l}</button>`).join('')}</div>`:''}
+  </div>`;
+}
+function viewHome(){
+  const f=F(),s=f.summary||{};
+  const ff=state.filters.feed=state.filters.feed||{section:'all',q:'',fresh:'',elig:'',source:''};
+  const items=feedFilter();
+  const limit=state.expanded.feedall?items.length:25;
+  const plan=(f.today_plan||D().today_plan||{});
+  const priorities=((plan.counts||{}).today||0)+((plan.counts||{}).overdue||0);
+  const disc=f.discovery;
+  const counts=s.sections||{};
+  return `<section class="home-head">
+      <h1>${esc(greeting())}.</h1>
+      <p class="home-date">${esc(longDate())}</p>
+      <p class="home-status">${esc(homeStatus(f))}</p>
+    </section>
+    ${progressBox()}
+    <section class="metrics" aria-label="Today at a glance">
+      ${metric('New opportunities',s.new_opportunities,'Posted (or first seen) in the last 3 days',['feed-section','new'])}
+      ${metric('Strong matches',s.strong_matches,'Eligible, mandatory skills met, fresh and well evidenced',['feed-section','strong'])}
+      ${metric('Deadlines · 14 days',s.deadlines_14d,'Jobs, notices and exams with a date in the next 14 days',['feed-section','deadline'])}
+      ${metric('Exam updates',s.exam_updates,'Exam events in the next 60 days',['feed-section','exam'])}
+      ${metric('AI developments',(f.news||[]).length,'Recent AI stories',['go','ai-news'])}
+      ${metric('Today’s priorities',priorities,'Tasks due today or overdue',['go','planning'])}
+    </section>
+    <div class="home-grid">
+      <section class="feed" aria-label="Opportunity feed">
+        <div class="feed-controls">
+          <div class="feed-sections" role="tablist">${FEED_SECTIONS.filter(([k])=>k==='all'||counts[k]).map(([k,l])=>`<button class="seg ${ff.section===k?'active':''}" data-action="feed-section" data-value="${k}" role="tab" aria-selected="${ff.section===k}">${l}${k!=='all'&&counts[k]?` <span>${counts[k]}</span>`:''}</button>`).join('')}</div>
+          <div class="feed-filters">
+            <input class="input" data-action="feed-q" placeholder="Filter by role, skill, company, city…" value="${esc(ff.q||'')}">
+            <select class="select" data-feed="fresh">${optionList([['week','Last 7 days'],['new_today','New today'],['new_24h','Last 24 hours'],['new_3d','Last 3 days'],['older_open','Older, still open'],['date_unknown','Date unknown'],['verification_required','Needs verification']],ff.fresh||'','Any freshness')}</select>
+            <select class="select" data-feed="elig">${optionList([['eligible','Eligible'],['likely_eligible','Likely eligible'],['uncertain','Uncertain'],['not_eligible','Not eligible']],ff.elig||'','Any eligibility')}</select>
+            <select class="select" data-feed="source">${optionList([['ats','Employer ATS'],['career','Career page'],['feed','Public feed'],['portal','Job portal'],['web','Web search']],ff.source||'','Any source')}</select>
+          </div>
+        </div>
+        ${ff.section==='deadline'?deadlineList(f.deadlines||[]):
+          items.length?`<div class="feed-list">${items.slice(0,limit).map(feedRow).join('')}</div>${items.length>limit?`<button class="link-button more" data-action="expand" data-key="feedall">Show all ${items.length}</button>`:''}`
+          :`<div class="feed-empty">${(f.items||[]).length?'Nothing matches these filters.':'Your feed is empty.'} ${(f.items||[]).length?'<button class="link-button" data-action="feed-clear">Clear filters</button>':'<button class="discover-button" data-action="discover">Discover opportunities</button>'}</div>`}
+      </section>
+      <aside class="side-panels">
+        <section class="mini"><h2>Deadlines</h2>${deadlineList((f.deadlines||[]).slice(0,5),true)}</section>
+        <section class="mini"><h2>Today</h2>${[...(plan.schedule||[]),...(plan.suggestions||[])].slice(0,5).map(t=>`<div class="mini-row"><span>${t.url?`<a href="${esc(t.url)}" target="_blank" rel="noopener">${esc(t.title||'')}</a>`:esc(t.title||'')}</span><span class="mini-sub">${esc(t.time||t.detail||'')}</span></div>`).join('')||'<div class="mini-empty">Nothing scheduled for today.</div>'}<a class="link-button" href="#planning" data-view="planning">Plan</a></section>
+        <section class="mini"><h2>AI developments</h2>${(f.news||[]).slice(0,4).map(n=>`<div class="mini-row"><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a><span class="mini-sub">${esc(n.publisher||'')}</span></div>`).join('')||'<div class="mini-empty">No stories yet.</div>'}</section>
+        <section class="mini"><h2>Last discovery</h2>${disc?discoverySummary(disc):'<div class="mini-empty">Not run yet.</div>'}<a class="link-button" href="#sources" data-view="sources">Sources &amp; coverage</a></section>
+      </aside>
+    </div>`;
+}
+function deadlineList(list,compact){
+  if(!list.length)return '<div class="mini-empty">No dated deadlines in the next two weeks.</div>';
+  return list.map(i=>`<div class="mini-row"><span>${i.url?`<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a>`:esc(i.title)}${compact?'':` <span class="mini-sub">${esc(i.org||'')}</span>`}</span><span class="due ${i.deadline_days<=3?'due-soon':''}">${i.deadline_days===0?'today':i.deadline_days+'d'}</span></div>`).join('');
+}
+function discoverySummary(d){
+  const m=d.metrics||{};
+  return `<div class="mini-row"><span>${esc(fmtDateTime(d.created_at))}</span><span class="mini-sub">${esc(d.mode||'')}</span></div>
+    <div class="mini-kv"><span>Sources successful</span><b>${esc(m.sources_successful??0)} / ${esc(m.sources_attempted??0)}</b></div>
+    <div class="mini-kv"><span>Partial · restricted</span><b>${esc(m.sources_partial??0)} · ${esc(m.sources_restricted??0)}</b></div>
+    <div class="mini-kv"><span>Unique vacancies</span><b>${esc(m.unique_vacancies??0)}</b></div>
+    <div class="mini-kv"><span>New stored</span><b>${esc(m.new_vacancies??0)}</b></div>`;
+}
+
+/* ----------------------------------------------------------- sources (v4) */
+const RUN_STATE_CLASS={successful:'status-ok',partial:'status-warn',failed:'status-bad',access_restricted:'status-bad',not_attempted:'view-note',disabled:'view-note',backing_off:'status-warn',not_configured:'view-note'};
+function viewSources(){
+  const d=(state.feed||{}).discovery;
+  const reg=state.sources||[];
+  const m=(d||{}).metrics||{};
+  const run=Object.fromEntries(((d||{}).sources||[]).map(s=>[s.id,s]));
+  const cats=Array.from(new Set(reg.map(s=>s.category)));
+  const cat=state.filters.sourcesCat||'';
+  const rows=reg.filter(s=>!cat||s.category===cat);
+  const metric2=(label,v)=>`<div class="mini-kv"><span>${esc(label)}</span><b>${esc(v??0)}</b></div>`;
+  return heading('Workspace','Sources & coverage','Every source the discovery engine can use, what it is allowed to do, and what happened the last time it ran. A source counts as working only when it returned records.',
+    `<button class="discover-button" data-action="discover">Discover now</button>`)+progressBox()+
+    `<div class="grid grid-2 section-space">
+      <div class="panel"><div class="panel-head"><h3 class="panel-title">Last discovery</h3><span class="panel-kicker">${d?esc(fmtDateTime(d.created_at))+' · '+esc(d.duration_seconds)+'s':'never'}</span></div>
+        ${d?`${metric2('Sources configured',m.sources_configured)}${metric2('Sources attempted',m.sources_attempted)}${metric2('Successful',m.sources_successful)}${metric2('Partially successful',m.sources_partial)}${metric2('Failed or access restricted',m.sources_restricted)}`:'<div class="mini-empty">Run Discover to populate this.</div>'}
+      </div>
+      <div class="panel"><div class="panel-head"><h3 class="panel-title">What came back</h3><span class="panel-kicker">each line counts a different thing</span></div>
+        ${d?`${metric2('Search results (leads, not vacancies)',m.search_results)}${metric2('Career pages discovered',m.career_pages_discovered)}${metric2('ATS boards read',m.ats_boards_read)}${metric2('Raw vacancy records',m.raw_vacancy_records)}${metric2('Unique vacancies after deduplication',m.unique_vacancies)}${metric2('Relevant to your resume',m.relevant_vacancies)}${metric2('Stored this run',m.stored_vacancies)}${metric2('New this run',m.new_vacancies)}${metric2('…verified open on employer systems',m.new_verified_open)}${metric2('…awaiting verification',m.new_awaiting_verification)}${metric2('…closed or expired',m.new_closed_or_expired)}${metric2('Removed from employer boards (closed)',m.board_removals_detected)}`:''}
+      </div>
+    </div>
+    <div class="panel section-space">
+      <div class="panel-head"><h3 class="panel-title">Source registry</h3><span class="panel-kicker">${reg.length} sources</span></div>
+      <div class="filter-row" style="margin-top:0"><button class="chip ${!cat?'active':''}" data-action="sources-cat" data-value="">All</button>${cats.map(c=>`<button class="chip ${cat===c?'active':''}" data-action="sources-cat" data-value="${esc(c)}">${esc(CATEGORY_LABEL[c]||c.replace(/_/g,' '))}</button>`).join('')}</div>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Source</th><th>Method</th><th>Last run</th><th class="num">Results</th><th class="num">Reliability</th><th>Last success</th><th>Restrictions · alternative</th><th></th></tr></thead><tbody>
+      ${rows.map(s=>{const r=run[s.id]||{};const st=r.state||(s.enabled?'not_attempted':'disabled');return `<tr>
+        <td><b>${esc(s.name)}</b><div class="view-note">${esc(s.geography)} · ${esc(s.pagination)}</div></td>
+        <td class="view-note">${esc(s.method)}</td>
+        <td class="${RUN_STATE_CLASS[st]||''}">${esc(r.state_label||st.replace(/_/g,' '))}${r.reason?`<div class="view-note">${esc(r.reason)}</div>`:''}</td>
+        <td class="num">${esc((r.results||0)+(r.listings||0)||'–')}</td>
+        <td class="num">${s.reliability!=null?esc(s.reliability)+'%':'–'}</td>
+        <td class="view-note">${s.last_success_at?esc(fmtDateTime(s.last_success_at)):'never'}${s.next_attempt_at?`<div class="status-warn">retry after ${esc(fmtDateTime(s.next_attempt_at))}</div>`:''}</td>
+        <td class="view-note">${esc(s.access)}${s.alternative?`<div>${esc(s.alternative)}</div>`:''}</td>
+        <td><button class="link-button" data-action="source-toggle" data-id="${esc(s.id)}" data-on="${s.enabled?0:1}">${s.enabled?'Disable':'Enable'}</button></td></tr>`;}).join('')}
+      </tbody></table></div>
+    </div>`;
+}
+
+/* ---------------------------------------------------------- command palette */
+function paletteItems(q){
+  const items=[];const t=q.trim();
+  items.push({label:'Discover opportunities',hint:'Run every enabled source',run:()=>startJobRequest('/api/discover',{},'Discovering opportunities')});
+  if(t){
+    items.push({label:`Search roles: “${t}”`,hint:'Targeted discovery with the same engine',run:()=>startJobRequest('/api/discover',{query:t},'Searching '+t)});
+    items.push({label:`Filter feed: “${t}”`,hint:'Narrow what is already stored',run:()=>{(state.filters.feed=state.filters.feed||{}).q=t;setView('home');}});
+    items.push({label:`Ask: “${t}”`,hint:'Research with sources',run:()=>{state.askPrefill=t;setView('ask-intelligence');}});
+  }
+  const lower=t.toLowerCase();
+  NAV.forEach(n=>{if(!t||n.label.toLowerCase().includes(lower))items.push({label:'Go to '+n.label,hint:'',run:()=>setView(n.id)});});
+  if(t){
+    (F().items||[]).filter(i=>`${i.title} ${i.org||''}`.toLowerCase().includes(lower)).slice(0,6).forEach(i=>
+      items.push({label:i.title,hint:[i.org,i.state].filter(Boolean).join(' · '),run:()=>{state.expanded['feed-'+i.kind+'-'+i.id]=true;(state.filters.feed=state.filters.feed||{}).q=t;setView('home');}}));
+  }else{
+    (F().items||[]).filter(i=>['saved','applied','interview'].includes(i.state)).slice(0,5).forEach(i=>
+      items.push({label:i.title,hint:i.state,run:()=>{state.expanded['feed-'+i.kind+'-'+i.id]=true;setView('home');}}));
+    (F().deadlines||[]).slice(0,3).forEach(i=>items.push({label:`Deadline: ${i.title}`,hint:i.deadline_days+' days',run:()=>{(state.filters.feed=state.filters.feed||{}).section='all';setView('home');}}));
+  }
+  return items.slice(0,14);
+}
+function openPalette(){
+  const p=$('#palette');if(!p)return;
+  state.palette={q:'',sel:0};p.hidden=false;renderPalette();
+  setTimeout(()=>p.querySelector('input')?.focus(),0);
+}
+function closePalette(){const p=$('#palette');if(p){p.hidden=true;p.innerHTML='';}state.palette=null;}
+function renderPalette(){
+  const p=$('#palette');if(!p||!state.palette)return;
+  const items=paletteItems(state.palette.q);state.palette.items=items;
+  state.palette.sel=Math.min(state.palette.sel,items.length-1);
+  const list=items.map((it,k)=>`<li role="option" aria-selected="${k===state.palette.sel}" class="${k===state.palette.sel?'sel':''}" data-pal="${k}"><span>${esc(it.label)}</span><span class="pal-hint">${esc(it.hint||'')}</span></li>`).join('');
+  if(!p.querySelector('input')){
+    p.innerHTML=`<div class="palette-box"><input class="palette-input" placeholder="Search roles, ask a question, or jump to a section" aria-label="Command" value=""><ul class="palette-list" role="listbox"></ul><div class="palette-foot">↑↓ to move · Enter to run · Esc to close</div></div>`;
+  }
+  p.querySelector('.palette-list').innerHTML=list;
+}
+function runPalette(k){const it=(state.palette||{}).items?.[k];closePalette();if(it)Promise.resolve(it.run()).catch(err=>toast(err.message,true));}
+document.addEventListener('keydown',e=>{
+  const typing=/input|textarea|select/i.test((e.target||{}).tagName||'')&&!(e.target||{}).classList?.contains('palette-input');
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();state.palette?closePalette():openPalette();return;}
+  if(e.key==='/'&&!typing&&!state.palette){e.preventDefault();openPalette();return;}
+  if(!state.palette)return;
+  if(e.key==='Escape'){e.preventDefault();closePalette();$('#command-trigger')?.focus();}
+  else if(e.key==='ArrowDown'){e.preventDefault();state.palette.sel=Math.min(state.palette.sel+1,(state.palette.items||[]).length-1);renderPalette();}
+  else if(e.key==='ArrowUp'){e.preventDefault();state.palette.sel=Math.max(state.palette.sel-1,0);renderPalette();}
+  else if(e.key==='Enter'){e.preventDefault();runPalette(state.palette.sel);}
+});
+document.addEventListener('input',e=>{
+  if(e.target.classList?.contains('palette-input')&&state.palette){state.palette.q=e.target.value;state.palette.sel=0;renderPalette();}
+});
+document.addEventListener('click',e=>{
+  const li=e.target.closest('[data-pal]');if(li){runPalette(Number(li.dataset.pal));return;}
+  if(e.target.id==='palette')closePalette();
+  if(e.target.closest('#command-trigger'))openPalette();
+});
+function openDrawer(open){
+  const d=$('#sidebar'),s=$('#scrim'),b=$('#mobile-menu');
+  d?.classList.toggle('open',open);if(s)s.hidden=!open;if(b)b.setAttribute('aria-expanded',String(open));
+  if(open)d?.querySelector('.nav-item')?.focus();
+}
+
 /* ------------------------------------------------------------------ events */
 document.addEventListener('click',async event=>{
   const viewButton=event.target.closest('[data-view]');
@@ -1738,7 +1976,19 @@ document.addEventListener('click',async event=>{
   if(!button)return;
   const action=button.dataset.action;
   try{
-    if(action==='briefing'){await startJobRequest('/api/briefings',{},'Briefing started');}
+    if(action==='discover'){await startJobRequest('/api/discover',{},'Discovering opportunities');}
+    else if(action==='close-drawer'){openDrawer(false);}
+    else if(action==='feed-section'){const f=state.filters.feed=state.filters.feed||{};f.section=button.dataset.value;state.expanded.feedall=false;render();}
+    else if(action==='go'){setView(button.dataset.value);}
+    else if(action==='feed-clear'){state.filters.feed={section:'all',q:'',fresh:'',elig:'',source:''};render();}
+    else if(action==='follow'){await api(`/api/employers/${button.dataset.id}/follow`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({followed:button.dataset.on==='1'})});
+      await refresh();render();toast(button.dataset.on==='1'?'Following this company':'Unfollowed');}
+    else if(action==='report'){await api(`/api/listings/${button.dataset.id}/report`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:button.dataset.reason})});
+      await refresh();render();toast('Reported — hidden from your feed (kept in the database)');}
+    else if(action==='sources-cat'){state.filters.sourcesCat=button.dataset.value;render();}
+    else if(action==='source-toggle'){const r=await api(`/api/sources/${encodeURIComponent(button.dataset.id)}/enabled`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:button.dataset.on==='1'})});
+      state.sources=r.sources||state.sources;render();}
+    else if(action==='briefing'){await startJobRequest('/api/briefings',{},'Briefing started');}
     else if(action==='scan-all'){await startJobRequest('/api/search/scan-all',{},'Scanning all enabled sections');}
     else if(action==='discover-jobs'){await startJobRequest('/api/intel/search',{category:'jobs',query:state.lastQuery.jobs||'',pool_size:((D().preferences||{}).jobs||{}).pool_size||100},'Discovering jobs');}
     else if(action==='expand'){const k=button.dataset.key;state.expanded[k]=!state.expanded[k];render();}
@@ -2057,6 +2307,12 @@ document.addEventListener('submit',async event=>{
 let inputTimer=null;
 document.addEventListener('input',event=>{
   const target=event.target;const action=target.dataset&&target.dataset.action;
+  if(action==='feed-q'){
+    clearTimeout(inputTimer);
+    inputTimer=setTimeout(()=>{(state.filters.feed=state.filters.feed||{}).q=target.value;const pos=target.selectionStart;render();
+      const again=document.querySelector('[data-action="feed-q"]');if(again){again.focus();again.setSelectionRange(pos,pos);}},250);
+    return;
+  }
   if(action!=='job-q'&&action!=='news-q'&&action!=='startup-q')return;
   clearTimeout(inputTimer);
   inputTimer=setTimeout(()=>{
@@ -2077,6 +2333,7 @@ document.addEventListener('change',event=>{
   }
   if(target.dataset.action==='job-undated'){state.filters.jobs.undated=target.checked;render();}
   if(target.dataset.filter){state.filters.jobs[target.dataset.filter]=target.value;render();}
+  if(target.dataset.feed){(state.filters.feed=state.filters.feed||{})[target.dataset.feed]=target.value;render();}
   if(target.dataset.filterCheck==='startups-builtin'){state.filters.startups.builtin=target.checked;render();}
   else if(target.dataset.filterCheck){state.filters.jobs[target.dataset.filterCheck]=target.checked;render();}
   if(target.dataset.action==='app-status'){
@@ -2153,6 +2410,7 @@ async function boot(){
   const hash=location.hash.replace('#','');
   if(hash&&(NAV.some(item=>item.id===hash)||HIDDEN_VIEWS.includes(hash)))state.view=hash;
   render();
+  $('#mobile-menu')?.addEventListener('click',()=>openDrawer(!$('#sidebar')?.classList.contains('open')));
   if(!state.models.length){
     api('/api/models').then(data=>{state.models=data.models||[];if(state.view==='settings')render();}).catch(()=>{});
   }
@@ -2179,7 +2437,6 @@ $('#quit-app')?.addEventListener('click',async()=>{
     setTimeout(()=>{try{window.close();}catch(e){}},800);
   }catch(err){toast(err.message,true);}
 });
-$('#mobile-menu')?.addEventListener('click',()=>$('#sidebar')?.classList.toggle('open'));
 document.addEventListener('toggle',event=>{const d=event.target;if(d.dataset&&d.dataset.details)state.expanded[d.dataset.details]=d.open;},true);
 
 boot();

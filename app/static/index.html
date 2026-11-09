@@ -10,25 +10,36 @@
   <script>try{var t=localStorage.getItem('di-theme');if(t)document.documentElement.dataset.theme=t;}catch(e){}</script>
 </head>
 <body>
-  <aside class="sidebar" id="sidebar">
-    <a class="brand" href="#daily-briefing" aria-label="Daily Intelligence home">
-      <img class="brand-mark" src="/icon.svg" alt="">
-      <span><strong>Daily Intelligence</strong><small>Local workspace</small></span>
+  <header class="topbar">
+    <a class="brand" href="#home" data-view="home" aria-label="Daily Intelligence home">
+      <img class="brand-mark" src="/icon.svg" alt=""><strong>Daily Intelligence</strong>
     </a>
-    <nav id="navigation" aria-label="Primary navigation"></nav>
+    <span class="crumb" id="page-crumb" aria-live="polite"></span>
+    <button class="command-trigger" id="command-trigger" type="button" aria-haspopup="dialog" aria-controls="palette">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <span>Search roles, ask, or jump to…</span><kbd>Ctrl K</kbd>
+    </button>
+    <div class="top-actions">
+      <button class="discover-button" id="discover-top" type="button" data-action="discover" title="Run every enabled source now">Discover</button>
+      <span class="connection-pill" id="connection" title="Local server"><i></i></span>
+      <button class="icon-button" id="theme-toggle" title="Switch theme" aria-label="Switch theme">◐</button>
+      <button class="icon-button" id="mobile-menu" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">☰</button>
+    </div>
+  </header>
+  <div class="progress-line" id="progress-line" hidden><span></span></div>
+  <aside class="drawer" id="sidebar" aria-label="Menu">
+    <div class="drawer-head"><strong>Menu</strong><button class="icon-button" data-action="close-drawer" aria-label="Close menu">✕</button></div>
+    <nav id="navigation" aria-label="Sections"></nav>
     <div class="sidebar-bottom">
       <a class="side-resume" href="#resumes" data-view="resumes" id="side-resume"><span>Active resume</span><b>—</b></a>
       <div class="side-footer"><span id="version-tag"></span><button class="link-button" id="quit-app" title="Stop the local server">Quit</button></div>
     </div>
   </aside>
+  <div class="scrim" id="scrim" data-action="close-drawer" hidden></div>
   <main class="main-shell">
-    <header class="topbar">
-      <button id="mobile-menu" class="icon-button mobile-only" aria-label="Toggle navigation">☰</button>
-      <div class="breadcrumbs"><span>Workspace</span><span class="crumb-sep">/</span><b id="page-crumb">Daily briefing</b></div>
-      <div class="top-actions"><span class="connection-pill" id="connection"><i></i>Local</span><button class="icon-button" id="theme-toggle" title="Switch theme" aria-label="Switch theme">◐</button></div>
-    </header>
     <div class="page-wrap" id="page-content" aria-live="polite"></div>
   </main>
+  <div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden></div>
   <div id="toast" class="toast" role="status"></div>
   <script src="/app.js" defer></script>
 </body>
