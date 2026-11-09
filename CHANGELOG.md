@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.0.0 — in progress
+
+### Phase 1: unified acquisition
+- `orchestrator.py`: one "Discover opportunities" run executes every adapter (jobs, government, exams,
+  news once a day, re-verification); a failing adapter never stops the others. Scheduled refresh uses it,
+  replacing the older single-search jobs path.
+- `job_sources/registry.py` + `base.py`: source definitions (category, method, capabilities, pagination,
+  geography, access restrictions, rate limits, alternatives), persisted state (attempts, successes,
+  extraction and verification rates, reliability, consecutive failures, exponential backoff), per-source
+  enable/disable. Run states: successful / partial / failed / access restricted / not attempted.
+- Paginated board enumeration (Lever skip/limit, SmartRecruiters offset/total); partial reads are
+  reported and never cached.
+- Incremental scans: boards read completely reconcile stored listings (still listed → verified, missing
+  on two fresh complete reads → closed; cached or partial reads change nothing).
+- Re-verification selects any active listing whose last check is over 3 days old.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

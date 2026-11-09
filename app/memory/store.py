@@ -151,6 +151,15 @@ CREATE TABLE IF NOT EXISTS job_exclusions (
     reason TEXT NOT NULL, stage TEXT, detail TEXT, created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_job_exclusions_session ON job_exclusions(session_id, reason);
+CREATE TABLE IF NOT EXISTS source_state (
+    source_id TEXT PRIMARY KEY, enabled INTEGER, last_attempt_at TEXT, last_success_at TEXT, last_result_at TEXT,
+    last_state TEXT, last_failure_reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, successes INTEGER NOT NULL DEFAULT 0,
+    partials INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    results_total INTEGER NOT NULL DEFAULT 0, last_results INTEGER, last_unique INTEGER,
+    extraction_ok INTEGER NOT NULL DEFAULT 0, extraction_total INTEGER NOT NULL DEFAULT 0,
+    verification_ok INTEGER NOT NULL DEFAULT 0, verification_total INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT, updated_at TEXT
+);
 """
 
 JSON_COLUMNS = {
@@ -186,7 +195,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 6  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 7  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -1231,6 +1240,63 @@ class Store:
                 item[key.removesuffix("_json")] = _loads(item.pop(key), None)
             output.append(item)
         return output
+
+    # ---------------------------------------------------------- source registry (v7)
+    def source_states(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as db:
+            return {row["source_id"]: dict(row) for row in db.execute("SELECT * FROM source_state")}
+
+    def set_source_enabled(self, source_id: str, enabled: bool | None) -> None:
+        with self.connect() as db:
+            db.execute("""INSERT INTO source_state(source_id, enabled, updated_at) VALUES(?,?,?)
+                          ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at""",
+                       (source_id, None if enabled is None else int(enabled), self.now()))
+
+    def record_source_runs(self, runs: dict[str, dict[str, Any]]) -> None:
+        """Fold one run's per-source outcome into the persistent state (with backoff after repeated failures)."""
+        from app.services.job_sources.registry import backoff_until
+        now = self.now()
+        with self.connect() as db:
+            for sid, run in runs.items():
+                row = db.execute("SELECT * FROM source_state WHERE source_id=?", (sid,)).fetchone()
+                state = run["state"]
+                if state == "not_attempted":
+                    continue
+                failed = state in {"failed", "access_restricted"}
+                consecutive = ((row["consecutive_failures"] if row else 0) + 1) if failed else 0
+                values = {
+                    "last_attempt_at": now, "last_state": state,
+                    "last_success_at": now if state in {"successful", "partial"} else (row["last_success_at"] if row else None),
+                    "last_result_at": now if run.get("results") or run.get("listings") else (row["last_result_at"] if row else None),
+                    "last_failure_reason": (run.get("failure") or (row["last_failure_reason"] if row else None)) if failed
+                    else (row["last_failure_reason"] if row else None),
+                    "attempts": (row["attempts"] if row else 0) + 1,
+                    "successes": (row["successes"] if row else 0) + int(state == "successful"),
+                    "partials": (row["partials"] if row else 0) + int(state == "partial"),
+                    "failures": (row["failures"] if row else 0) + int(failed),
+                    "consecutive_failures": consecutive,
+                    "results_total": (row["results_total"] if row else 0) + int(run.get("results") or 0) + int(run.get("listings") or 0),
+                    "last_results": int(run.get("results") or 0) + int(run.get("listings") or 0),
+                    "last_unique": int(run.get("unique") or 0),
+                    "extraction_ok": (row["extraction_ok"] if row else 0) + int(run.get("extraction_ok") or 0),
+                    "extraction_total": (row["extraction_total"] if row else 0) + int(run.get("extraction_total") or 0),
+                    "next_attempt_at": backoff_until(consecutive), "updated_at": now,
+                }
+                if row is None:
+                    db.execute(f"INSERT INTO source_state(source_id, {', '.join(values)}) VALUES(?{', ?' * len(values)})",
+                               (sid, *values.values()))
+                else:
+                    db.execute(f"UPDATE source_state SET {', '.join(k + '=?' for k in values)} WHERE source_id=?",
+                               (*values.values(), sid))
+
+    def record_source_verification(self, source_id: str, ok: int, total: int) -> None:
+        if total <= 0:
+            return
+        with self.connect() as db:
+            db.execute("""INSERT INTO source_state(source_id, verification_ok, verification_total, updated_at) VALUES(?,?,?,?)
+                          ON CONFLICT(source_id) DO UPDATE SET verification_ok=source_state.verification_ok+excluded.verification_ok,
+                          verification_total=source_state.verification_total+excluded.verification_total,
+                          updated_at=excluded.updated_at""", (source_id, ok, total, self.now()))
 
     # -------------------------------------------------------- diagnostics (v6)
     def save_coverage(self, session_id: int, reports: list[dict[str, Any]], exclusions: list[dict[str, Any]]) -> None:

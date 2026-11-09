@@ -251,6 +251,37 @@ class Application:
             }
         return jobs
 
+    def sources_view(self) -> list[dict]:
+        """Registry definitions joined with persisted state (enabled, attempts, reliability, backoff)."""
+        from app.services.job_sources.base import skip_map
+        from app.services.job_sources.registry import definitions
+        states = self.store.source_states()
+        skip = skip_map(self.store)
+        output = []
+        for definition in definitions():
+            state = states.get(definition.id) or {}
+            attempts = int(state.get("attempts") or 0)
+            ext_total = int(state.get("extraction_total") or 0)
+            ver_total = int(state.get("verification_total") or 0)
+            output.append({**definition.to_dict(),
+                           "enabled": skip.get(definition.id) != "disabled",
+                           "status": skip.get(definition.id) or state.get("last_state") or "never attempted",
+                           "last_attempt_at": state.get("last_attempt_at"), "last_success_at": state.get("last_success_at"),
+                           "last_result_at": state.get("last_result_at"), "last_results": state.get("last_results"),
+                           "last_unique": state.get("last_unique"), "attempts": attempts,
+                           "reliability": round(100 * (int(state.get("successes") or 0) + 0.5 * int(state.get("partials") or 0))
+                                                / attempts) if attempts else None,
+                           "extraction_rate": round(100 * int(state.get("extraction_ok") or 0) / ext_total) if ext_total else None,
+                           "verification_rate": round(100 * int(state.get("verification_ok") or 0) / ver_total) if ver_total else None,
+                           "failure_reason": state.get("last_failure_reason"),
+                           "consecutive_failures": state.get("consecutive_failures") or 0,
+                           "next_attempt_at": state.get("next_attempt_at")})
+        return output
+
+    def after_discovery(self, report: dict) -> None:
+        """Hook run after every orchestrated discovery (notifications are added in a later phase)."""
+        return None
+
     async def rediscover_careers(self, employer_ids: list[int] | None = None, *, limit: int = 10,
                                  progress=None, cancel_event=None) -> dict:
         """Re-run multi-stage career discovery for chosen employers (or those whose retry time has come)."""
@@ -654,19 +685,6 @@ class Application:
                         job["status"] = "complete" if not job["cancel_event"].is_set() else "cancelled"
                         job["message"] = "Complete" if job["status"] == "complete" else "Cancelled"
                     return
-                if category == "jobs" and payload.get("scan"):
-                    roles = payload.get("roles") if isinstance(payload.get("roles"), list) else None
-                    self._progress(job_id, "Starting market scan")
-                    result = asyncio.run(engine.scan_market(
-                        [str(role)[:80] for role in roles] if roles else None,
-                        progress=lambda message: self._progress(job_id, message),
-                        cancel_event=job["cancel_event"], freshness=payload.get("freshness"),
-                        max_passes=int(payload.get("max_passes") or 6)))
-                    with self._lock:
-                        job["result"] = result
-                        job["status"] = "complete" if not job["cancel_event"].is_set() else "cancelled"
-                        job["message"] = "Complete" if job["status"] == "complete" else "Cancelled"
-                    return
                 self._progress(job_id, f"Starting {category} discovery")
                 result = asyncio.run(engine.run(
                     category, str(payload.get("query") or "").strip(),
@@ -735,29 +753,17 @@ class Application:
                     result = asyncio.run(self.rediscover_careers(
                         payload.get("employer_ids"), limit=max(1, min(30, int(payload.get("limit") or 10))),
                         progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
-                elif job["kind"] == "auto_refresh":
-                    engine = DiscoveryEngine(self.settings, self.store, preferences=self.discovery_preferences)
-                    categories = (self.discovery_preferences.get("automation") or {}).get("categories") or ["jobs", "news"]
-                    result = {"kind": "auto_refresh", "runs": []}
-                    for category in categories:
-                        if job["cancel_event"].is_set():
-                            break
-                        self._progress(job_id, f"Scheduled refresh: {category}")
-                        try:
-                            if category == "jobs":
-                                summary = asyncio.run(engine.scan_market(
-                                    progress=lambda message: self._progress(job_id, message),
-                                    cancel_event=job["cancel_event"], max_passes=4))
-                            else:
-                                summary = asyncio.run(engine.run(
-                                    category, "", cancel_event=job["cancel_event"],
-                                    progress=lambda message, c=category: self._progress(job_id, f"{c}: {message}")))
-                            result["runs"].append({"category": category, "status": summary.get("status"),
-                                                   "records": summary.get("records")})
-                        except Exception as exc:  # keep going with the next category
-                            result["runs"].append({"category": category, "status": "failed",
-                                                   "error": type(exc).__name__})
-                    self.store.set_preference("last_auto_refresh", date.today().isoformat())
+                elif job["kind"] in {"auto_refresh", "discover"}:
+                    from app.services.orchestrator import DiscoveryOrchestrator
+                    payload = job.get("payload") or {}
+                    mode = "scheduled" if job["kind"] == "auto_refresh" else payload.get("mode")
+                    result = asyncio.run(DiscoveryOrchestrator(self.settings, self.store, self.discovery_preferences).discover(
+                        str(payload.get("query") or "").strip(), mode=mode,
+                        progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
+                    self.rescore_jobs()
+                    self.after_discovery(result)
+                    if job["kind"] == "auto_refresh":
+                        self.store.set_preference("last_auto_refresh", date.today().isoformat())
                 elif job["kind"] == "mcp_diagnostics":
                     self._progress(job_id, "Connecting to Parallel MCP")
                     result = run_mcp_diagnostic_process(self.settings, job["cancel_event"])
@@ -1081,6 +1087,8 @@ class Application:
                     signals = app.store.signals(limit=500)
                     return self.json(200, {"employers": app.store.employers(limit=1000), "signals": signals,
                                            "signal_events": cluster_signals(signals)})
+                if path == "/api/sources":
+                    return self.json(200, {"sources": app.sources_view()})
                 if path == "/api/sources/health":
                     from app.services.job_sources import ats_registry
                     from app.services.job_sources.portals import policy_table
@@ -1239,6 +1247,22 @@ class Application:
                                                                         "limit": payload.get("limit")})
                         if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
                         return self.json(202, {"id": job_id, "status": "queued"})
+                    if path == "/api/discover":
+                        query = str(payload.get("query") or "").strip()
+                        if len(query) > 500:
+                            return self.json(400, {"error": "Query must be at most 500 characters"})
+                        mode = payload.get("mode") if payload.get("mode") in {"full", "targeted"} else None
+                        job_id, active = app.start_job("discover", query, {"query": query, "mode": mode})
+                        if not job_id: return self.json(409, {"error": "A long-running request is already active", "active_job": active})
+                        return self.json(202, {"id": job_id, "status": "queued"})
+                    if path.startswith("/api/sources/") and path.endswith("/enabled"):
+                        from app.services.job_sources.registry import BY_ID
+                        source_id = path[len("/api/sources/"):-len("/enabled")]
+                        if source_id not in BY_ID:
+                            return self.json(404, {"error": "Unknown source"})
+                        enabled = payload.get("enabled")
+                        app.store.set_source_enabled(source_id, None if enabled is None else bool(enabled))
+                        return self.json(200, {"sources": app.sources_view()})
                     if path == "/api/employers/rediscover":
                         ids = payload.get("employer_ids")
                         ids = [int(i) for i in ids if str(i).isdigit()][:50] if isinstance(ids, list) else None

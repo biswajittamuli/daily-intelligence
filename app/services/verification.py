@@ -128,8 +128,24 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
               "unreachable": 0, "unchanged": 0, "not_checked": 0}
     details: list[dict[str, Any]] = []
 
+    per_source: dict[str, list[int]] = {}
+
+    def source_of(job) -> str:
+        key = _ats_key(job)
+        if key:
+            return f"ats:{key[0]}"
+        if _employer_page(job):
+            return "career:read"
+        from app.services.job_sources import portals as portal_policy
+        portal = portal_policy.portal_for(str(job.get("original_url") or ""))
+        return ("portal:" + re.sub(r"[^a-z0-9]+", "-", portal.name.casefold()).strip("-")) if portal else "search:web"
+
     def record(job, outcome, *, status=None, evidence="", missing=False, raw_text=None, posted=None):
         counts[outcome] = counts.get(outcome, 0) + 1
+        if outcome != "not_checked":
+            entry = per_source.setdefault(source_of(job), [0, 0])
+            entry[0] += int(outcome in {"verified_open", "closed", "expired"})
+            entry[1] += 1
         store.record_verification(job["id"], status=status, evidence=evidence, outcome=outcome, missing=missing,
                                   raw_text=raw_text, posted_date=posted)
         details.append({"id": job["id"], "title": job.get("title"), "outcome": outcome, "evidence": evidence[:160]})
@@ -265,6 +281,8 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
                     await retriever.__aexit__(None, None, None)
                 except Exception:
                     pass
+    for source_id, (ok, total) in per_source.items():
+        store.record_source_verification(source_id, ok, total)
     return {"kind": "reverify", "status": "complete", **counts, "details": details[:200],
             "at": datetime.now(timezone.utc).isoformat()}
 
@@ -324,3 +342,72 @@ async def _verify_direct(pairs, record, counts, today: date, *, http: Any | None
     finally:
         if owns:
             await http.__aexit__(None, None, None)
+
+
+REVERIFY_AFTER_DAYS = 3
+
+
+def select_due_for_verification(store: Store, *, limit: int = 30, today: date | None = None) -> list[dict[str, Any]]:
+    """Active listings whose last check is older than REVERIFY_AFTER_DAYS (tracked and well-matched first).
+
+    Listings read from a complete employer-board scan are re-checked by board reconciliation during
+    discovery, so they are not selected here unless tracked.
+    """
+    today = today or date.today()
+    tracked = {app["job_id"] for app in store.applications() if app.get("job_id")}
+    states = store.item_states().get("job", {})
+    candidates = []
+    for job in store.jobs(limit=5000):
+        if job.get("status") in {"closed", "expired"} or states.get(job["id"]) == "dismissed":
+            continue
+        is_tracked = job["id"] in tracked or states.get(job["id"]) in {"saved", "applied", "interview"}
+        if _ats_key(job) and not is_tracked:
+            continue
+        checked = parse_date(str(job.get("last_verified") or "")[:10])
+        history = job.get("verify_history") or []
+        last_try = parse_date(str((history[-1] or {}).get("at") or "")[:10]) if history else None
+        last = max(filter(None, [checked, last_try]), default=None)
+        if last and (today - last).days < REVERIFY_AFTER_DAYS:
+            continue
+        candidates.append((not is_tracked, -(job.get("match_score") or 0), job["id"], job))
+    candidates.sort(key=lambda item: item[:3])
+    return [item[3] for item in candidates[:limit]]
+
+
+def reconcile_boards(store: Store, board_jobs: list[dict[str, Any]], coverage: list[dict[str, Any]], *,
+                     today: date | None = None) -> dict[str, int]:
+    """Compare stored listings with boards that were read completely in this run.
+
+    Present on the board → verified open. Missing once → recorded; missing on two consecutive complete
+    reads → closed. Boards read partially, served from the short-lived cache, or not read at all change nothing
+    (a failed request is not a closure, and a cached copy is not a second observation).
+    """
+    today = today or date.today()
+    complete = {f"{entry.get('ats')}:{entry.get('slug')}" for entry in coverage
+                if entry.get("complete") and entry.get("status") == "ok" and entry.get("ats") and entry.get("slug")}
+    counts = {"checked": 0, "still_listed": 0, "missing_once": 0, "closed": 0, "boards": len(complete)}
+    if not complete:
+        return counts
+    present = {canonicalize_url(str(job.get("url") or "")) for job in board_jobs}
+    for job in store.jobs(limit=5000):
+        key = _ats_key(job)
+        if not key or f"{key[0]}:{key[1]}" not in complete or job.get("status") in {"closed", "expired"}:
+            continue
+        counts["checked"] += 1
+        ats, slug = key
+        if canonicalize_url(str(job.get("original_url") or "")) in present:
+            counts["still_listed"] += 1
+            if str(job.get("last_verified") or "")[:10] != today.isoformat():
+                store.record_verification(job["id"], status="open", outcome="verified_open",
+                                          evidence=f"Listed on {ats.capitalize()} board '{slug}' on {today.isoformat()}")
+        elif int(job.get("missing_count") or 0) >= 1:
+            counts["closed"] += 1
+            store.record_verification(job["id"], status="closed", outcome="closed", missing=True,
+                                      evidence=f"Not on {ats.capitalize()} board '{slug}' in two consecutive complete reads "
+                                               f"(last {today.isoformat()})")
+        else:
+            counts["missing_once"] += 1
+            store.record_verification(job["id"], status=None, outcome="missing_once", missing=True,
+                                      evidence=f"Not on {ats.capitalize()} board '{slug}' on {today.isoformat()}; "
+                                               "closed if still missing next time")
+    return counts

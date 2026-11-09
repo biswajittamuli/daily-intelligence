@@ -177,6 +177,8 @@ def _slug_name(slug: str) -> str:
 def _ats_state(status: str, results: int) -> str:
     from app.services.job_sources.models import SourceState
     status = str(status or "")
+    if status.startswith("partial"):
+        return SourceState.PARTIAL
     if status.startswith("ok"):
         return SourceState.EXTRACT_OK if results else SourceState.NO_RESULTS
     if "404" in status:
@@ -217,7 +219,8 @@ class BroadJobSearch:
     def __init__(self, settings: Settings, store: Store, preferences: dict[str, Any], *,
                  retriever: Any | None = None, provider: Any | None = None,
                  ats_fetcher: Callable[..., Any] | None = None, http: Any | None = None,
-                 browser: Any | None = None, direct_fetch: bool | None = None) -> None:
+                 browser: Any | None = None, direct_fetch: bool | None = None,
+                 skip: dict[str, str] | None = None) -> None:
         self.settings = settings
         self.store = store
         self.preferences = preferences
@@ -228,6 +231,8 @@ class BroadJobSearch:
         self._browser = browser
         # Direct fetching (employer sites, career pages) and the browser run live by default; tests inject them.
         self._direct = (retriever is None) if direct_fetch is None else direct_fetch
+        # Source ids the user disabled or that are backing off after repeated failures (registry ids).
+        self.skip = dict(skip or {})
 
     # ------------------------------------------------------------------ plan
     def plan(self, request: str, pool_size: int) -> dict[str, Any]:
@@ -271,7 +276,12 @@ class BroadJobSearch:
         known = {item.casefold() for item in SKILL_VOCABULARY}
         skills = [skill for skill in (profile.get("skills") or jobs.get("skills") or [])
                   if str(skill).casefold() in known][:3]
-        portals = [domain for domain in portal_domains(self.preferences) if domain]
+        from app.services.job_sources import portals as portal_policy
+        def portal_id(domain: str) -> str | None:
+            portal = portal_policy.portal_for(domain)
+            return "portal:" + re.sub(r"[^a-z0-9]+", "-", portal.name.casefold()).strip("-") if portal else None
+        portals = [domain for domain in portal_domains(self.preferences)
+                   if domain and portal_id(domain) not in self.skip]
         search_calls = {50: 4, 100: 8, 200: 12}.get(pool_size, max(3, min(14, math.ceil(pool_size / 15))))
         batches: list[dict[str, Any]] = []
         # 1) portal site: queries — two portals per call, rotated across role variants (search index only)
@@ -308,6 +318,8 @@ class BroadJobSearch:
             for role in variants[:2]:
                 batches.append({"platform": "Remote search", "method": "MCP web search", "group": "remote",
                                 "queries": [f"{role} remote India {level}".strip(), f"remote {role} job India apply"]})
+        skipped_groups = sorted({b.get("group") for b in batches if f"search:{b.get('group')}" in self.skip})
+        batches = [b for b in batches if f"search:{b.get('group')}" not in self.skip]
         batches = _drop_near_duplicates(batches)
         ordered = self._interleave(batches)[:search_calls]
         if intent["company"]:
@@ -323,7 +335,7 @@ class BroadJobSearch:
         return {"targets": targets, "variants": variants, "location": location, "intent": intent,
                 "search_calls": len(ordered), "batches": ordered, "pool_size": pool_size,
                 "resume": (active or {}).get("label"), "portals": portals,
-                "paths": sorted({batch.get("group") or "other" for batch in ordered}),
+                "paths": sorted({batch.get("group") or "other" for batch in ordered}), "skipped_paths": skipped_groups,
                 "objective": (f"Find individual, currently open job listings for {', '.join(variants[:4])} "
                               f"in {location}. Prefer original job pages with title, company, location, "
                               f"date and an apply link. Exclude articles, salary guides and hiring news.")}
@@ -408,7 +420,8 @@ class BroadJobSearch:
                                cache_path=self.settings.data_dir / "http-cache.sqlite3")
             await http.__aenter__()
             owns_http = True
-        if self._direct and browser is None and jobs_pref.get("browser_rendering", True):
+        if self._direct and browser is None and jobs_pref.get("browser_rendering", True) \
+                and "renderer:browser" not in self.skip:
             from app.services.job_sources.browser import BrowserRenderer
             browser = BrowserRenderer(max_pages=int(jobs_pref.get("browser_concurrency") or 1),
                                       timeout_ms=int(jobs_pref.get("browser_timeout_ms") or 15000))
@@ -434,7 +447,8 @@ class BroadJobSearch:
                     max_fetch_urls=20, mcp_timeout=max(self.settings.mcp_timeout, 45.0)))
                 await retriever.__aenter__()
 
-            if intent["startup"] or intent["funded"] or jobs_pref.get("discover_employers"):
+            if (intent["startup"] or intent["funded"] or jobs_pref.get("discover_employers")) \
+                    and "employers:discovery" not in self.skip:
                 from app.services.employer_discovery import EmployerDiscovery
                 note("Discovering employers (startup publications, directories, VC portfolios, job platforms)")
                 t0 = time.perf_counter()
@@ -458,6 +472,10 @@ class BroadJobSearch:
             known = {(c["ats"], c["slug"].casefold()) for c in base}
             companies = list(base) + [c for c in readable_boards(self.store) if (c["ats"], c["slug"].casefold()) not in known]
             known |= {(c["ats"], c["slug"].casefold()) for c in companies}
+            skipped_boards = [c for c in companies if f"ats:{c['ats']}" in self.skip]
+            companies = [c for c in companies if f"ats:{c['ats']}" not in self.skip]
+            if skipped_boards:
+                note(f"Skipping {len(skipped_boards)} boards on disabled or backing-off ATS providers")
             if include_ats and companies:
                 note(f"Reading {len(companies)} company career boards (Greenhouse/Lever/Ashby/Workable/…)")
                 ats_task = asyncio.create_task(self._ats_fetcher(companies, cancel=check_cancel))
@@ -634,7 +652,7 @@ class BroadJobSearch:
             cov.add("pages_fetched", fetched_pages)
 
             # ------------------- unknown employers, career pages, rediscovery
-            if self._direct and http is not None:
+            if self._direct and http is not None and not {"career:discovery", "employers:resolution"} <= set(self.skip):
                 t0 = time.perf_counter()
                 extra = await self._employer_pages(retriever, http, browser, listings + harvested, intent,
                                                    pool_size, extra_search_budget, cov, note, check_cancel, failures)
@@ -697,6 +715,7 @@ class BroadJobSearch:
             except Exception as exc:  # never fail the whole run for one source type
                 failures.append(f"company boards: {type(exc).__name__}")
         cap = {50: 8, 100: 15, 200: 25}.get(pool_size, 15)
+        discovered_boards = [b for b in discovered_boards if f"ats:{b['ats']}" not in self.skip]
         if include_ats and discovered_boards:
             new_boards = discovered_boards[:cap]
             note(f"Reading {len(new_boards)} newly discovered public job boards")
@@ -721,6 +740,12 @@ class BroadJobSearch:
             note(f"Company boards returned {len(ats_jobs)} openings from "
                  f"{sum(1 for e in ats_coverage if str(e['status']).startswith('ok'))} of {len(ats_coverage)} boards")
         cov.set("ats_openings", len(ats_jobs))
+        # Incremental scan: boards read completely tell us which stored vacancies disappeared.
+        from app.services.verification import reconcile_boards
+        reconciliation = reconcile_boards(self.store, ats_jobs, ats_coverage)
+        if reconciliation["checked"]:
+            note(f"Board reconciliation: {reconciliation['still_listed']} still listed, {reconciliation['missing_once']} "
+                 f"missing once, {reconciliation['closed']} closed after two misses")
 
         # ---------------------------------------------------------- Stage B
         check_cancel()
@@ -862,6 +887,7 @@ class BroadJobSearch:
             "pages_fetched": cov.funnel.get("pages_fetched", 0), "sources_found": raw_total,
             "coverage": sorted(coverage.values(), key=lambda entry: (-entry.get("results", 0), entry["platform"])),
             "funnel": funnel, "acquisition": acquisition, "resources": resources,
+            "reconciliation": reconciliation, "skipped_sources": self.skip,
             "intent": intent, "employer_discovery": {k: v for k, v in (discovery_summary or {}).items()
                                                       if k not in {"companies", "career_listings"}} or None,
             "employers_considered": len(companies) + len(discovered_boards),
@@ -908,6 +934,8 @@ class BroadJobSearch:
             if employer and len(employer) <= 50 and _platform(employer.casefold()) not in PLATFORM_NAMES.values():
                 names[employer] += 1
         wanted = [intent["company"]] if intent.get("company") else []
+        if "employers:resolution" in self.skip:
+            budget["searches"] = 0
         limit = {50: 2, 100: 4, 200: 6}.get(pool_size, 4)
         for name, _count in names.most_common(40):
             if len(wanted) >= limit + len(wanted[:1]):
@@ -960,7 +988,8 @@ class BroadJobSearch:
                     rep = cov.report(name, Category.EMPLOYER_DISCOVERY, "employer resolution")
                     rep.finish(SourceState.NO_RESULTS, failure="official domain not found in search results")
         # 2) stored employers whose discovery is due (never run, or retry time reached)
-        due = self.store.employers_due_for_discovery(limit={50: 2, 100: 3, 200: 5}.get(pool_size, 3))
+        due = [] if "career:discovery" in self.skip else \
+            self.store.employers_due_for_discovery(limit={50: 2, 100: 3, 200: 5}.get(pool_size, 3))
         targets = resolved + [{"name": e["name"], "website": e["website"], "employer_id": e["id"],
                                "career_discovery": e.get("career_discovery")} for e in due
                               if e["id"] not in {r.get("employer_id") for r in resolved}]
@@ -995,6 +1024,8 @@ class BroadJobSearch:
         pages = [e for e in self.store.employers(limit=1000) if e.get("career_outcome") == "career_verified"
                  and e.get("career_url") and not (e.get("ats_provider") in readable and e.get("ats_slug"))
                  and e["id"] not in {t.get("employer_id") for t in targets}][:{50: 3, 100: 6, 200: 10}.get(pool_size, 6)]
+        if "career:read" in self.skip:
+            pages = []
         for employer in pages:
             check_cancel()
             rep = cov.report(employer["name"], Category.CAREER, "career page read", domain=employer.get("domain"))

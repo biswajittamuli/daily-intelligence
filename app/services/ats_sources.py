@@ -176,6 +176,56 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
     return output
 
 
+PAGE_SIZE = {"lever": 100, "smartrecruiters": 100}
+MAX_PAGES = 30
+
+
+def _page_url(company: dict[str, str], offset: int) -> str:
+    base = _endpoint(company)
+    if company["ats"] == "lever":
+        return f"{base}&skip={offset}&limit={PAGE_SIZE['lever']}"
+    if company["ats"] == "smartrecruiters":
+        return base.replace("limit=100", f"limit={PAGE_SIZE['smartrecruiters']}&offset={offset}")
+    return base
+
+
+async def _read_all_pages(client: httpx.AsyncClient, company: dict[str, str]) -> tuple[list[dict[str, Any]], int, str | None]:
+    """Enumerate a board completely. Returns (jobs, pages read, error status or None).
+
+    Greenhouse, Ashby, Workable and Recruitee return every posting in one response. Lever and
+    SmartRecruiters are paged (skip/limit, offset/limit); pages are read until a short page, the
+    reported total, or MAX_PAGES. A failure after the first page is reported as partial.
+    """
+    jobs: list[dict[str, Any]] = []
+    paged = company["ats"] in PAGE_SIZE
+    offset, pages = 0, 0
+    while True:
+        response = await client.get(_page_url(company, offset) if paged else _endpoint(company))
+        pages += 1
+        if response.status_code in {401, 403, 429}:
+            status = f"blocked ({response.status_code})"
+            return jobs, pages, status if not jobs else f"partial: {status} on page {pages}"
+        if response.status_code == 404:
+            return jobs, pages, "board not found (404)" if not jobs else f"partial: 404 on page {pages}"
+        if response.status_code >= 400:
+            if not jobs:
+                response.raise_for_status()
+            return jobs, pages, f"partial: HTTP {response.status_code} on page {pages}"
+        payload = response.json()
+        page_jobs = _parse(company, payload)
+        jobs.extend(page_jobs)
+        if not paged:
+            return jobs, pages, None
+        size = PAGE_SIZE[company["ats"]]
+        raw_count = len(payload) if isinstance(payload, list) else len((payload or {}).get("content") or [])
+        total = (payload or {}).get("totalFound") if isinstance(payload, dict) else None
+        offset += size
+        if raw_count < size or (total is not None and offset >= int(total)):
+            return jobs, pages, None
+        if pages >= MAX_PAGES:
+            return jobs, pages, f"partial: stopped after {MAX_PAGES} pages"
+
+
 def company_slug(company: dict[str, str]) -> str:
     return company.get("slug", "")
 
@@ -213,31 +263,31 @@ async def fetch_company_jobs(companies: list[dict[str, Any]], *, timeout: float 
         if cached and time.time() - cached[0] < CACHE_SECONDS:
             results.extend(cached[1])
             coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
-                             "status": "ok (cached)", "results": len(cached[1])})
+                             "status": "ok (cached)", "results": len(cached[1]), "ats": company["ats"],
+                             "slug": company["slug"], "complete": True})
             return
         async with semaphore:
             if cancel:
                 cancel()
             try:
-                response = await client.get(_endpoint(company))
-                if response.status_code in {401, 403, 429}:
-                    coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
-                                     "status": f"blocked ({response.status_code})", "results": 0})
-                    return
-                if response.status_code == 404:
-                    coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
-                                     "status": "board not found (404)", "results": 0})
-                    return
-                response.raise_for_status()
-                jobs = _parse(company, response.json())
+                jobs, pages, error = await _read_all_pages(client, company)
             except (httpx.HTTPError, ValueError) as exc:
                 coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
-                                 "status": f"error: {type(exc).__name__}", "results": 0})
+                                 "status": f"error: {type(exc).__name__}", "results": 0,
+                                 "ats": company["ats"], "slug": company["slug"]})
                 return
-        _CACHE[key] = (time.time(), jobs)
+            if error:
+                coverage.append({"platform": company["name"], "method": f"{company['ats']} API", "status": error,
+                                 "results": len(jobs), "pages": pages, "ats": company["ats"], "slug": company["slug"]})
+                if not jobs:
+                    return
+        if not error:  # partial reads are never cached, so the next run retries the whole board
+            _CACHE[key] = (time.time(), jobs)
         results.extend(jobs)
-        coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
-                         "status": "ok", "results": len(jobs)})
+        if not error:
+            coverage.append({"platform": company["name"], "method": f"{company['ats']} API",
+                             "status": "ok", "results": len(jobs), "pages": pages,
+                             "ats": company["ats"], "slug": company["slug"], "complete": True})
         progress(f"{company['name']}: {len(jobs)} openings")
 
     try:
