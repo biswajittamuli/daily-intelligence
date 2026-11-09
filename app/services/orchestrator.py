@@ -38,7 +38,13 @@ class JobsAdapter:
     async def acquire(self, ctx: AcquisitionContext) -> AdapterResult:
         from app.services.broad_search import BroadJobSearch
         pool = int(ctx.preferences.get("jobs", {}).get("pool_size") or 100)
-        summary = await BroadJobSearch(ctx.settings, ctx.store, ctx.preferences, skip=ctx.skip).run(
+        # A full or scheduled run also discovers new employers once a day (startup hubs rotate daily).
+        employers = None
+        if ctx.mode != "targeted" and ctx.store.get_preference("last_employer_discovery") != date.today().isoformat():
+            employers = True
+            ctx.store.set_preference("last_employer_discovery", date.today().isoformat())
+        summary = await BroadJobSearch(ctx.settings, ctx.store, ctx.preferences, skip=ctx.skip,
+                                       discover_employers=employers).run(
             ctx.request, pool_size=pool, progress=ctx.progress, cancel_event=ctx.cancel_event)
         reports = (summary.get("acquisition") or {}).get("sources") or []
         return AdapterResult(self.name, "complete" if summary.get("status") in {"complete", "empty"} else "failed",

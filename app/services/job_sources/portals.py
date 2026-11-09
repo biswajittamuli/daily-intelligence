@@ -62,6 +62,10 @@ PORTALS: list[PortalPolicy] = [
     PortalPolicy("Internshala", ("internshala.com",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app."),
     PortalPolicy("Apna", ("apna.co",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app."),
     PortalPolicy("Shine", ("shine.com",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app."),
+    PortalPolicy("iimjobs", ("iimjobs.com",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app."),
+    PortalPolicy("WorkIndia", ("workindia.in",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app."),
+    PortalPolicy("Hasjob", ("hasjob.co",), PROVIDER_FETCH, "Public Atom feed (hasjob.co/feed)",
+                 "Read through its public feed; robots.txt respected."),
     PortalPolicy("startup.jobs", ("startup.jobs",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app.", "Global"),
     PortalPolicy("Talent.com", ("talent.com",), PROVIDER_FETCH, "No public API", "Terms not reviewed in-app.", "Global"),
 ]

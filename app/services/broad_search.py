@@ -220,7 +220,8 @@ class BroadJobSearch:
                  retriever: Any | None = None, provider: Any | None = None,
                  ats_fetcher: Callable[..., Any] | None = None, http: Any | None = None,
                  browser: Any | None = None, direct_fetch: bool | None = None,
-                 skip: dict[str, str] | None = None) -> None:
+                 skip: dict[str, str] | None = None, discover_employers: bool | None = None,
+                 feeds: list[Any] | None = None) -> None:
         self.settings = settings
         self.store = store
         self.preferences = preferences
@@ -233,6 +234,8 @@ class BroadJobSearch:
         self._direct = (retriever is None) if direct_fetch is None else direct_fetch
         # Source ids the user disabled or that are backing off after repeated failures (registry ids).
         self.skip = dict(skip or {})
+        self._discover_employers = discover_employers
+        self._feeds = feeds
 
     # ------------------------------------------------------------------ plan
     def plan(self, request: str, pool_size: int) -> dict[str, Any]:
@@ -314,6 +317,16 @@ class BroadJobSearch:
                 pair = cities[(index * 2) % len(cities):(index * 2) % len(cities) + 2]
                 batches.append({"platform": "City search", "method": "MCP web search", "group": "city",
                                 "queries": [f"{role} {level} jobs {city}".strip() for city in pair]})
+        # 5) Indian startup hubs (rotates across runs so every hub is covered over a few days)
+        hubs = ["Bengaluru", "Hyderabad", "Pune", "Mumbai", "Delhi NCR", "Chennai", "Kochi", "Ahmedabad", "Jaipur"]
+        start = int(self.store.get_preference("startup_hub_rotation", 0) or 0) % len(hubs)
+        rotated = hubs[start:] + hubs[:start]
+        if intent["city"]:
+            rotated = [intent["city"]] + [h for h in rotated if h.casefold() != intent["city"].casefold()]
+        for index, role in enumerate(variants[:3]):
+            pair = rotated[index * 2:index * 2 + 2]
+            batches.append({"platform": "Startup hubs", "method": "MCP web search", "group": "startup",
+                            "hubs": pair, "queries": [f"{role} startup jobs {city} {level}".strip() for city in pair]})
         if not intent["remote"]:
             for role in variants[:2]:
                 batches.append({"platform": "Remote search", "method": "MCP web search", "group": "remote",
@@ -447,8 +460,9 @@ class BroadJobSearch:
                     max_fetch_urls=20, mcp_timeout=max(self.settings.mcp_timeout, 45.0)))
                 await retriever.__aenter__()
 
-            if (intent["startup"] or intent["funded"] or jobs_pref.get("discover_employers")) \
-                    and "employers:discovery" not in self.skip:
+            wants_employers = self._discover_employers if self._discover_employers is not None else \
+                bool(intent["startup"] or intent["funded"] or jobs_pref.get("discover_employers"))
+            if wants_employers and "employers:discovery" not in self.skip:
                 from app.services.employer_discovery import EmployerDiscovery
                 note("Discovering employers (startup publications, directories, VC portfolios, job platforms)")
                 t0 = time.perf_counter()
@@ -542,6 +556,9 @@ class BroadJobSearch:
                 if index < plan["search_calls"]:
                     await asyncio.sleep(0.6)
             timings["search_s"] = round(time.perf_counter() - t0, 1)
+            if any(b.get("group") == "startup" and b.get("hubs") for b in plan["batches"]):
+                self.store.set_preference("startup_hub_rotation",
+                                          int(self.store.get_preference("startup_hub_rotation", 0) or 0) + 2)
             cov.set("search_results", len(mcp_results))
 
             # ------------------------------------------- classify results
@@ -650,6 +667,25 @@ class BroadJobSearch:
             if harvested:
                 note(f"Expanded index pages into {len(harvested)} individual listings")
             cov.add("pages_fetched", fetched_pages)
+
+            # ------------------------------------------------- public feeds
+            if self._direct and http is not None:
+                from app.services.job_sources.feeds import read_feeds
+                feed_items, feed_reports = await read_feeds(http, feeds=self._feeds, skip=self.skip)
+                for entry in feed_reports:
+                    feed = entry["feed"]
+                    rep = cov.report(feed.name, Category.PORTAL, "public feed", domain=feed.url)
+                    rep.listings += entry["count"]
+                    rep.http_status = entry.get("http_status")
+                    rep.fetched += int(entry["state"] == SourceState.EXTRACT_OK)
+                    rep.finish(entry["state"], failure=entry.get("reason"))
+                    for item in feed_items:
+                        if item.get("feed_id") == feed.source_id:
+                            tag(item, rep)
+                if feed_items:
+                    note(f"Public feeds returned {len(feed_items)} listings")
+                harvested.extend(feed_items)
+                cov.add("pages_fetched", sum(1 for e in feed_reports if e.get("http_status")))
 
             # ------------------- unknown employers, career pages, rediscovery
             if self._direct and http is not None and not {"career:discovery", "employers:resolution"} <= set(self.skip):
@@ -1176,7 +1212,9 @@ class BroadJobSearch:
                  "requisition_id": link.get("requisition_id"),
                  "skills": link.get("skills") or find_skills(f"{link['title']} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": urlparse(link["url"]).hostname, "_via": link.get("_via"),
-                 "discovered_via": "company career page" if career else "index page",
+                 "discovered_via": "company career page" if career else ("public feed" if link.get("feed_id") else "index page"),
+                 "date_source": link.get("date_source") or ("career page" if career and link.get("posted_date") else
+                                                            "listing text (relative date)" if link.get("posted_date") else None),
                  "employer_id": link.get("employer_id"), "source_kind": "job_listing" if career else "harvested",
                  "extraction_method": link.get("extraction_method") or ("career page link" if career else "index page link"),
                  "application_url": link["url"] if career else None,

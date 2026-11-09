@@ -44,7 +44,9 @@ SOURCE_QUERIES: dict[str, list[str]] = {
         "site:economictimes.indiatimes.com {topic} startup raises funding India",
     ],
     "directories_accelerators": [
-        "site:ycombinator.com companies India {topic}",
+        "site:ycombinator.com/companies India {topic} hiring",
+        "{topic} startups {city} hiring engineers",
+        "site:tracxn.com {topic} startups {city}",
         "site:startupindia.gov.in {topic} startup",
         "Antler India portfolio {topic} startups",
         "100X.VC portfolio {topic} startups India",
@@ -58,6 +60,7 @@ SOURCE_QUERIES: dict[str, list[str]] = {
     ],
     "job_platforms": [
         "site:wellfound.com {topic} startups India hiring",
+        "{topic} startup careers page {city} software engineer",
         "site:workatastartup.com India {topic}",
         "site:cutshort.io {topic} startup jobs",
         "site:instahyre.com {topic} startup",
@@ -269,7 +272,11 @@ class EmployerDiscovery:
         month = date.today().strftime("%B %Y")
         categories = categories or list(SOURCE_QUERIES)
         # Round-robin queries across categories so a small budget still covers each kind.
-        pools = {cat: [q.format(topic=topic, month=month) for q in SOURCE_QUERIES[cat]] for cat in categories}
+        hubs = ["Bengaluru", "Hyderabad", "Pune", "Mumbai", "Delhi NCR", "Chennai", "Kochi", "Ahmedabad", "Jaipur"]
+        turn = int(self.store.get_preference("employer_hub_rotation", 0) or 0)
+        city = hubs[turn % len(hubs)]
+        self.store.set_preference("employer_hub_rotation", turn + 1)
+        pools = {cat: [q.format(topic=topic, month=month, city=city) for q in SOURCE_QUERIES[cat]] for cat in categories}
         batches: list[dict[str, Any]] = []
         while any(pools.values()) and len(batches) < search_calls:
             for cat in categories:
@@ -470,6 +477,7 @@ class EmployerDiscovery:
         for company, result in zip(targets, results):
             company["career_discovery_result"] = result
             text = str(result.pop("homepage_text", "") or "")
+            company["city"] = company.get("city") or _city_from(text[:20000])
             first = normalize_name(company["name"]).split()[0] if normalize_name(company["name"]) else None
             if text and first and not re.search(re.escape(first), text, re.I) and \
                     not re.search(re.escape(first), str(result.get("homepage_title") or ""), re.I):
@@ -589,7 +597,17 @@ class EmployerDiscovery:
             company["classification"] = classification
             company["country"] = "India" if company.get("india") or company.get("india_site") or \
                 str(company.get("website") or "").endswith(".in") else None
-            record = {"name": company["name"], "website": company.get("website"),
+            city = company.get("city") or _city_from(" ".join(company.get("evidence") or []) + " " +
+                                                     " ".join(s.get("evidence") or "" for s in company.get("signals") or []))
+            stage = _stage_from(" ".join(s.get("title") or "" for s in company.get("signals") or []) + " " +
+                                " ".join(s.get("evidence") or "" for s in company.get("signals") or []))
+            outcome = company.get("career_outcome")
+            verification = ("career page verified" if outcome == "career_verified" else
+                            "job board verified" if company.get("ats_verified") or outcome in {"ats_identified", "jobs_endpoint"} else
+                            "website verified" if company.get("website_status") else
+                            "website rejected" if company.get("website_rejected") else "unverified")
+            record = {"name": company["name"], "website": company.get("website"), "city": city, "stage": stage,
+                      "verification_status": verification,
                       "domain": domain_of(company["website"]) if company.get("website") else None,
                       "classification": classification, "country": company["country"],
                       "career_url": company.get("career_url"), "ats_provider": company.get("ats_provider"),
@@ -708,3 +726,24 @@ def cluster_signals(signals: list[dict[str, Any]], *, window_days: int = 45) -> 
             event.pop(key, None)
     events.sort(key=lambda e: str(e.get("signal_date") or ""), reverse=True)
     return events
+
+
+_CITIES = ["Bengaluru", "Bangalore", "Hyderabad", "Pune", "Mumbai", "Delhi", "New Delhi", "Gurugram", "Gurgaon", "Noida",
+           "Chennai", "Kochi", "Ahmedabad", "Jaipur", "Kolkata", "Chandigarh", "Indore", "Coimbatore"]
+_CITY_CANON = {"bangalore": "Bengaluru", "gurgaon": "Gurugram", "new delhi": "Delhi"}
+
+
+def _city_from(text: str) -> str | None:
+    """Most-mentioned Indian city in evidence text (e.g. 'Bengaluru-based', a homepage address)."""
+    counts: dict[str, int] = {}
+    for city in _CITIES:
+        hits = len(re.findall(rf"\b{re.escape(city)}\b", text or "", re.I))
+        if hits:
+            name = _CITY_CANON.get(city.casefold(), city)
+            counts[name] = counts.get(name, 0) + hits
+    return max(counts, key=counts.get) if counts else None
+
+
+def _stage_from(text: str) -> str | None:
+    match = re.search(r"\b(pre-seed|seed|series [a-f]\b|pre-series [a-c]|angel|bridge round|ipo|acquired)", text or "", re.I)
+    return match.group(1).title().replace("Ipo", "IPO") if match else None

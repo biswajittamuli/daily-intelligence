@@ -16,6 +16,19 @@
   on two fresh complete reads → closed; cached or partial reads change nothing).
 - Re-verification selects any active listing whose last check is over 3 days old.
 
+### Phase 2: Indian company and startup coverage
+- Startup-hub search path rotating across Bengaluru, Hyderabad, Pune, Mumbai, Delhi NCR, Chennai, Kochi,
+  Ahmedabad and Jaipur; employer discovery runs once a day in full/scheduled runs with city-hub,
+  YC directory, Tracxn and career-page queries.
+- Public feed adapter (`job_sources/feeds.py`, Hasjob Atom feed; robots.txt respected; feed dates are
+  labelled "feed entry date").
+- Portal policies for iimjobs, WorkIndia and Hasjob.
+- Career discovery stage D2: common career paths (/careers, /jobs, /join-us, /work-with-us,
+  /company/careers, /open-positions) with homepage-redirect and soft-404 guards.
+- `job_sources/geo.py`: India-based / hybrid / remote from India / remote restricted elsewhere /
+  relocation / outside India — only from location evidence.
+- Employer registry (schema v8): city, stage, verification status, followed flag.
+
 ## 3.3.0 — 2026-11-09
 
 ### Audit (v3.2 run: 5,804 results → 88 stored)

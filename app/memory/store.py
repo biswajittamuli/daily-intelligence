@@ -195,7 +195,7 @@ def _loads(value: str | None, default: Any) -> Any:
         return default
 
 
-SCHEMA_VERSION = 7  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 8  # bump whenever _migrate adds tables/columns
 
 
 class Store:
@@ -254,7 +254,10 @@ class Store:
                              "retrieved_at": "TEXT", "verification_source": "TEXT"},
             "employers": {"career_discovery_json": "TEXT", "career_outcome": "TEXT", "next_discovery_at": "TEXT",
                           "discovery_attempts": "INTEGER DEFAULT 0", "last_discovery_method": "TEXT",
-                          "last_discovery_success": "TEXT"},
+                          "last_discovery_success": "TEXT",
+                          # v8: registry fields
+                          "city": "TEXT", "stage": "TEXT", "followed": "INTEGER NOT NULL DEFAULT 0",
+                          "verification_status": "TEXT"},
             "intel_items": {"region": "TEXT", "topic": "TEXT", "updated_date": "TEXT"},
         }
         for table, columns in additions.items():
@@ -1010,6 +1013,8 @@ class Store:
                      record.get("ats_slug"), record.get("career_status"), _json(record.get("discovery_sources") or []),
                      _json([name]), _json(record.get("evidence") or []), now, now, record.get("last_career_check"),
                      int(record.get("open_jobs") or 0)))
+                db.execute("UPDATE employers SET city=?, stage=?, verification_status=? WHERE id=?",
+                           (record.get("city"), record.get("stage"), record.get("verification_status"), cur.lastrowid))
                 row = db.execute("SELECT * FROM employers WHERE id=?", (cur.lastrowid,)).fetchone()
                 return self._row(row, "employers"), True
             aliases = list(dict.fromkeys((existing.get("aliases") or []) + [name]))[:10]
@@ -1028,6 +1033,9 @@ class Store:
                  record.get("ats_provider"), record.get("ats_slug"), record.get("career_status"), _json(sources),
                  _json(aliases), _json(evidence), _json(funding), now, record.get("last_career_check"),
                  int(record.get("open_jobs") or 0), int(record.get("open_jobs") or 0), existing["id"]))
+            db.execute("""UPDATE employers SET city=COALESCE(city, ?), stage=COALESCE(?, stage),
+                          verification_status=COALESCE(?, verification_status) WHERE id=?""",
+                       (record.get("city"), record.get("stage"), record.get("verification_status"), existing["id"]))
             row = db.execute("SELECT * FROM employers WHERE id=?", (existing["id"],)).fetchone()
             return self._row(row, "employers"), False
 
@@ -1379,6 +1387,14 @@ class Store:
                 (*args, max(1, min(limit, 1000)), max(0, offset)))]
         return {"session_id": session_id, "total": total, "reasons": reasons, "items": items}
 
+    def set_employer_followed(self, employer_id: int, followed: bool) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE employers SET followed=? WHERE id=?", (int(followed), employer_id))
+
+    def followed_employers(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [self._row(row, "employers") for row in db.execute("SELECT * FROM employers WHERE followed=1")]
+
     def save_career_discovery(self, employer_id: int, result: dict[str, Any]) -> None:
         """Store a career-discovery outcome (methods attempted, last success, next retry) on an employer."""
         ats = result.get("ats") or {}
@@ -1393,11 +1409,15 @@ class Store:
                           discovery_attempts=?, last_discovery_method=COALESCE(?, last_discovery_method),
                           last_discovery_success=COALESCE(?, last_discovery_success), career_status=?,
                           career_url=COALESCE(?, career_url), last_career_check=?,
+                          verification_status=CASE WHEN ? IN ('career_verified') THEN 'career page verified'
+                               WHEN ? IN ('ats_identified','jobs_endpoint') THEN 'job board verified'
+                               ELSE COALESCE(verification_status, 'website checked') END,
                           ats_provider=COALESCE(?, ats_provider),
                           ats_slug=CASE WHEN ? THEN COALESCE(?, ats_slug) ELSE ats_slug END WHERE id=?""",
                        (_json(compact), result.get("outcome"), result.get("next_retry_at"), result.get("attempts") or 1,
                         result.get("last_method"), result.get("last_success_at"), status, result.get("career_url"),
-                        result.get("checked_at"), ats.get("provider"), 1 if ats.get("readable") else 0, ats.get("slug"),
+                        result.get("checked_at"), result.get("outcome"), result.get("outcome"),
+                        ats.get("provider"), 1 if ats.get("readable") else 0, ats.get("slug"),
                         employer_id))
 
     def employers_due_for_discovery(self, *, limit: int = 10) -> list[dict[str, Any]]:

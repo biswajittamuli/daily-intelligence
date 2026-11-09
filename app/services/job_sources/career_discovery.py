@@ -291,6 +291,14 @@ class CareerDiscovery:
                    f"{len(sitemap_links)} URL(s) scanned, {len(found)} career candidate(s)")
             candidates = found
 
+        # Stage D2: common career paths, fetched politely (robots.txt), only when nothing else was found.
+        if not candidates and not ats_found and not embedded_jobs and not unavailable and blocked_state is None:
+            probed = await self._probe_paths(base, name, record)
+            if probed:
+                candidates = career_candidates([{"url": probed, "text": "careers (common path)", "label": "",
+                                                 "region": "probe"}], base) or \
+                    [{"url": probed, "text": "careers (common path)", "region": "probe", "score": 3}]
+
         # Public jobs endpoint: JSON the rendered page loaded that contains job objects.
         for response in captured_json:
             jobs = structured.jobs_from_json(response["data"], base)
@@ -450,6 +458,33 @@ class CareerDiscovery:
                f"careers title {'yes' if titled else 'no'}, careers wording {'yes' if wording else 'no'}")
         return {"url": final, "verified": verified, "ats": ats,
                 "listings": [{**job, "employer": job.get("employer") or company} for job in jobs]}
+
+    COMMON_PATHS = ("/careers", "/jobs", "/join-us", "/work-with-us", "/company/careers", "/open-positions",
+                    "/careers/", "/about/careers")
+
+    async def _probe_paths(self, base: str, company: str, record) -> str | None:
+        """Try well-known career paths on the company's own origin. A page counts only if it is not a
+        redirect back to the homepage, not a soft 404, and reads as a careers page."""
+        origin = f"{urlsplit(base).scheme}://{urlsplit(base).netloc}"
+        tried = 0
+        for path in self.COMMON_PATHS[:6]:
+            url = origin + path
+            page = await self.http.get(url)
+            tried += 1
+            if not page.ok:
+                continue
+            final_path = urlsplit(page.final_url or url).path.rstrip("/")
+            if not final_path or final_path == urlsplit(base).path.rstrip("/"):
+                continue  # redirected to the homepage
+            text = structured.visible_text(page.text, 6000)
+            if re.search(r"\b(page not found|404|doesn'?t exist|could not be found)\b", text[:1500], re.I):
+                continue
+            outcome = self._analyse(page.final_url or url, page.text, company, None, lambda *a, **k: None)
+            if outcome["verified"]:
+                record("D2", "common career paths", SourceState.EXTRACT_OK, f"{path} is a careers page")
+                return page.final_url or url
+        record("D2", "common career paths", SourceState.NO_RESULTS, f"{tried} path(s) tried")
+        return None
 
     read_career_page = _verify  # public name for re-reading a known career page
 

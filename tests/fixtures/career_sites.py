@@ -110,6 +110,16 @@ SITES: dict[str, dict[str, tuple]] = {
                                                  "<url><loc>{origin}/about</loc></url><url><loc>{origin}/careers</loc></url></urlset>"),
         "/careers": (200, HTML, page("Careers - UnlinkedCo", "<h1>Careers</h1><a href='/careers/jobs/qa-engineer-2001'>QA Engineer</a>")),
     },
+    # 13. careers page at a common path, not linked anywhere and not in a sitemap
+    "probe": {
+        "/": (200, HTML, page("ProbeCo", "<nav><a href='/about'>About</a></nav><p>" + "Payments infrastructure. " * 60 + "</p>")),
+        "/join-us": (200, HTML, page("Join us | ProbeCo", "<h1>Join our team</h1><p>We are hiring. View open roles below.</p>"
+                                     "<a href='/join-us/jobs/platform-engineer-3001'>Platform Engineer</a>")),
+    },
+    # 14. soft-404 site: every path returns the homepage with HTTP 200 (must not be taken as a careers page)
+    "soft404": {
+        "*": (200, HTML, page("Soft404Co", "<nav><a href='/about'>About</a></nav><p>" + "Logistics software. " * 60 + "</p>")),
+    },
 }
 
 
@@ -123,7 +133,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         self.hits.append(path)
-        route = self.routes.get(path)
+        route = self.routes.get(path) or (self.routes.get("*") if path != "/robots.txt" and not path.endswith(".xml") else None)
         if route is None:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain")
