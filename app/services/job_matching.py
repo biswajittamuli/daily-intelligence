@@ -227,7 +227,9 @@ NON_TECH_TITLE = _re.compile(
     r"facilities|procurement|compliance|risk analyst|copywriter|content writer|brand|"
     r"public relations|communications manager|events?|partnerships?|growth marketing|"
     r"collections|underwriter|fraud|credit analyst|kyc|aml|loan|merchandis\w*|store|warehouse|driver|nurse|teacher|gtm|go-to-market|"
-    r"strategy|strategic|operations|ops manager|program manager|product marketing|designer)\b", _re.I)
+    r"strategy|strategic|operations|ops manager|program manager|product marketing|designer|"
+    r"physician|doctor|md/do|m\.d\.|surgeon|pharmacist|dentist|veterinar\w*|clinician|radiologist|"
+    r"psychologist|therapist|lawyer|chartered accountant|people ops)\b", _re.I)
 TECH_TITLE = _re.compile(
     r"\b(engineer\w*|developer|programmer|sde|swe|scientist|data|ml|ai|machine learning|"
     r"devops|sre|platform|backend|back-end|frontend|front-end|full[- ]?stack|software|"
@@ -397,7 +399,28 @@ def relevance_gate(listing: dict[str, Any], profile: dict[str, Any] | None, pref
 
     location = str(listing.get("location") or "")
     locations = [str(item) for item in jobs_pref.get("locations") or [] if str(item).strip()]
-    location_ok, location_reason = location_fit(location, str(listing.get("remote") or ""), locations, title=title)
+    # v4.3: country-level geography is a hard, fail-closed filter based on evidence (location, remote wording,
+    # title, description, source restrictions). City preferences then narrow India-based roles only.
+    from app.services.vacancy_validation import classify_geography, target_country
+    raw = listing.get("raw") if isinstance(listing.get("raw"), dict) else {}
+    target = target_country(preferences)
+    geo = classify_geography(location=location, remote=listing.get("remote"), title=title,
+                             text=str(listing.get("raw_text") or raw.get("raw_text") or "")[:5000],
+                             restrictions=listing.get("location_restrictions", raw.get("location_restrictions")),
+                             target=target, accept_relocation=bool(jobs_pref.get("accept_relocation")))
+    if geo["kind"] == "remote_not_india":
+        location_ok, location_reason = False, f"Remote role restricted to another country or region ({geo['evidence']})"
+    elif geo["kind"] in {"outside", "relocation"} and geo["excluded"]:
+        location_ok, location_reason = False, f"Outside target geography: {target} ({geo['evidence']})"
+    elif geo["eligible"]:
+        location_ok, location_reason = True, None
+        country_wide = any(" ".join(str(item).split()).casefold() == target.casefold() for item in locations)
+        if geo["kind"] == "india" and locations and not country_wide:
+            fits, reason = location_fit(location, str(listing.get("remote") or ""), locations, title=title)
+            if fits is False:
+                location_ok, location_reason = False, reason
+    else:
+        location_ok, location_reason = None, geo["label"]
     if location_ok is False and not excluded:
         excluded = location_reason
 
@@ -418,7 +441,7 @@ def relevance_gate(listing: dict[str, Any], profile: dict[str, Any] | None, pref
         if not excluded:
             excluded = "Role does not match your target roles"
     return {"excluded": excluded, "role_score": role_score, "role_reason": role_reason,
-            "location_ok": location_ok, "location_reason": location_reason}
+            "location_ok": location_ok, "location_reason": location_reason, "geography": geo}
 
 
 def rank_listing(listing: dict[str, Any], profile: dict[str, Any] | None,

@@ -18,6 +18,17 @@ DEFAULT_PORTALS = {
     "Instahyre": {"domain": "instahyre.com", "enabled": True},
     "Cutshort": {"domain": "cutshort.io", "enabled": True},
     "Hirist": {"domain": "hirist.tech", "enabled": False},
+    # v4.3: Indian portals queried through search (rotating, three per call)
+    "Internshala": {"domain": "internshala.com", "enabled": True},
+    "Freshersworld": {"domain": "freshersworld.com", "enabled": True},
+    "TimesJobs": {"domain": "timesjobs.com", "enabled": True},
+    "Shine": {"domain": "shine.com", "enabled": True},
+    "Apna": {"domain": "apna.co", "enabled": True},
+    "YC Jobs": {"domain": "ycombinator.com/jobs", "enabled": True},
+    "iimjobs": {"domain": "iimjobs.com", "enabled": False},
+    "WorkIndia": {"domain": "workindia.in", "enabled": False},
+    "Talent.com": {"domain": "talent.com", "enabled": False},
+    "startup.jobs": {"domain": "startup.jobs", "enabled": False},
     "Company career pages": {"domain": "", "enabled": True},
 }
 

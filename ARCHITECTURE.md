@@ -7,6 +7,28 @@ single-file SPA, a local SQLite store, a local Ollama model, and dynamically
 discovered Parallel MCP search/fetch tools. There is no cloud LLM and no model
 downloads.
 
+## v4.3 validation gate
+
+```text
+candidate (any source)
+  -> normalise        entity decoding, CTA/duplicate-tail cleanup (never applied to URLs)
+  -> classify_document  vacancy | internship | graduate | government | psu
+                        | talent_network | candidate_registration | careers_home | search_results
+                        | category_page | article | company_news | agency_profile | other
+  -> relevance_gate   classify_geography (fail-closed, target country configurable) is a hard filter
+  -> assess           resume match (only for vacancies inside the target geography)
+  -> dedup            same employer + title merges only when city / requisition id do not conflict
+  -> store            sources_json keeps every sighting; job_status_history records transitions
+read time: validate() -> group (verified_strong | verified_good | verified_low | stretch | pending
+                                | outside_geography | not_vacancy | closed), freshness from publication date only
+```
+
+`app/services/vacancy_validation.py` holds every stage (no I/O). `rescore_stored` writes the result to
+`job_listings.document_type / geo_class / vacancy_status / verification_level / validation_json` (schema v11).
+Job-search APIs live in `app/services/job_sources/job_apis.py` (Himalayas, optional Adzuna and SerpApi
+Google Jobs). A source is "successful" only when it produced usable vacancies; portals limited by their
+terms report "search_only".
+
 ## v4 unified discovery
 
 ```text

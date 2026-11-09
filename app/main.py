@@ -72,7 +72,55 @@ def run_mcp_diagnostics(*, worker: bool = False) -> int:
     return 0 if report.get("ok") else 1
 
 
+def _store():
+    from app.memory.store import Store
+    return Store(Settings.from_env().data_dir)
+
+
+def run_discover(request: str, mode: str) -> int:
+    """Run one full discovery (jobs, government, exams, re-verification) without the UI, then print the report."""
+    from app.services.broad_search import rescore_stored
+    from app.services.orchestrator import DiscoveryOrchestrator
+    from app.services.preferences import load_preferences
+
+    settings = Settings.from_env()
+    store = _store()
+    preferences = load_preferences(store)
+    report = asyncio.run(DiscoveryOrchestrator(settings, store, preferences).discover(
+        request, mode=mode, progress=lambda message: print(f"  · {message}", flush=True)))
+    rescore_stored(store, preferences)
+    print(json.dumps({"metrics": report.get("metrics"), "adapters": report.get("adapters"),
+                      "reverify": report.get("reverify"), "session_id": report.get("session_id")}, indent=2))
+    return 0
+
+
+def sources_report(as_json: bool) -> int:
+    """Source-by-source health of the most recent discovery run, joined with persisted reliability."""
+    store = _store()
+    session = next((s for s in store.search_sessions(60) if s.get("category") == "discovery" and s.get("summary")), None)
+    if session is None:
+        print("No discovery run recorded yet. Run: python -m app.main discover")
+        return 1
+    sources = session["summary"].get("sources") or []
+    if as_json:
+        print(json.dumps({"run_at": session.get("created_at"), "sources": sources}, indent=2))
+        return 0
+    print(f"Discovery run {session.get('created_at')}")
+    print(f"{'source':30} {'method':36} {'state':34} {'results':>7} {'vacancies':>9} {'unique':>6} "
+          f"{'stored':>6} {'verified':>8} {'rejected':>8}  last success / reason")
+    for row in sources:
+        tail = row.get("reason") or (str(row.get("last_success_at") or "")[:16] or "")
+        print(f"{row['name'][:30]:30} {str(row.get('method') or '')[:36]:36} {row['state_label'][:34]:34} "
+              f"{row.get('results', 0):>7} {row.get('listings', 0):>9} {row.get('unique', 0):>6} "
+              f"{row.get('stored', 0):>6} {row.get('verified', 0):>8} {row.get('rejected', 0):>8}  {tail[:90]}")
+    metrics = session["summary"].get("metrics") or {}
+    print("\n" + ", ".join(f"{k}={v}" for k, v in metrics.items()))
+    return 0
+
+
 def main() -> int:
+    from app import secrets_store
+    secrets_store.apply_to_environment()  # keys saved in Settings → API keys apply to CLI runs too
     parser = argparse.ArgumentParser(prog="daily-intelligence")
     commands = parser.add_subparsers(dest="command", required=True)
     models = commands.add_parser("models", help="Inspect local Ollama models")
@@ -89,7 +137,16 @@ def main() -> int:
     research = commands.add_parser("research", help="Research an arbitrary question using local Ollama and Parallel MCP")
     research.add_argument("request", nargs="+", help="Question or research request")
     research.add_argument("--fetch-limit", type=int, default=5)
+    discover = commands.add_parser("discover", help="Run one full discovery without the UI and print the report")
+    discover.add_argument("request", nargs="*", help="Optional request, e.g. 'AI engineer internships'")
+    discover.add_argument("--mode", default="full")
+    report = commands.add_parser("sources-report", help="Source-by-source health of the last discovery run")
+    report.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.command == "discover":
+        return run_discover(" ".join(args.request), args.mode)
+    if args.command == "sources-report":
+        return sources_report(args.json)
     if args.command == "models":
         return asyncio.run(show_models(json_worker=args.json_worker))
     if args.command == "serve":

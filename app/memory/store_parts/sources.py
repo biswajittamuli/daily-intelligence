@@ -67,7 +67,7 @@ class SourcesMixin:
                 consecutive = ((row["consecutive_failures"] if row else 0) + 1) if failed else 0
                 values = {
                     "last_attempt_at": now, "last_state": state,
-                    "last_success_at": now if state in {"successful", "partial", "no_results"} else (row["last_success_at"] if row else None),
+                    "last_success_at": now if state in {"successful", "partial"} else (row["last_success_at"] if row else None),
                     "last_result_at": now if run.get("results") or run.get("listings") else (row["last_result_at"] if row else None),
                     "last_failure_reason": (run.get("failure") or (row["last_failure_reason"] if row else None)) if failed
                     else (row["last_failure_reason"] if row else None),

@@ -214,7 +214,8 @@ def _exclusion_name(reason: str) -> str:
     from app.services.job_sources.models import Exclusion
     mapping = {"Job search page": Exclusion.SEARCH_PAGE, "Not a technical role": Exclusion.NON_TECH,
                "Role does not match": Exclusion.IRRELEVANT_ROLE, "Remote role restricted": Exclusion.REMOTE_RESTRICTED,
-               "Outside your preferred": Exclusion.GEOGRAPHY}
+               "Outside your preferred": Exclusion.GEOGRAPHY, "Outside target geography": Exclusion.GEOGRAPHY,
+               "Not a vacancy": Exclusion.NOT_VACANCY}
     return next((value for prefix, value in mapping.items() if reason.startswith(prefix)), reason)
 
 
@@ -290,10 +291,14 @@ class BroadJobSearch:
                    if domain and portal_id(domain) not in self.skip]
         search_calls = {50: 4, 100: 8, 200: 12}.get(pool_size, max(3, min(14, math.ceil(pool_size / 15))))
         batches: list[dict[str, Any]] = []
-        # 1) portal site: queries — two portals per call, rotated across role variants (search index only)
-        for index in range(0, len(portals), 2):
-            pair = portals[index:index + 2]
-            role = variants[(index // 2) % len(variants)] if variants else "software engineer"
+        # 1) portal site: queries — three portals per call. The starting portal rotates between runs, so every
+        #    configured portal is queried over consecutive runs even when this run's budget covers only a few.
+        if portals:
+            offset = int(self.store.get_preference("portal_rotation", 0) or 0) % len(portals)
+            portals = portals[offset:] + portals[:offset]
+        for index in range(0, len(portals), 3):
+            pair = portals[index:index + 3]
+            role = variants[(index // 3) % len(variants)] if variants else "software engineer"
             batches.append({"platform": " + ".join(_platform(domain) for domain in pair),
                             "platforms": [_platform(domain) for domain in pair], "domains": pair,
                             "group": "portal", "method": "MCP site search",
@@ -539,12 +544,16 @@ class BroadJobSearch:
                         portal_report.search_results += hits
                         portal_report.detail = policy.reason if policy else None
                         portal_report.finish(SourceState.SEARCH_OK if hits else SourceState.NO_RESULTS)
+                        for item in results:
+                            if _platform(str(item.get("domain") or "")) == platform:
+                                tag(item, portal_report)
                 else:
                     cover(batch["platform"], batch["method"], queries=len(batch["queries"]), results=len(results),
                           status="ok" if results else "no results returned")
                 for item in results:
                     platform = _platform(str(item.get("domain") or ""))
                     item["_via"] = platform if portal_batch else batch["platform"]
+                    item["_queries"] = set(batch["queries"][:2])
                     tag(item, report)
                     if platform in PLATFORM_NAMES.values() and (not portal_batch or platform not in batch["platforms"]):
                         cover(platform, "found via open/career searches", results=1)
@@ -555,10 +564,15 @@ class BroadJobSearch:
                         portal_report.search_results += 1
                         portal_report.detail = policy.reason if policy else None
                         portal_report.finish(SourceState.SEARCH_OK)
+                        tag(item, portal_report)
                 mcp_results.extend(results)
                 if index < plan["search_calls"]:
                     await asyncio.sleep(0.6)
             timings["search_s"] = round(time.perf_counter() - t0, 1)
+            queried_portals = sum(len(b.get("domains") or []) for b in plan["batches"] if b.get("group") == "portal")
+            if queried_portals:
+                self.store.set_preference("portal_rotation",
+                                          int(self.store.get_preference("portal_rotation", 0) or 0) + queried_portals)
             if any(b.get("group") == "startup" and b.get("hubs") for b in plan["batches"]):
                 self.store.set_preference("startup_hub_rotation",
                                           int(self.store.get_preference("startup_hub_rotation", 0) or 0) + 2)
@@ -690,6 +704,31 @@ class BroadJobSearch:
                 harvested.extend(feed_items)
                 cov.add("pages_fetched", sum(1 for e in feed_reports if e.get("http_status")))
 
+            # --------------------------------------------- job-search APIs (v4.3)
+            if self._direct and http is not None:
+                from app.services.job_sources.job_apis import read_job_apis
+                api_items, api_reports = await read_job_apis(http, plan["variants"], location=plan["location"],
+                                                             skip=self.skip)
+                for entry in api_reports:
+                    api = entry["api"]
+                    if entry["state"] == "not_configured":
+                        cover(api.name, "job API", status="not configured (optional key)")
+                        continue
+                    rep = cov.report(api.name, Category.PORTAL, "job API", domain=api.source_id)
+                    rep.queries += entry.get("queries") or 0
+                    rep.listings += entry["count"]
+                    rep.http_status = entry.get("http_status")
+                    rep.fetched += int(entry["count"] > 0)
+                    rep.finish(entry["state"], failure=entry.get("reason"))
+                    cover(api.name, "job API", queries=entry.get("queries") or 0, listings=entry["count"],
+                          status="ok" if entry["count"] else (entry.get("reason") or "no results"))
+                    for item in api_items:
+                        if item.get("api_id") == api.source_id:
+                            tag(item, rep)
+                if api_items:
+                    note(f"Job APIs returned {len(api_items)} listings")
+                harvested.extend(api_items)
+
             # ------------------- unknown employers, career pages, rediscovery
             if self._direct and http is not None and not {"career:discovery", "employers:resolution"} <= set(self.skip):
                 t0 = time.perf_counter()
@@ -818,7 +857,7 @@ class BroadJobSearch:
         cov.set("relevant_jobs", len(ranked) + len(ineligible))
         is_startup, startup_ids = self._startup_test(intent)
         shortlist, stretch = self._select_shortlist(ranked, ineligible, is_startup, pool_size, jobs_pref, cov)
-        records = [self._record(item) for item in shortlist]
+        records = [self._record(item) for item in shortlist + list(getattr(self, "_not_vacancy_kept", []))[:50]]
         saved = self.store.upsert_jobs(records)
         cov.set("stored_jobs", len(saved))
         self.store.link_jobs_to_employers()
@@ -903,7 +942,26 @@ class BroadJobSearch:
         t0 = time.perf_counter()
         active_profile = next((r.get("profile") for r in resumes if r.get("is_default")
                                and r.get("status", "processed") == "processed"), None)
+        from app.services.vacancy_validation import classify_document
+        not_vacancy_kept: list[dict[str, Any]] = []
         for item in candidates:
+            # Stage: document classification. A non-vacancy is never resume-scored.
+            document = classify_document(item)
+            item["_document"] = document
+            if not document["is_vacancy"]:
+                reason = f"Not a vacancy ({document['label']})"
+                excluded[reason] += 1
+                not_vacancy += 1
+                item["_exclusion_detail"] = document["reason"]
+                cov.exclude(item, _exclusion_name("Not a vacancy"), "document classification")
+                item["_rejected"] = True
+                if document["separate_section"]:
+                    # Talent networks / registrations are kept for a separate section, never ranked.
+                    item.update({"match_score": None, "match_reason": f"{document['label']}: {document['reason']}",
+                                 "eligibility": {"tier": "not_vacancy", "excluded_reason": document["reason"],
+                                                 "document_type": document["type"]}})
+                    not_vacancy_kept.append(item)
+                continue
             gate = relevance_gate(item, active_profile, self.preferences, targets=variants)
             if gate["excluded"]:
                 # Cheap rejection first: no requirement extraction or assessment for clearly irrelevant openings.
@@ -929,6 +987,7 @@ class BroadJobSearch:
             else:
                 ranked.append(item)
         timings["ranking_s"] = round(time.perf_counter() - t0, 1)
+        self._not_vacancy_kept = not_vacancy_kept
         return ranked, ineligible, excluded, gate_counts, not_vacancy
 
     def _startup_test(self, intent: dict[str, Any]) -> tuple[Callable[[dict[str, Any]], bool], set]:
@@ -987,7 +1046,10 @@ class BroadJobSearch:
             budget["searches"] -= 1
             return await retriever.search(queries[:4], "Find each company's official careers page or public job board.")
 
-        discovery = CareerDiscovery(http, browser=browser, search=search)
+        from app.services.job_sources import firecrawl
+        use_firecrawl = firecrawl.configured(self.preferences) and "extractor:firecrawl" not in self.skip
+        discovery = CareerDiscovery(http, browser=browser, search=search,
+                                    firecrawl=firecrawl.scrape if use_firecrawl else None)
         # 1) unknown employers named in this run's results (and the company named in the request)
         names = Counter()
         for item in items:
@@ -1174,7 +1236,7 @@ class BroadJobSearch:
         from app.services.job_sources.models import Exclusion, utc_now
         today = date.today()
         by_url: dict[str, dict[str, Any]] = {}
-        by_title: dict[tuple[str, str], dict[str, Any]] = {}
+        by_title: dict[tuple[str, str], list[dict[str, Any]]] = {}
         duplicates = 0
         retrieved = utc_now()
 
@@ -1183,22 +1245,61 @@ class BroadJobSearch:
             return (re.sub(r"[^a-z0-9]+", " ", title.casefold()).strip(),
                     re.sub(r"[^a-z0-9]+", " ", Store._norm_company(str(item.get("employer") or ""))).strip())
 
+        from app.services.freshness import date_confidence, stronger_date
+        from app.services.vacancy_validation import _names, _target_places, clean_text, clean_title, employer_owned_url
+        india_places = _target_places("India")
+
+        def city_of(item: dict[str, Any]) -> str:
+            location = str(item.get("location") or "")
+            place = _names(location, india_places)
+            if place and place != "india":
+                return {"bangalore": "bengaluru", "gurgaon": "gurugram", "bombay": "mumbai", "new delhi": "delhi",
+                        "ncr": "delhi", "delhi ncr": "delhi", "blr": "bengaluru"}.get(place, place)
+            first = re.split(r"[,;/|]", location)[0].strip().casefold()
+            return "" if not first or re.fullmatch(r"remote|hybrid|india|anywhere|worldwide|global", first) else first
+
+        def same_opening(a: dict[str, Any], b: dict[str, Any]) -> bool:
+            """Same employer + title is the same opening only when city and requisition id do not conflict."""
+            ra, rb = a.get("requisition_id"), b.get("requisition_id")
+            if ra and rb:
+                return str(ra) == str(rb)
+            ca, cb = city_of(a), city_of(b)
+            return not (ca and cb and ca != cb)
+
         def add(item: dict[str, Any]) -> None:
             nonlocal duplicates
+            # Extraction normalisation: entity decoding (never applied to URLs) and call-to-action cleanup.
+            item["title"] = clean_title(item.get("title")) or "Untitled role"
+            for field in ("employer", "location"):
+                item[field] = clean_text(item.get(field))
             key = canonicalize_url(item["url"])
             tkey = title_key(item)
-            existing = by_url.get(key) or (by_title.get(tkey) if tkey[1] and tkey[0] else None)
+            existing = by_url.get(key)
+            if existing is None and tkey[1] and tkey[0]:
+                existing = next((other for other in by_title.get(tkey, []) if same_opening(other, item)), None)
             source = {"platform": item.get("source_platform"), "url": item["url"], "via": item.get("_via"),
                       "method": item.get("extraction_method"), "retrieved_at": retrieved,
-                      "kind": item.get("discovered_via")}
+                      "kind": item.get("discovered_via"),
+                      **({"query": sorted(item["_queries"])[0]} if item.get("_queries") else {})}
+            extra = [dict(e, retrieved_at=retrieved) for e in item.pop("_extra_sources", None) or []]
             if existing:
                 duplicates += 1
-                if not any(s["url"] == item["url"] for s in existing["sources"]):
-                    existing["sources"].append(source)
-                for field in ("employer", "location", "posted_date", "raw_text", "employment_type", "deadline",
-                              "salary", "education", "employer_id"):
+                for entry in [source] + extra:
+                    if not any(s["url"] == entry["url"] for s in existing["sources"]):
+                        existing["sources"].append(entry)
+                for field in ("employer", "location", "raw_text", "employment_type", "deadline",
+                              "salary", "education", "employer_id", "requisition_id", "location_restrictions"):
                     if not existing.get(field) and item.get(field):
                         existing[field] = item[field]
+                new_conf = date_confidence(item.get("date_source"), item.get("posted_date"))
+                old_conf = date_confidence(existing.get("date_source"), existing.get("posted_date"))
+                if stronger_date(item.get("posted_date"), new_conf, existing.get("posted_date"), old_conf):
+                    existing["posted_date"], existing["date_source"] = item["posted_date"], item.get("date_source")
+                # The employer's own application page is the preferred destination.
+                if not existing.get("application_url") and item.get("application_url") and \
+                        employer_owned_url(str(item["application_url"]), existing.get("employer")):
+                    existing["application_url"] = item["application_url"]
+                existing.setdefault("_queries", set()).update(item.get("_queries") or ())
                 existing.setdefault("_report_keys", set()).update(item.get("_report_keys") or ())
                 if cov is not None:
                     for report_key in item.get("_report_keys") or ():
@@ -1208,10 +1309,10 @@ class BroadJobSearch:
                     cov.exclude({**item, "_exclusion_detail": f"merged into {existing['url'][:200]}"},
                                 Exclusion.DUPLICATE, "dedup")
                 return
-            item["sources"] = [source]
+            item["sources"] = [source] + [e for e in extra if e["url"] != item["url"]]
             by_url[key] = item
             if tkey[1] and tkey[0]:
-                by_title[tkey] = item
+                by_title.setdefault(tkey, []).append(item)
 
         for job in ats_jobs:
             text = str(job.get("description") or "")
@@ -1233,8 +1334,12 @@ class BroadJobSearch:
         for link in ordered:
             career = link.get("_via") == "Company career page"
             text = str(link.get("description") or link.get("context") or "")
+            api = bool(link.get("api_id"))
             add({"title": link["title"], "url": link["url"],
                  "employer": link.get("employer") or infer_employer(link["url"], link["title"])[0],
+                 "location_restrictions": link.get("location_restrictions"), "status_hint": link.get("status_hint"),
+                 "_extra_sources": link.get("extra_sources") or [], "api_id": link.get("api_id"),
+                 "_queries": {link["_query"]} if link.get("_query") else set(),
                  "location": link.get("location"), "posted_date": link.get("posted_date"),
                  "deadline": link.get("deadline"), "salary": link.get("salary"),
                  "salary_currency": link.get("salary_currency"), "education": link.get("education"),
@@ -1242,14 +1347,15 @@ class BroadJobSearch:
                  "requisition_id": link.get("requisition_id"),
                  "skills": link.get("skills") or find_skills(f"{link['title']} {text}")[:14], "raw_text": text[:8000],
                  "source_platform": urlparse(link["url"]).hostname, "_via": link.get("_via"),
-                 "discovered_via": "company career page" if career else ("public feed" if link.get("feed_id") else "index page"),
+                 "discovered_via": "company career page" if career else ("job API" if api else
+                                                                         "public feed" if link.get("feed_id") else "index page"),
                  "date_source": link.get("date_source") or (
                      "JobPosting datePosted" if str(link.get("extraction_method") or "").startswith("schema.org") and link.get("posted_date") else
                      "career page" if career and link.get("posted_date") else
                                                             "listing text (relative date)" if link.get("posted_date") else None),
                  "employer_id": link.get("employer_id"), "source_kind": "job_listing" if career else "harvested",
                  "extraction_method": link.get("extraction_method") or ("career page link" if career else "index page link"),
-                 "application_url": link["url"] if career else None,
+                 "application_url": link["url"] if career else link.get("application_url"),
                  "_report_keys": set(link.get("_report_keys") or ()),
                  "evidence": [{"text": text[:300], "source_url": link["url"]}]})
         for result in listings:
@@ -1266,9 +1372,15 @@ class BroadJobSearch:
             location = LOCATION_RE.search(f"{title} {excerpts}")
             relative = parse_relative_date(text, today)
             page_date = parse_date(result.get("publish_date"))
-            # A relative date in the listing text ("3 days ago") is better evidence than the search engine's page date.
-            posted = relative or page_date
-            date_source = "listing text (relative date)" if relative else ("search engine page date" if page_date else None)
+            # A labelled date on the fetched page ("Date: Oct 19, 2026") is best; then a relative date in the listing
+            # text ("3 days ago"); the search engine's page date is low-confidence and never makes a listing "new".
+            from app.services.job_sources.structured import labelled_dates
+            labelled = parse_date(labelled_dates(content, is_html=False)["posted_date"]) if content else None
+            if labelled and labelled > today:
+                labelled = None
+            posted = labelled or relative or page_date
+            date_source = "listing page label" if labelled else "listing text (relative date)" if relative else (
+                "search engine page date" if page_date else None)
             ats_hit = None
             from app.services.job_sources import ats_registry
             ats_hit = ats_registry.detect_url(str(result["url"]))
@@ -1282,6 +1394,8 @@ class BroadJobSearch:
                  "date_source": date_source,
                  "ats_ref": f"{ats_hit[0].key}:{ats_hit[1]}" if ats_hit else None,
                  "_report_keys": set(result.get("_report_keys") or ()),
+                 "_queries": set(result.get("_queries") or ()),
+                 "application_url": result["url"] if employer_owned_url(str(result["url"]), employer) else None,
                  "_content": content, "evidence": result.get("evidence") or []})
         return list(by_url.values()), duplicates
 
@@ -1334,13 +1448,21 @@ class BroadJobSearch:
             "sources": item.get("sources"), "discovered_via": item.get("discovered_via"),
             "evidence": item.get("evidence") or [],
             "raw": {"source_kind": item.get("source_kind") or "job_listing",
-                    "raw_text": str(item.get("raw_text") or "")[:8000]},
+                    "raw_text": str(item.get("raw_text") or "")[:8000],
+                    **({"location_restrictions": item["location_restrictions"]}
+                       if item.get("location_restrictions") is not None else {}),
+                    **({"document_type": item["_document"]["type"]} if item.get("_document") else {}),
+                    **({"discovery_queries": sorted(item["_queries"])[:10]} if item.get("_queries") else {})},
             "requisition_id": item.get("requisition_id") or (item.get("eligibility") or {}).get("requisition_id"),
             "employer_id": item.get("employer_id"), "application_url": item.get("application_url"),
-            # Only a listing read from the employer's own job board counts as verified open.
-            "last_verified": Store.now() if item.get("discovered_via") == "company career board" else None,
+            # Only a listing read from the employer's own job board counts as employer-verified open. A live
+            # listing returned by a job platform's own API (with a future expiry) counts as source-verified.
+            "last_verified": Store.now() if item.get("discovered_via") == "company career board" or (
+                item.get("api_id") == "api:himalayas" and status == "open") else None,
             "status_evidence": ("Listed on the employer's public job board" if item.get("discovered_via") ==
-                                "company career board" else None),
+                                "company career board" else
+                                "Live on the Himalayas job API" if item.get("api_id") == "api:himalayas"
+                                and status == "open" else None),
             "extraction_method": item.get("extraction_method"),
             "posted_date_source": item.get("date_source") if item.get("posted_date") else None,
             "updated_date": item.get("updated_date"),
@@ -1349,23 +1471,47 @@ class BroadJobSearch:
             "education": item.get("education"),
             "verification_source": ("employer public job board" if item.get("discovered_via") == "company career board"
                                     else "employer career page (not re-checked)" if item.get("discovered_via") ==
-                                    "company career page" else None),
+                                    "company career page" else
+                                    "job platform API (live listing)" if item.get("api_id") == "api:himalayas"
+                                    and status == "open" else None),
             "employer_url": item["url"] if item.get("discovered_via") in {"company career board", "company career page"}
             else None,
         }
 
 
 def rescore_stored(store: Store, preferences: dict[str, Any]) -> int:
-    """Re-rank every stored listing against the active resume and current preferences."""
+    """Re-run the validation gate and re-rank every stored listing against the active resume and preferences.
+
+    Non-vacancies (talent networks, registrations, search pages) are never resume-scored. The validation result
+    (document type, geography, vacancy status, verification level, per-stage reasons) is stored per listing.
+    """
+    from app.services.vacancy_validation import classify_document, validate
+    from app.services.verification import lifecycle
+
     resumes = store.resumes()
-    updates = []
+    updates, validations = [], []
     for job in store.jobs(limit=5000):
-        kind = (job.get("raw") or {}).get("source_kind")
-        result = active_resume_match({**job, "raw_text": (job.get("raw") or {}).get("raw_text") or ""},
-                                     preferences, resumes)
-        if kind in {"search_page", "index_page"}:
-            result["match_reason"] = "Search result only; open the original listing to verify details. " \
-                + (result.get("match_reason") or "")
+        raw = job.get("raw") or {}
+        kind = raw.get("source_kind")
+        listing = {**job, "raw_text": raw.get("raw_text") or ""}
+        document = classify_document(listing)
+        if not document["is_vacancy"]:
+            result = {"match_score": None, "match_reason": f"{document['label']}: {document['reason']}",
+                      "best_resume_id": None, "best_resume_label": None, "resume_scores": [],
+                      "eligibility": {"tier": "not_vacancy", "excluded_reason": document["reason"],
+                                      "document_type": document["type"]}}
+        else:
+            result = active_resume_match(listing, preferences, resumes)
+            if kind in {"search_page", "index_page"}:
+                result["match_reason"] = "Search result only; open the original listing to verify details. " \
+                    + (result.get("match_reason") or "")
         updates.append({"id": job["id"], **result})
+        verdict = validate({**listing, "eligibility": result.get("eligibility")}, lifecycle_state=lifecycle(job)["state"],
+                           preferences=preferences)
+        validations.append({"id": job["id"], "document_type": verdict["document"]["type"],
+                            "geo_class": verdict["geography"]["kind"], "vacancy_status": verdict["vacancy_status"],
+                            "verification_level": verdict["verification_level"],
+                            "validation": {k: verdict[k] for k in ("group", "reason", "stages")}})
     store.update_job_matches(updates)
+    store.update_validations(validations)
     return len(updates)

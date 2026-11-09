@@ -356,3 +356,76 @@ def registrable(host: str) -> str:
     if candidate in SHARED_HOSTS and len(parts) >= 3:
         return ".".join(parts[-3:])
     return candidate
+
+
+# ------------------------------------------------------------------ v4.3: labelled dates on a vacancy page
+_DATE_VALUE = (r"([A-Za-z]{3,9}\.? \d{1,2},? \d{4}|\d{1,2}(?:st|nd|rd|th)? [A-Za-z]{3,9}\.?,? \d{4}|\d{4}-\d{2}-\d{2}"
+               r"(?:T[\d:.]+Z?)?|\d{1,2}[/.-]\d{1,2}[/.-]\d{4})")
+_POSTED_LABEL = re.compile(
+    r"(?<![A-Za-z])(?<!start )(?<!end )(?<!closing )(?<!joining )(?<!last )(?<!expiry )(?<!birth )"
+    r"(?:date posted|posted on|posting date|posted date|date of posting|job posted on|published on|publish date|"
+    r"posted|date)\s*[:\-–]?\s*" + _DATE_VALUE, re.I)
+_DEADLINE_LABEL = re.compile(
+    r"(?:closing date|last date(?: to apply| of application| for (?:online )?application)?|apply by|"
+    r"application deadline|applications close(?: on)?|valid through|expiry date)\s*[:\-–]?\s*" + _DATE_VALUE, re.I)
+_MICRODATA = re.compile(r"itemprop=[\"']datePosted[\"'][^>]*?(?:content|datetime)=[\"']([^\"']+)[\"']|"
+                        r"(?:content|datetime)=[\"']([^\"']+)[\"'][^>]*?itemprop=[\"']datePosted[\"']", re.I)
+
+
+def _clean_date_value(value: str) -> str:
+    value = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", value.strip().rstrip(".,"))
+    value = re.sub(r"^([A-Za-z]{3,9})\.", r"\1", value)
+    value = value.replace(",", ", ").replace("  ", " ")
+    value = re.sub(r"\s+,", ",", value)
+    return re.sub(r"(\d{1,2}) ([A-Za-z]{3,9})\.?, (\d{4})", r"\1 \2 \3", value)
+
+
+def _to_date(value: str):
+    cleaned = _clean_date_value(value)
+    parsed = parse_date(cleaned) or parse_date(cleaned.replace(", ", " "))
+    if parsed is None:
+        match = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})", cleaned)
+        if match:  # Indian/European pages write day first
+            from datetime import date as _date
+            day, month, year = map(int, match.groups())
+            try:
+                parsed = _date(year, month, day)
+            except ValueError:
+                parsed = None
+    return parsed
+
+
+def labelled_dates(content: str, *, is_html: bool = True) -> dict[str, Any]:
+    """Posting and closing dates stated with a label on a single vacancy page.
+
+    Returns {"posted_date", "posted_evidence", "deadline", "deadline_evidence"} (values may be None). Only the
+    top of the page is read, so "posted" dates of other jobs listed further down are not picked up.
+    """
+    output: dict[str, Any] = {"posted_date": None, "posted_evidence": None, "deadline": None, "deadline_evidence": None}
+    if not content:
+        return output
+    if is_html:
+        micro = _MICRODATA.search(content[:400000])
+        if micro:
+            parsed = parse_date((micro.group(1) or micro.group(2) or "")[:25])
+            if parsed:
+                output["posted_date"], output["posted_evidence"] = parsed.isoformat(), "microdata datePosted"
+        # Separate block elements so "…Developer</h1><p>Date: …" does not read as "DeveloperDate:".
+        spaced = re.sub(r"(</(?:p|div|h[1-6]|li|td|th|tr|span|dd|dt|section|header)>|<br\s*/?>)", r"\1 ",
+                        content[:600000], flags=re.I)
+        text = visible_text(spaced, 12000)
+    else:
+        text = str(content)[:12000]
+    head = text[:6000]
+    if not output["posted_date"]:
+        for match in _POSTED_LABEL.finditer(head):
+            parsed = _to_date(match.group(1))
+            if parsed:
+                output["posted_date"], output["posted_evidence"] = parsed.isoformat(), match.group(0)[:80]
+                break
+    deadline = _DEADLINE_LABEL.search(text)
+    if deadline:
+        parsed = _to_date(deadline.group(1))
+        if parsed:
+            output["deadline"], output["deadline_evidence"] = parsed.isoformat(), deadline.group(0)[:80]
+    return output

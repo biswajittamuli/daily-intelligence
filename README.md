@@ -11,6 +11,31 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 4.3
+
+Accuracy over volume. Every listing passes one validation gate before it is ranked or shown:
+document classification (vacancy, internship, graduate, government/PSU notice, or talent network,
+candidate registration, careers homepage, search page, article, news, agency), publication-date
+freshness, fail-closed geography (India-based · Remote with India explicitly eligible · Remote with
+unknown restrictions · Remote not open to India · Relocation · Outside), vacancy status and verification
+level. The home feed shows only verified, in-geography vacancies as matches; the rest are labelled
+(verification pending, stretch, outside geography, not a vacancy). A first-discovered time is never shown
+as a publication date ("Publication date not disclosed · First discovered today"). New sources: the
+Himalayas remote-jobs API (no key) and, optionally, Adzuna India and Google for Jobs (via SerpApi), the
+compliant route to LinkedIn, Naukri and Indeed listings. See `docs/V4.3_DISCOVERY_DIAGNOSIS.md`.
+
+Optional keys: open **Settings → API keys**, paste the key and press **Save & test**. The app checks the
+key with the provider right away (SerpApi and Firecrawl checks spend no searches or credits), keeps it only
+if the provider accepts it, and uses it from the next discovery run with no restart. Providers: Adzuna India
+(free developer key), Google for Jobs via SerpApi (free plan, 250 searches/month; the app uses at most 2 per
+run), Firecrawl (renders JavaScript career pages when the local browser cannot) and Parallel (optional token
+for higher search limits). Keys are stored in `data/secrets.json` (permissions 0600, git-ignored), never sent
+back to the browser in full and never logged; the key endpoints accept requests only from the app's own page.
+Environment variables with the same names (`ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `SERPAPI_API_KEY`,
+`FIRECRAWL_API_KEY`, `PARALLEL_MCP_AUTH_TOKEN`) still work; a key saved in Settings takes precedence. Without
+a key a source reports "Not configured" and discovery continues with the rest. Only role titles and a location
+are sent to these providers, never resume content.
+
 ## What's new in 4.0
 
 Daily Intelligence opens on a personal home: a greeting, today's numbers, and one prioritised
@@ -221,7 +246,8 @@ curl -s "http://127.0.0.1:8765/api/sources/exclusions?reason=Duplicate%20of%20an
 
 Optional settings (preferences JSON). `jobs`: `browser_rendering` (default true), `browser_concurrency` (1),
 `browser_timeout_ms` (15000), `http_concurrency` (6), `store_cap` (500), `match_mode` (`active` or `best`),
-`firecrawl_enabled` (false; also needs `FIRECRAWL_API_KEY`, sends only public employer URLs).
+`firecrawl_enabled` (false; also needs `FIRECRAWL_API_KEY`, sends only public employer URLs),
+`target_country` (default: India, or the first preferred location's country).
 `discovery.sections` (jobs, government, exams, news). `automation`: `daily_refresh`, `refresh_time`,
 `followed_hours` (12), `reverify_batch` (30), `notify` (true), `notify_min_score` (70).
 Sources can be enabled or disabled under Sources & coverage.
@@ -379,6 +405,8 @@ uv run python -m app.main models
 uv run python -m app.main research "Research recent developments in agent memory architectures"
 uv run python -m app.main serve
 uv run python -m app.main diagnostics mcp
+uv run python -m app.main discover                  # one full discovery run without the UI, prints metrics
+uv run python -m app.main sources-report            # source-by-source health of the last run (--json)
 ```
 
 The MCP diagnostic performs a real endpoint preflight, tool discovery, a search and a
@@ -388,7 +416,7 @@ fetch, and prints per-stage timing. Credentials are never printed.
 
 ```bash
 uv sync --dev                                         # installs pytest
-./.venv/bin/python -m pytest -q                       # 202 tests (network mocked; browser tests use a local fixture site)
+./.venv/bin/python -m pytest -q                       # 226 tests (network mocked; browser tests use a local fixture site)
 ./.venv/bin/python -m unittest discover -s tests -q   # same suite without pytest
 ./.venv/bin/python -m compileall -q app tests
 ```

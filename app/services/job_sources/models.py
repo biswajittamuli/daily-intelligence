@@ -150,6 +150,8 @@ class Exclusion:
     EXTRACTION_FAILED = "Extraction failure"
     POOL_LIMIT = "Below the shortlist cut-off (pool size)"
     INELIGIBLE = "Not eligible (kept only if a strong stretch match)"
+    NOT_VACANCY = "Not a single vacancy (talent network, registration, careers home, news)"
+    GEO_UNKNOWN = "Geography unknown"
 
 
 # Lifecycle states for a vacancy (Part 10). ``app.services.verification.lifecycle`` maps stored rows onto these.
@@ -158,7 +160,7 @@ LIFECYCLE_STATES = {
     "open_verified": "Open · employer verified", "open_page_checked": "Open · third-party source only",
     "open_not_recent": "Open · not recently verified", "unverified": "Unverified", "closed": "Closed",
     "expired": "Expired", "reposted": "Reposted", "removed": "Removed", "inaccessible": "Inaccessible",
-    "unknown": "Unknown",
+    "unknown": "Unknown", "recheck_pending": "Possibly open · last check failed",
 }
 
 

@@ -276,6 +276,14 @@ class CareerDiscovery:
                         rendered_failed = False
                         candidates = career_candidates(scraped["links"] + structured.page_links(base, scraped["html"]), base)
                         ats_found = ats_registry.detect_in_text(scraped["html"]) or ats_found
+        elif not candidates and not ats_found and not embedded_jobs and self.firecrawl is not None \
+                and not unavailable and blocked_state is None and browser_allowed:
+            # No local browser: Firecrawl (when its key is saved) renders the public career page instead.
+            scraped = await self.firecrawl(base)
+            record("B", "Firecrawl render", scraped["state"], scraped.get("error") or "")
+            if scraped["state"] == SourceState.FETCH_OK:
+                candidates = career_candidates(scraped["links"] + structured.page_links(base, scraped["html"]), base)
+                ats_found = ats_registry.detect_in_text(scraped["html"]) or ats_found
         elif not candidates and not ats_found and not embedded_jobs:
             reason = ("not attempted: homepage unavailable" if unavailable else
                       f"not attempted: {SourceState.LABELS.get(blocked_state, blocked_state)}" if blocked_state else

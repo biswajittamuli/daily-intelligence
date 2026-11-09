@@ -179,8 +179,15 @@ class SafeFetcher:
         return policy
 
     # ------------------------------------------------------------- fetch
-    async def get(self, url: str, *, use_cache: bool = True, accept_json: bool = False) -> FetchResult:
-        return await self._request(url, use_cache=use_cache, check_robots=self.respect_robots,
+    async def get(self, url: str, *, use_cache: bool = True, accept_json: bool = False,
+                  robots: bool = True) -> FetchResult:
+        """``robots=False`` is only for documented, keyed REST APIs called under the provider's API terms
+        (see job_apis.KEYED_API_HOSTS); every page fetch keeps the robots.txt check."""
+        if not robots:
+            from app.services.job_sources.job_apis import KEYED_API_HOSTS
+            if (urlsplit(url).hostname or "").casefold() not in KEYED_API_HOSTS:
+                robots = True
+        return await self._request(url, use_cache=use_cache, check_robots=self.respect_robots and robots,
                                    accept_any_type=accept_json)
 
     async def get_many(self, urls: list[str], **kwargs: Any) -> list[FetchResult]:

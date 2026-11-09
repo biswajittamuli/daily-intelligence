@@ -12,7 +12,7 @@ function viewSettings(){
     `<label class="portal-card"><input type="checkbox" name="portal:${esc(name)}" ${portal.enabled?'checked':''}><span>${esc(name)}</span><small>${esc(portal.domain||'custom')}</small></label>`).join('');
   const profile=D().profile;
   return heading('Personal','Settings','Preferences are stored locally and applied to future searches, matching and briefings.','') +
-    appearancePanel() + `<div class="panel section-space">
+    appearancePanel() + apiKeysPanel() + `<div class="panel section-space">
       <div class="panel-head"><h3 class="panel-title">Local model & resources</h3><span class="panel-kicker">Ollama</span></div>
       <form data-form="settings">
         <div class="settings-grid">
@@ -172,6 +172,62 @@ function viewResumes(){
     ${editing?`<div class="panel section-space"><div class="panel-head"><h3 class="panel-title">Edit extracted profile — ${esc(editing.label)}</h3><span class="panel-kicker">one item per line</span></div>${profileEditor(editing)}</div>`:''}`;
 }
 
+/* API keys: pasted keys are stored locally (owner-only file), never sent back in full, and used immediately. */
+async function loadApiKeys(){
+  try{state.apiKeys=await api('/api/keys');}catch(e){state.apiKeys={error:e.message,providers:[]};}
+  if(state.view==='settings')render();
+}
+function apiKeysPanel(){
+  if(state.apiKeys===undefined){state.apiKeys=null;loadApiKeys();}
+  const data=state.apiKeys;
+  const checks=state.keyChecks||{};
+  const body=!data?'<div class="view-note">Loading…</div>':data.error?`<div class="view-note">Could not load key status: ${esc(data.error)}</div>`:
+    (data.providers||[]).map(p=>{
+      const check=checks[p.id];
+      const status=p.configured?(p.keys.every(k=>k.source==='environment')?'Set from environment':'Saved'):'Not configured';
+      return `<div class="settings-section key-card">
+        <div class="panel-head"><h4 class="panel-title">${esc(p.name)}</h4><span class="panel-kicker ${p.configured?'ok':''}">${esc(status)}</span></div>
+        <div class="view-note">${esc(p.purpose)}<br>${esc(p.cost)} · Sends: ${esc(p.sends)} · <a href="${safeUrl(p.signup)}" target="_blank" rel="noopener">Get a key ↗</a></div>
+        <div class="settings-grid">${p.keys.map(k=>`<div class="field"><label for="key-${esc(k.name)}">${esc(k.label)}${k.hint?` <small>(current: ${esc(k.hint)})</small>`:''}</label>
+          <input class="input" id="key-${esc(k.name)}" data-key-name="${esc(k.name)}" data-provider="${esc(p.id)}" type="password" autocomplete="off" spellcheck="false" placeholder="${k.set?'Paste a new value to replace':'Paste here'}"></div>`).join('')}</div>
+        <div class="field-actions">
+          <button class="primary-button" type="button" data-action="key-save" data-provider="${esc(p.id)}">Save &amp; test</button>
+          ${p.configured?`<button class="quiet-button" type="button" data-action="key-test" data-provider="${esc(p.id)}">Test</button>`:''}
+          ${p.keys.some(k=>k.source==='saved')?`<button class="danger-button" type="button" data-action="key-remove" data-provider="${esc(p.id)}">Remove</button>`:''}
+        </div>
+        ${check?`<p class="${check.ok?'key-ok':'key-error'}" role="status">${check.pending?'Testing…':esc(check.message)}</p>`:''}
+      </div>`;}).join('');
+  return `<div class="panel section-space" id="api-keys">
+    <div class="panel-head"><h3 class="panel-title">API keys</h3><span class="panel-kicker">optional · stored only on this computer</span></div>
+    <div class="view-note">Each key is tested as soon as you save it and used from the next discovery run, with no restart. Keys are kept in a local file only you can read and are never shown again in full.</div>
+    ${body}
+  </div>`;
+}
+async function apiKeyAction(action,provider){
+  state.keyChecks=state.keyChecks||{};
+  const headers={'Content-Type':'application/json'};
+  try{
+    if(action==='key-save'){
+      const values={};
+      document.querySelectorAll(`input[data-provider="${CSS.escape(provider)}"]`).forEach(i=>{if(i.value.trim())values[i.dataset.keyName]=i.value.trim();});
+      if(!Object.keys(values).length){toast('Paste the key first',true);return;}
+      state.keyChecks[provider]={pending:true};render();
+      const r=await api('/api/keys',{method:'POST',headers,body:JSON.stringify({provider,values})});
+      state.apiKeys=r;state.keyChecks[provider]=r.check;
+      document.querySelectorAll(`input[data-provider="${CSS.escape(provider)}"]`).forEach(i=>{i.value='';});
+      toast(r.check.ok?'Key saved and working':r.check.rejected?'Key rejected by the provider — not saved':'Key saved, but the test could not complete',!r.check.ok);
+    }else if(action==='key-test'){
+      state.keyChecks[provider]={pending:true};render();
+      const r=await api('/api/keys/test',{method:'POST',headers,body:JSON.stringify({provider})});
+      state.apiKeys=r;state.keyChecks[provider]=r.check;
+    }else if(action==='key-remove'){
+      if(!confirm('Remove the saved key? Discovery will stop using this source until you add a key again.'))return;
+      state.apiKeys=await api('/api/keys/remove',{method:'POST',headers,body:JSON.stringify({provider})});
+      delete state.keyChecks[provider];toast('Key removed');
+    }
+  }catch(e){state.keyChecks[provider]={ok:false,message:e.message};toast(e.message,true);}
+  render();
+}
 function appearancePanel(){
   const current=document.documentElement.dataset.theme||'minimal-light';
   return `<div class="panel">

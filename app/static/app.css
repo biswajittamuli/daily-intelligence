@@ -642,3 +642,9 @@ button.fact:hover{color:var(--text);text-decoration:underline;text-underline-off
   .calm-meta{white-space:normal}.pick-head{grid-template-columns:36px minmax(0,1fr)}.pick-score{font-size:18px}.pick .calm-detail{padding-left:0}
   .discover-button{border:0;padding:0 6px}}
 @media (max-width:600px){.lens-bar{gap:10px}.lenses{order:3;flex:1 0 100%;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.lens-bar .quiet-action{margin-left:auto}}
+
+/* API keys panel */
+.key-card{border-top:1px solid var(--line, rgba(127,127,127,.25));padding-top:12px;margin-top:12px}
+.key-card .panel-kicker.ok{color:var(--good, #2f7d4f)}
+.key-ok{color:var(--good, #2f7d4f);margin:8px 0 0}
+.key-error{color:var(--bad, #b3261e);margin:8px 0 0}

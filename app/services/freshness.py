@@ -167,6 +167,9 @@ DATE_CONFIDENCE = {
     "employer ATS": "high", "JobPosting datePosted": "high", "career page": "medium",
     "feed entry date": "medium", "listing text (relative date)": "medium",
     "search engine page date": "low", "model-extracted from page text": "low",
+    # v4.3
+    "employer page label": "medium", "listing page label": "medium", "job platform API": "medium",
+    "aggregator API": "medium",
 }
 _RANK = {"high": 3, "medium": 2, "low": 1, "unknown": 0, None: 0}
 
@@ -186,60 +189,46 @@ def stronger_date(new_date: Any, new_confidence: str | None, old_date: Any, old_
     return _RANK.get(new_confidence, 0) > _RANK.get(old_confidence, 0)
 
 
-BUCKET_LABEL = {"new_today": "New today", "new_24h": "New in the last 24 hours", "new_3d": "New in the last 3 days",
-                "new_7d": "New in the last 7 days", "older_open": "Older but still open", "date_unknown": "Date unknown",
-                "closed": "Closed", "expired": "Expired", "verification_required": "Verification required"}
+BUCKET_LABEL = {"new_today": "Published today", "new_24h": "Published yesterday", "new_3d": "Published in the last 3 days",
+                "new_7d": "Published in the last 7 days", "older_open": "Older but still open", "date_unknown": "Date unknown",
+                "closed": "Closed", "expired": "Expired", "verification_required": "Older · verification required"}
 
 
 def freshness_bucket(job: dict[str, Any], *, now: Any = None, lifecycle_state: str | None = None) -> dict[str, Any]:
-    """Freshness from the posting date when it is trustworthy, otherwise from when the app first saw it.
+    """Freshness from a stated publication date only (v4.3).
 
-    A listing re-fetched later keeps its first-seen time, so it never becomes "new" again.
+    When no trustworthy publication date exists the key is ``date_unknown`` and the label says so, followed by
+    when the app first discovered the listing. A listing discovered today but published a month ago is never
+    "new"; re-fetching a listing never changes its first-seen time.
     """
     from datetime import datetime, timezone
+    from app.services.vacancy_validation import publication_freshness
     now = now or datetime.now(timezone.utc)
-    today = now.date()
     state = lifecycle_state or ""
     if state in {"closed", "expired"} or job.get("status") in {"closed", "expired"}:
         key = "expired" if (state == "expired" or job.get("status") == "expired") else "closed"
         return {"key": key, "label": BUCKET_LABEL[key], "basis": "status"}
-    confidence = job.get("posting_date_confidence") or date_confidence(job.get("posted_date_source"), job.get("posted_date"))
-    posted = parse_date(job.get("posted_date"))
-    first_seen = None
-    try:
-        first_seen = datetime.fromisoformat(str(job.get("first_seen")).replace("Z", "+00:00")) if job.get("first_seen") else None
-    except ValueError:
-        first_seen = None
-    if posted and confidence in {"high", "medium"}:
-        age_days = (today - posted).days
-        basis = f"posted {posted.isoformat()} ({job.get('posted_date_source') or 'source'})"
-        if age_days <= 0:
-            key = "new_today"
-        elif age_days <= 1:
-            key = "new_24h"
-        elif age_days <= 3:
-            key = "new_3d"
-        elif age_days <= 7:
-            key = "new_7d"
-        else:
-            key = "older_open" if state in {"open_verified", "open_page_checked"} else "verification_required"
-        return {"key": key, "label": BUCKET_LABEL[key], "basis": basis, "age_days": age_days}
-    if first_seen is not None:
-        hours = (now - first_seen).total_seconds() / 3600
-        basis = "first seen by this app (posting date " + ("uncertain" if posted else "not stated") + ")"
-        if first_seen.date() == today:
-            key = "new_today"
-        elif hours <= 24:
-            key = "new_24h"
-        elif hours <= 72:
-            key = "new_3d"
-        elif hours <= 168:
-            key = "new_7d"
-        else:
-            key = "date_unknown"
-        label = BUCKET_LABEL[key] if key == "date_unknown" else BUCKET_LABEL[key].replace("New", "First seen")
-        return {"key": key, "label": label, "basis": basis, "age_days": int(hours // 24)}
-    return {"key": "date_unknown", "label": BUCKET_LABEL["date_unknown"], "basis": "no date evidence"}
+    fresh = publication_freshness(job, now=now)
+    base = {"window": fresh["window"], "window_label": fresh["window_label"], "published_at": fresh["published_at"],
+            "first_discovered": fresh["first_discovered"], "newly_published": fresh["newly_published"],
+            "newly_discovered": fresh["newly_discovered"]}
+    if fresh["published_at"] is None:
+        return {"key": "date_unknown", "label": fresh["label"], "basis": "no trustworthy publication date",
+                "age_days": None, **base}
+    age_days = fresh["age_days"]
+    basis = f"posted {fresh['published_at']} ({job.get('posted_date_source') or 'source'})"
+    if age_days <= 0:
+        key = "new_today"
+    elif age_days <= 1:
+        key = "new_24h"
+    elif age_days <= 3:
+        key = "new_3d"
+    elif age_days <= 7:
+        key = "new_7d"
+    else:
+        key = "older_open" if state in {"open_verified", "open_page_checked"} else "verification_required"
+    label = fresh["label"] + (" · still open" if key == "older_open" else "")
+    return {"key": key, "label": label, "basis": basis, "age_days": age_days, **base}
 
 
 def vacancy_view(job: dict[str, Any], lifecycle_state: str) -> dict[str, Any]:

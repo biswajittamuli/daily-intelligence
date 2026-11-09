@@ -56,10 +56,26 @@ def make_handler(app: "Application") -> type[BaseHTTPRequestHandler]:
                 raise ValueError("Expected a JSON object")
             return data
 
+        def same_origin(self) -> bool:
+            """Only this app's own page may use the API: blocks other websites (CSRF) and DNS rebinding."""
+            port = self.server.server_address[1]
+            allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+            if str(self.headers.get("Host") or "") not in allowed:
+                return False
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).netloc not in allowed:
+                return False
+            if self.command in {"POST", "PUT"} and \
+                    not str(self.headers.get("Content-Type") or "").startswith("application/json"):
+                return False  # forces a CORS preflight for cross-site requests, which this server never approves
+            return True
+
         def query(self):
             return parse_qs(urlparse(self.path).query)
 
         def do_GET(self):
+            if not self.same_origin():
+                return self.json(403, {"error": "Forbidden"})
             app.touch()
             path = urlparse(self.path).path
             params = self.query()
@@ -120,6 +136,8 @@ def make_handler(app: "Application") -> type[BaseHTTPRequestHandler]:
                 signals = app.store.signals(limit=500)
                 return self.json(200, {"employers": app.store.employers(limit=1000), "signals": signals,
                                        "signal_events": cluster_signals(signals)})
+            if path == "/api/keys":
+                return self.json(200, app.api_keys())
             if path == "/api/feed":
                 return self.json(200, app.feed(include_hidden=params.get("hidden", ["0"])[0] == "1"))
             if path == "/api/sources":
@@ -191,9 +209,20 @@ def make_handler(app: "Application") -> type[BaseHTTPRequestHandler]:
             return self.send(404, "Not found", "text/plain; charset=utf-8")
 
         def do_POST(self):
+            if not self.same_origin():
+                return self.json(403, {"error": "Forbidden"})
             app.touch()
             path = urlparse(self.path).path
             try:
+                if path.startswith("/api/keys"):
+                    payload = self.body(max_bytes=8_192)
+                    provider = str(payload.get("provider") or "")
+                    if path == "/api/keys":
+                        return self.json(200, app.save_api_keys(provider, payload.get("values") or {}))
+                    if path == "/api/keys/remove":
+                        return self.json(200, app.remove_api_keys(provider))
+                    if path == "/api/keys/test":
+                        return self.json(200, app.test_api_keys(provider))
                 if path == "/api/resume":
                     payload = self.body(max_bytes=8_000_000)
                     encoded = str(payload.get("content_base64") or "")

@@ -10,7 +10,8 @@ from typing import Any
 
 JSON_COLUMNS = {
     "job_listings": ("skills_json", "evidence_json", "raw_json", "resume_scores_json",
-                     "sources_json", "eligibility_json", "verify_history_json", "conflicts_json"),
+                     "sources_json", "eligibility_json", "verify_history_json", "conflicts_json",
+                     "validation_json"),
     "employers": ("locations_json", "funding_json", "discovery_sources_json", "aliases_json", "evidence_json",
                   "career_discovery_json"),
     "applications": ("interview_dates_json", "history_json"),

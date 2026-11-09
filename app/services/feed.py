@@ -28,10 +28,17 @@ def _days_until(value: Any, today: date) -> int | None:
     return (parsed - today).days if parsed else None
 
 
+GROUP_TIER = {"verified_strong": "strong", "verified_good": "possible", "verified_low": "low", "stretch": "ineligible",
+              "pending": "pending"}
+
+
 def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], states: dict[int, str],
              reported: set[int], today: date) -> dict[str, Any]:
     e = job.get("eligibility") or {}
-    tier = e.get("tier") or "low"
+    verdict = job.get("validation") or {}
+    group = verdict.get("group")
+    # The validation group decides the tier shown: only verified, in-geography vacancies can be strong or good.
+    tier = GROUP_TIER.get(group) or e.get("tier") or "low"
     level = e.get("level") or e.get("status") or "uncertain"
     employer = employers.get(job.get("employer_id")) if job.get("employer_id") is not None else None
     bucket = (job.get("freshness_bucket") or {}).get("key")
@@ -59,6 +66,8 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
         sections.add("followed")
     if bucket in NEW_BUCKETS:
         sections.add("new")
+    if group == "pending":
+        sections.add("pending")
     priority = 0.0
     priority += (job.get("eligibility") or {}).get("composite") or job.get("match_score") or 0
     if tier == "strong" and bucket in NEW_BUCKETS:
@@ -69,8 +78,11 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
         priority += 200
     if "startup" in sections and bucket in NEW_BUCKETS:
         priority += 120
-    if "internship" in sections:
-        priority += 40
+    if "internship" in sections and (job.get("match_score") or 0) >= 60:
+        priority += 40  # an internship bonus only for internships that actually match the resume
+    # Default feed favours vacancies published within the last 7 days (publication date, never first-seen).
+    window = (job.get("freshness_bucket") or {}).get("window")
+    priority += {"24h": 70, "3d": 60, "7d": 50, "14d": 25, "30d": 5, "older": -30}.get(window, 0)
     if tier == "ineligible":
         priority -= 200
     if level == "uncertain":
@@ -79,6 +91,8 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
     priority += LIFECYCLE_ADJUST.get((job.get("lifecycle") or {}).get("state") or "", 0)
     if bucket == "date_unknown":
         priority -= 5
+    if group == "pending":
+        priority -= 40
     return {
         "kind": "job", "id": job["id"], "title": job.get("title"), "org": job.get("employer"),
         "employer_id": job.get("employer_id"), "location": job.get("location"),
@@ -93,6 +107,10 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
         "sections": sorted(sections), "state": states.get(job["id"]), "reported": job["id"] in reported,
         "first_seen": job.get("first_seen"), "posted": job.get("posted_date"),
         "priority": round(priority, 1),
+        "group": group, "group_label": verdict.get("group_label"), "group_reason": verdict.get("reason"),
+        "vacancy_status": job.get("vacancy_status_label"), "verification_level": job.get("verification_level"),
+        "geography": (verdict.get("geography") or {}).get("label"),
+        "published_label": ((verdict.get("freshness") or {}).get("label")),
     }
 
 
@@ -125,9 +143,21 @@ def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exa
     today = today or date.today()
     by_id = {e["id"]: e for e in employers}
     items: list[dict[str, Any]] = []
+    other_opportunities: list[dict[str, Any]] = []
     hidden = 0
+    outside = 0
     for job in jobs:
         if job.get("source_kind") in {"search_page", "index_page"}:
+            continue
+        group = (job.get("validation") or {}).get("group")
+        if group == "not_vacancy":
+            document = (job.get("validation") or {}).get("document") or {}
+            if document.get("separate_section"):
+                other_opportunities.append({"id": job["id"], "title": job.get("title"), "kind": document.get("label"),
+                                            "url": job.get("original_url"), "reason": document.get("reason")})
+            continue
+        if group == "outside_geography" and not include_hidden:
+            outside += 1
             continue
         e = job.get("eligibility") or {}
         if e.get("tier") == "excluded":
@@ -158,7 +188,12 @@ def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exa
         for section in item["sections"]:
             sections[section] = sections.get(section, 0) + 1
     summary = {
-        "new_opportunities": sum(1 for i in jobs_only if (i.get("freshness") or {}).get("key") in NEW_BUCKETS),
+        "new_opportunities": sum(1 for i in jobs_only if (i.get("freshness") or {}).get("key") in NEW_BUCKETS
+                                 and i.get("group") != "pending"),
+        "newly_discovered_undated": sum(1 for i in jobs_only if (i.get("freshness") or {}).get("key") == "date_unknown"
+                                        and (i.get("freshness") or {}).get("newly_discovered")),
+        "verification_pending": sum(1 for i in jobs_only if i.get("group") == "pending"),
+        "outside_geography": outside, "other_opportunities": len(other_opportunities),
         "new_since_last_visit": len(new_since),
         "strong_matches": sum(1 for i in jobs_only if i["tier"] == "strong"),
         "good_matches": sum(1 for i in jobs_only if i["tier"] == "possible"),
@@ -167,6 +202,7 @@ def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exa
         "sections": sections,
     }
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "summary": summary, "items": items,
+            "other_opportunities": other_opportunities[:30],
             "deadlines": deadlines[:10],
             "news": [{"id": n["id"], "title": n.get("title"), "url": n.get("original_url"), "publisher": n.get("publisher"),
                       "date": n.get("published_date"), "topic": n.get("topic")} for n in (news or [])[:5]]}

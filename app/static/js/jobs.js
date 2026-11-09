@@ -112,7 +112,13 @@ function ageLabel(value){
   if(days<60)return days+'d ago';
   return Math.round(days/30)+' mo ago';
 }
-function tierOf(job){return (job.eligibility||{}).tier||(job.match_score==null?'low':job.match_score>=70?'strong':job.match_score>=50?'possible':'low');}
+function tierOf(job){
+  // v4.3 validation gate: non-vacancies and out-of-geography listings never rank; unverified ones are never "strong".
+  const g=job.result_group;
+  if(g==='not_vacancy'||g==='outside_geography')return 'excluded';
+  const t=(job.eligibility||{}).tier||(job.match_score==null?'low':job.match_score>=70?'strong':job.match_score>=50?'possible':'low');
+  return g==='pending'&&t==='strong'?'possible':t;
+}
 function elig(job){return job.eligibility||{};}
 function employerMap(){
   const map={};(D().employers||[]).forEach(e=>{map[e.id]=e;});return map;
@@ -343,7 +349,7 @@ function jobRow(job){
   return `<div class="job-row${oldCls}${closed}">
     <span class="score ${tier}${tentative(job)?' tentative':''}" title="${tentative(job)?'Profile match only — evidence is incomplete or eligibility is uncertain, so this is not a recommendation':'Profile match against your active resume (eligibility is shown separately)'}">${job.match_score??'—'}</span>
     <div class="job-main">
-      <div class="item-title"><a href="${safeUrl(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a> ${isNew(job)?'<span class="badge new">new</span>':''}</div>
+      <div class="item-title"><a href="${safeUrl(job.original_url||'#')}" target="_blank" rel="noopener">${esc(job.title||'Untitled role')}</a> ${(job.freshness_bucket||{}).newly_published?'<span class="badge new" title="Publication date within the last 3 days">new</span>':isNew(job)?'<span class="badge" title="First discovered since your last visit; publication date may be older">newly discovered</span>':''}</div>
       <div class="item-meta">${meta(job.employer||'Employer not stated')}${meta(job.location||'Location not stated')}${job.posted_date?meta('posted '+fmtDate(job.posted_date)):meta('posting date not stated')}${job.last_verified?meta(((job.lifecycle||{}).state==='open_verified'?'verified ':'checked ')+ageLabel(job.last_verified)):''}${meta(job.discovered_via||job.source_platform||'')}${sources>1?meta(sources+' sources'):''}</div>
       <div class="dims">${eligBadge(e.status)}${freshBadge(fr)}${confBadge(e.confidence,e.confidence_label)}${lifeBadge(job.lifecycle)}${(job.source_types||[]).map(t=>`<span class="dim src-type" title="${esc(SOURCE_TYPE_HINT[t]||'')}">${esc(SOURCE_TYPE_LABEL[t]||t)}</span>`).join('')}${current&&current!=='dismissed'?`<span class="dim app-state">${esc(current)}</span>`:''}</div>
       ${(e.gates||[]).length?`<div class="warning-line bad">✕ ${e.gates.map(esc).join(' · ')}</div>`:''}

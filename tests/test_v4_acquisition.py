@@ -134,13 +134,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(source_id_for(reports[3]), "search:ats")
         stats = aggregate(reports)
         self.assertEqual(run_state(stats["ats:lever"]), "partial")
-        self.assertEqual(run_state(stats["portal:indeed"]), "access_restricted")
+        # v4.3: a portal limited by its terms is reported as such, not as a failure or restriction.
+        self.assertEqual(run_state(stats["portal:indeed"]), "search_only")
         self.assertEqual(run_state(stats["search:ats"]), "access_restricted")
         empty = aggregate([{"category": "job_portal", "name": "LinkedIn", "method": "search index only (policy)",
                             "state": "no_results"},
                            {"category": "job_portal", "name": "Hasjob", "method": "public feed",
                             "state": "extraction_successful", "listings": 21}])
-        self.assertEqual(run_state(empty["portal:linkedin-jobs"]), "no_results")
+        self.assertEqual(run_state(empty["portal:linkedin-jobs"]), "search_only")
         self.assertEqual(run_state(empty["feed:hasjob"]), "successful")
         self.assertNotIn("portal:hasjob", empty)
 

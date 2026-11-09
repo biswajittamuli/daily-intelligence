@@ -17,6 +17,7 @@ names them.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 from datetime import date, datetime, timezone
@@ -182,20 +183,46 @@ class DiscoveryOrchestrator:
         for sid, entry in stats.items():
             state = run_state(entry)
             runs[sid] = {"state": state, "results": entry.results, "listings": entry.listings, "unique": entry.unique,
+                         "rejected": entry.rejected, "stored": entry.stored, "verified": entry.verified,
                          "extraction_ok": entry.extraction_ok, "extraction_total": entry.extraction_total,
                          "failure": "; ".join(dict.fromkeys(entry.failures))[:300] or None}
         self.store.record_source_runs(runs)
+        from app.services.job_sources import job_apis, portals as portal_policy
+        from app.services.preferences import portal_domains
+        persisted = self.store.source_states()
         sources = []
         for sid, definition in BY_ID.items():
             run = runs.get(sid)
-            state = run["state"] if run else ("disabled" if ctx.skip.get(sid) == "disabled" else
+            api = job_apis.BY_ID.get(sid)
+            keyless = api is not None and not api.configured()
+            if sid == "extractor:firecrawl":
+                keyless = not os.environ.get("FIRECRAWL_API_KEY", "").strip()
+                renderer_state = "not_configured" if keyless else "standby"
+            else:
+                renderer_state = "standby"
+            state = run["state"] if run else ("not_configured" if keyless else
+                                              "disabled" if ctx.skip.get(sid) == "disabled" else
                                               "backing_off" if sid in ctx.skip else
-                                              "not_configured" if definition.category == "renderer" else "not_attempted")
+                                              renderer_state if definition.category == "renderer"
+                                              else "not_attempted")
+            reason = (run or {}).get("failure") or ctx.skip.get(sid)
+            if state == "not_configured" and keyless:
+                reason = "Add the key in Settings → API keys"
+            elif state == "not_attempted" and definition.category == "job_portal":
+                enabled = {d.split("/")[0].removeprefix("www.") for d in portal_domains(self.preferences)}
+                portal = next((p for p in portal_policy.PORTALS if p.name == definition.name), None)
+                on = portal is not None and any(d in enabled for d in portal.domains)
+                reason = ("Queued for a later run (portal searches rotate across runs)" if on
+                          else "Disabled in your portal preferences")
             sources.append({"id": sid, "name": definition.name, "category": definition.category,
                             "method": definition.method, "state": state, "state_label": RUN_STATE_LABEL[state],
                             "results": (run or {}).get("results", 0), "listings": (run or {}).get("listings", 0),
-                            "unique": (run or {}).get("unique", 0), "reason": (run or {}).get("failure") or ctx.skip.get(sid),
-                            "alternative": definition.alternative if state in {"access_restricted", "failed"} or
+                            "unique": (run or {}).get("unique", 0), "stored": (run or {}).get("stored", 0),
+                            "verified": (run or {}).get("verified", 0), "rejected": (run or {}).get("rejected", 0),
+                            "last_success_at": (persisted.get(sid) or {}).get("last_success_at"),
+                            "reason": reason,
+                            "alternative": definition.alternative if state in {"access_restricted", "failed", "search_only",
+                                                                               "not_configured"} or
                             definition.policy == "search_results_only" else "", "access": definition.access})
         jobs = next((r.summary for r in results if r.name == "Jobs"), {}) or {}
         funnel = {row["stage"]: row["count"] for row in (jobs.get("acquisition") or {}).get("funnel_stages") or []}
@@ -218,6 +245,9 @@ class DiscoveryOrchestrator:
             "sources_successful": sum(1 for s in sources if s["state"] == "successful"),
             "sources_partial": sum(1 for s in sources if s["state"] == "partial"),
             "sources_no_results": sum(1 for s in sources if s["state"] == "no_results"),
+            "sources_no_usable_results": sum(1 for s in sources if s["state"] == "no_usable_results"),
+            "sources_search_only": sum(1 for s in sources if s["state"] == "search_only"),
+            "sources_not_configured": sum(1 for s in sources if s["state"] == "not_configured"),
             "sources_restricted": sum(1 for s in sources if s["state"] in {"access_restricted", "failed"}),
             "search_results": funnel.get("search_results", 0),
             "career_pages_discovered": career_pages,

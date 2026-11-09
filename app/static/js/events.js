@@ -171,6 +171,7 @@ document.addEventListener('click',async event=>{
     else if(action==='load-models'){
       const data=await api('/api/models');state.models=data.models||[];render();toast('Installed models reloaded');
     }
+    else if(action==='key-save'||action==='key-test'||action==='key-remove'){await apiKeyAction(action,button.dataset.provider);}
     else if(action==='diagnostics'){await startJobRequest('/api/diagnostics/mcp',{},'Running MCP diagnostic');}
     else if(action==='fill-request'){
       const area=document.querySelector('form[data-form="research"] textarea[name="request"]');

@@ -38,7 +38,7 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "4.2.0"
+APP_VERSION = "4.3.0"
 APP_ID = "daily-intelligence"
 THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
 LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}
@@ -87,6 +87,8 @@ def _redact_error(message: str, settings: Settings) -> str:
         secret = os.getenv(key)
         if secret:
             value = value.replace(secret, "[redacted]")
+    from app.secrets_store import redact
+    value = redact(value)
     value = value.replace(settings.parallel_mcp_url, urlparse(settings.parallel_mcp_url).scheme + "://" + (urlparse(settings.parallel_mcp_url).hostname or "mcp"))
     return re.sub(r"(?i)(authorization|bearer)\s*[:=]?\s*[^\s,;]+", r"\1 [redacted]", value)
 
@@ -98,6 +100,8 @@ class Application:
         self.settings = settings or Settings.from_env()
         self.store = Store(self.settings.data_dir)
         self.preferences_path = self.settings.data_dir / "settings.json"
+        from app import secrets_store
+        secrets_store.apply_to_environment(self.settings.data_dir)  # keys saved in Settings → API keys
         self.preferences = self._read_preferences()
         self.settings = self._settings_from_preferences(self.settings, self.preferences)
         self.discovery_preferences = load_preferences(self.store)
@@ -210,8 +214,12 @@ class Application:
         }
 
     @staticmethod
-    def _decorate_jobs(jobs: list[dict]) -> list[dict]:
+    def _decorate_jobs(jobs: list[dict], preferences: dict | None = None) -> list[dict]:
+        from app.services.vacancy_validation import clean_text, clean_title, validate
         for job in jobs:
+            job["title"] = clean_title(job.get("title")) or job.get("title")
+            for field in ("employer", "location"):
+                job[field] = clean_text(job.get(field))
             job["role_family"] = role_family(str(job.get("title") or ""))
             kind = (job.get("raw") or {}).get("source_kind") or "job_listing"
             official = job.get("discovered_via") in {"company career board", "company career page"}
@@ -228,6 +236,17 @@ class Application:
             from app.services.job_sources.geo import work_arrangement
             job["arrangement"] = work_arrangement(job.get("location"), job.get("remote"),
                                                   str((job.get("raw") or {}).get("raw_text") or "")[:3000])
+            # v4.3 validation gate: document type, geography, publication freshness, vacancy status, result group.
+            verdict = validate(job, lifecycle_state=job["lifecycle"]["state"], preferences=preferences)
+            job["validation"] = verdict
+            geo = verdict["geography"]
+            job["arrangement"] = {**job["arrangement"], "kind": geo["kind"], "label": geo["label"],
+                                  "evidence": geo["evidence"], "india_eligible": geo["eligible"]}
+            job["vacancy_status"] = verdict["vacancy_status"]
+            job["vacancy_status_label"] = verdict["vacancy_status_label"]
+            job["verification_level"] = verdict["verification_level"]
+            job["document_type"] = verdict["document"]["type"]
+            job["result_group"] = verdict["group"]
             types = set()
             if job.get("discovered_via") == "company career board" or job.get("ats_ref"):
                 types.add("ats")
@@ -258,7 +277,7 @@ class Application:
 
     def feed(self, *, include_hidden: bool = False) -> dict:
         from app.services.feed import build_feed
-        jobs = self._decorate_jobs(self.store.jobs(limit=2000))
+        jobs = self._decorate_jobs(self.store.jobs(limit=2000), self.discovery_preferences)
         visits = self.store.get_preference("visits", {}) or {}
         feed = build_feed(jobs=jobs, notices=self.store.notices(limit=200), exams=self.store.exams(limit=300),
                           employers=self.store.employers(limit=3000), states=self.store.item_states().get("job", {}),
@@ -390,7 +409,7 @@ class Application:
 
     def today_plan(self, *, jobs=None, market=None) -> dict:
         if jobs is None:
-            jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=600, fresh_only=True))
+            jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=600, fresh_only=True), self.discovery_preferences)
                     if job["source_kind"] not in {"search_page", "index_page"}]
         market = market or job_market(jobs, resumes=self.store.resumes())
         return build_today_plan(tasks=self.store.tasks(), jobs=jobs, exams=self.store.exams(limit=200),
@@ -399,8 +418,8 @@ class Application:
 
     def bootstrap(self):
         notes = self.sync_planning_notes()
-        all_jobs = self._decorate_jobs(self.store.jobs(limit=1500))
-        fresh = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))
+        all_jobs = self._decorate_jobs(self.store.jobs(limit=1500), self.discovery_preferences)
+        fresh = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True), self.discovery_preferences)
                  if job["source_kind"] not in {"search_page", "index_page"}]
         resumes = self.store.resumes()
         market = job_market(fresh or all_jobs, resumes=resumes)
@@ -908,9 +927,70 @@ class Application:
                 "items": items, "counts": self.store.counts()}
 
     def insights(self) -> dict:
-        jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True))
+        jobs = [job for job in self._decorate_jobs(self.store.jobs(limit=1500, fresh_only=True), self.discovery_preferences)
                 if job["source_kind"] not in {"search_page", "index_page"}]
         return {"job_market": job_market(jobs, resumes=self.store.resumes()), "counts": self.store.counts()}
+
+    # ------------------------------------------------------------ API keys (Settings → API keys)
+    def api_keys(self) -> dict:
+        from app import secrets_store
+        return {"providers": secrets_store.status(self.settings.data_dir),
+                "firecrawl_enabled": bool((self.discovery_preferences.get("jobs") or {}).get("firecrawl_enabled"))}
+
+    def save_api_keys(self, provider_id: str, values: dict) -> dict:
+        """Store the pasted key(s) for one provider, apply them immediately, and test them."""
+        from app import secrets_store
+        from app.services.key_check import check
+        provider = secrets_store.BY_PROVIDER.get(str(provider_id))
+        if provider is None:
+            raise ValueError("Unknown provider")
+        values = {name: value for name, value in (values or {}).items() if str(value or "").strip()}
+        unknown = set(values) - set(provider["keys"])
+        if unknown:
+            raise ValueError("Unexpected key name for this provider: " + ", ".join(sorted(unknown)))
+        if not values:
+            raise ValueError("Paste the key first")
+        previous = secrets_store._read(self.settings.data_dir)
+        secrets_store.save(values, self.settings.data_dir)
+        result = asyncio.run(check(provider_id))
+        if result.get("rejected"):
+            # A key the provider refuses is not kept; the previous saved key (if any) is restored.
+            restore = {name: previous[name] for name in values if name in previous}
+            secrets_store.remove([name for name in values if name not in previous], self.settings.data_dir)
+            if restore:
+                secrets_store.save(restore, self.settings.data_dir)
+            result = {**result, "message": result["message"] + (" The previous key was kept." if restore
+                                                                 else " The key was not saved.")}
+            return {**self.api_keys(), "check": {"provider": provider_id, **result}}
+        if provider_id == "firecrawl" and not (self.discovery_preferences.get("jobs") or {}).get("firecrawl_enabled"):
+            prefs = json.loads(json.dumps(self.discovery_preferences))
+            prefs.setdefault("jobs", {})["firecrawl_enabled"] = True
+            self.save_discovery_preferences(prefs)
+        self._reenable_source(provider_id)
+        return {**self.api_keys(), "check": {"provider": provider_id, **result}}
+
+    def remove_api_keys(self, provider_id: str) -> dict:
+        from app import secrets_store
+        provider = secrets_store.BY_PROVIDER.get(str(provider_id))
+        if provider is None:
+            raise ValueError("Unknown provider")
+        secrets_store.remove(provider["keys"], self.settings.data_dir)
+        return self.api_keys()
+
+    def test_api_keys(self, provider_id: str) -> dict:
+        from app.services.key_check import check
+        return {**self.api_keys(), "check": {"provider": provider_id, **asyncio.run(check(provider_id))}}
+
+    def _reenable_source(self, provider_id: str) -> None:
+        """A source that backed off because it had no/invalid key gets a fresh start once a key is saved."""
+        source_id = {"adzuna": "api:adzuna", "serpapi": "api:google-jobs", "firecrawl": "extractor:firecrawl"}.get(provider_id)
+        if not source_id:
+            return
+        with self.store.connect() as db:
+            db.execute("UPDATE source_state SET consecutive_failures=0, next_attempt_at=NULL WHERE source_id=?",
+                       (source_id,))
+        if source_id == "extractor:firecrawl":
+            self.store.set_source_enabled(source_id, True)
 
     def save_discovery_preferences(self, payload: dict) -> dict:
         clean = save_preferences(self.store, payload)

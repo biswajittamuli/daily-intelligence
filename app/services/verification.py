@@ -57,6 +57,11 @@ def lifecycle(job: dict[str, Any], today: date | None = None) -> dict[str, Any]:
         return {"state": "inaccessible", "label": "Inaccessible",
                 "detail": f"Could not be retrieved in the last two checks ({history[-1].get('evidence') or ''})".strip()}
     verified = parse_date(str(job.get("last_verified") or "")[:10])
+    last_outcome = (history[-1] or {}).get("outcome") if history else None
+    if status == "open" and last_outcome in {"missing_once", "unreachable"}:
+        # A failed or missing check never closes a job, but it no longer counts as verified either.
+        return {"state": "recheck_pending", "label": "Possibly open · last check failed",
+                "detail": str((history[-1] or {}).get("evidence") or "")[:200]}
     if status == "open":
         if verified and (today - verified).days <= VERIFIED_DAYS:
             on_board = str(job.get("status_evidence") or "").startswith("Listed on") or \
@@ -140,14 +145,16 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
         portal = portal_policy.portal_for(str(job.get("original_url") or ""))
         return ("portal:" + re.sub(r"[^a-z0-9]+", "-", portal.name.casefold()).strip("-")) if portal else "search:web"
 
-    def record(job, outcome, *, status=None, evidence="", missing=False, raw_text=None, posted=None):
+    def record(job, outcome, *, status=None, evidence="", missing=False, raw_text=None, posted=None,
+               posted_source=None, deadline=None):
         counts[outcome] = counts.get(outcome, 0) + 1
         if outcome != "not_checked":
             entry = per_source.setdefault(source_of(job), [0, 0])
             entry[0] += int(outcome in {"verified_open", "closed", "expired"})
             entry[1] += 1
         store.record_verification(job["id"], status=status, evidence=evidence, outcome=outcome, missing=missing,
-                                  raw_text=raw_text, posted_date=posted)
+                                  raw_text=raw_text, posted_date=posted, posted_source=posted_source,
+                                  deadline=deadline)
         details.append({"id": job["id"], "title": job.get("title"), "outcome": outcome, "evidence": evidence[:160]})
 
     # Deadline check first (no network needed).
@@ -185,7 +192,8 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
                 if item:
                     record(job, "verified_open", status="open",
                            evidence=f"Listed on {ats.capitalize()} board '{slug}' on {today.isoformat()}",
-                           raw_text=item.get("description"), posted=item.get("posted_date"))
+                           raw_text=item.get("description"), posted=item.get("posted_date"),
+                           posted_source="employer ATS" if item.get("posted_date") else None)
                 elif not board_ok:
                     record(job, "unreachable", evidence=f"{ats.capitalize()} board '{slug}' could not be read")
                 elif int(job.get("missing_count") or 0) >= 1:
@@ -259,16 +267,23 @@ async def verify_jobs(store: Store, settings: Settings, jobs: list[dict[str, Any
                         else:
                             record(job, "missing_once", missing=True, evidence="Listing page reported not found once")
                         continue
+                    from app.services.job_sources.structured import labelled_dates
                     reqs = extract_requirements(text[:12000], title=str(job.get("title") or ""))
-                    deadline = parse_date(reqs.get("deadline"))
+                    dates = labelled_dates(text, is_html=False)
+                    deadline = parse_date(dates["deadline"]) or parse_date(reqs.get("deadline"))
+                    posted = dates["posted_date"]
+                    if posted and parse_date(posted) and parse_date(posted) > today:
+                        posted = None
                     if deadline and deadline < today:
                         record(job, "expired", status="expired", evidence=f"Page states deadline {deadline.isoformat()}")
                     elif OPEN_WORDS.search(text):
                         record(job, "verified_open", status="open", evidence="Listing page reachable with apply option",
-                               raw_text=text[:8000])
+                               raw_text=text[:8000], posted=posted, posted_source="listing page label" if posted else None,
+                               deadline=deadline.isoformat() if deadline else None)
                     else:
                         record(job, "unchanged", evidence="Page reachable; no apply or closure wording found",
-                               raw_text=text[:8000])
+                               raw_text=text[:8000], posted=posted,
+                               posted_source="listing page label" if posted else None)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # report, never crash the whole verification run
@@ -297,6 +312,11 @@ def _employer_page(job: dict[str, Any]) -> str | None:
     for source in job.get("sources") or []:
         if source.get("via") in {"Company career page", "company career page"} and source.get("url"):
             return str(source["url"])
+    # v4.3: a listing found by search on the employer's own domain (jobs.<employer>.com) is an employer page.
+    from app.services.vacancy_validation import employer_owned_url
+    original = str(job.get("original_url") or "")
+    if employer_owned_url(original, job.get("employer")):
+        return original
     return None
 
 
@@ -326,19 +346,29 @@ async def _verify_direct(pairs, record, counts, today: date, *, http: Any | None
                 continue
             text = structured.visible_text(page.text, 30000)
             postings = structured.job_postings(page.text, page.final_url or target)
-            valid = next((parse_date(p.get("deadline")) for p in postings if p.get("deadline")), None)
+            labels = structured.labelled_dates(page.text)
+            valid = next((parse_date(p.get("deadline")) for p in postings if p.get("deadline")), None) \
+                or parse_date(labels["deadline"])
+            posted = next((p.get("posted_date") for p in postings if p.get("posted_date")), None)
+            posted_source = "JobPosting datePosted" if posted else None
+            if not posted and labels["posted_date"]:
+                posted, posted_source = labels["posted_date"], (
+                    "JobPosting datePosted" if labels["posted_evidence"] == "microdata datePosted" else "employer page label")
+            if posted and parse_date(posted) and parse_date(posted) > today:
+                posted = posted_source = None
             closed = CLOSED_WORDS.search(text)
             if closed:
                 record(job, "closed", status="closed", evidence=f"Employer page says: “{closed.group(0)}”")
             elif valid and valid < today:
-                record(job, "expired", status="expired", evidence=f"JobPosting validThrough {valid.isoformat()} has passed")
+                record(job, "expired", status="expired", evidence=f"Employer page: closing date {valid.isoformat()} has passed")
             elif postings or OPEN_WORDS.search(text):
                 record(job, "verified_open", status="open",
                        evidence=("Employer page has JobPosting data" if postings else "Employer page shows an apply option")
                                 + f" ({today.isoformat()})", raw_text=text[:8000],
-                       posted=next((p.get("posted_date") for p in postings if p.get("posted_date")), None))
+                       posted=posted, posted_source=posted_source, deadline=valid.isoformat() if valid else None)
             else:
-                record(job, "unchanged", evidence="Employer page reachable; no apply or closure wording found")
+                record(job, "unchanged", evidence="Employer page reachable; no apply or closure wording found",
+                       posted=posted, posted_source=posted_source)
     finally:
         if owns:
             await http.__aexit__(None, None, None)
@@ -367,7 +397,12 @@ def select_due_for_verification(store: Store, *, limit: int = 30, today: date | 
         history = job.get("verify_history") or []
         last_try = parse_date(str((history[-1] or {}).get("at") or "")[:10]) if history else None
         last = max(filter(None, [checked, last_try]), default=None)
-        if last and (today - last).days < REVERIFY_AFTER_DAYS:
+        # An undated listing on a known employer page is due once more even if checked recently: the employer
+        # check is what reads its publication date (v4.3). The previous check must not have been on that page.
+        undated_employer = not job.get("posted_date") and _employer_page(job) and \
+            not str(job.get("verification_source") or "").startswith("employer page") and \
+            last_try != today
+        if last and (today - last).days < REVERIFY_AFTER_DAYS and not undated_employer:
             continue
         candidates.append((not is_tracked, -(job.get("match_score") or 0), job["id"], job))
     candidates.sort(key=lambda item: item[:3])

@@ -1,5 +1,61 @@
 # Changelog
 
+## 4.3.0 — 2026-11-09
+
+Accuracy, freshness and source coverage for job discovery. Diagnosis and technology selection:
+`docs/V4.3_DISCOVERY_DIAGNOSIS.md`.
+
+### Freshness is publication-based
+- A first-discovered time is never a publication date. Undated listings read
+  "Publication date not disclosed · First discovered today" and are never "new". "New" means a stated
+  publication date within 3 days; "newly discovered" is a separate, labelled badge.
+- Publication dates are read from page labels ("Date: Oct 19, 2026", "Posted on …", microdata
+  `datePosted`) and closing dates from "Closing date / Last date / Apply by" during discovery and every
+  re-verification. A stored date is replaced only by better evidence; future dates are rejected.
+- Pages on the employer's own domain (e.g. `jobs.ametek.com`) are verified directly as employer pages.
+- A failed or 404 check never closes a job and no longer counts as verified ("Possibly open · last check
+  failed"); two consecutive misses close it. Status transitions are recorded in `job_status_history`.
+- The default feed favours vacancies published within the last 7 days.
+
+### Validation gate before ranking
+- New `app/services/vacancy_validation.py`: document classification (14 types), vacancy validation,
+  publication freshness, geography, vacancy status, verification level and result group, each with reasons.
+- Talent networks and candidate-registration pages are never resume-scored; they appear under
+  `other_opportunities`, not in the feed.
+- Geography fails closed: "Remote" alone is "Remote — location restrictions unknown"; a remote job tied to any
+  non-target place, or stating US/UK/EU residency, is "Remote — India not eligible"; a place in the title counts
+  when the location is missing. Target country is configurable (`jobs.target_country`).
+- Feed groups: verified strong / verified good / stretch / verification pending / outside geography /
+  not a vacancy / closed. Only verified, in-geography vacancies can be strong or good matches.
+- HTML entities are decoded in titles, employers and locations; trailing "Apply" / "View & Apply" removed.
+
+### Sources
+- New job APIs: Himalayas (free, explicit location restrictions, publication and expiry dates), Adzuna India
+  (optional key) and Google for Jobs via SerpApi (optional key; reaches LinkedIn, Naukri, Indeed and foundit
+  listings without fetching those portals).
+- Portal `site:` searches rotate between runs (three portals per call) so every portal is queried.
+- Source health: "successful" requires usable vacancies ("Answered · no usable vacancies" otherwise);
+  terms-limited portals report "Search-engine results only"; keyless APIs report "Not configured";
+  per-source stored / verified / rejected counts; Hasjob is no longer registered twice.
+- Cross-source dedup no longer merges same-title openings in different cities or with different requisition
+  ids; the employer's apply link is preferred and every sighting (with the query that found it) is kept.
+- CLI: `python -m app.main discover` and `python -m app.main sources-report`.
+- **Settings → API keys**: paste a key, it is tested with the provider immediately (free account/credit
+  endpoints where available), kept only if accepted, stored locally with 0600 permissions and applied without a
+  restart. Covers Adzuna, SerpApi (Google for Jobs), Firecrawl and the Parallel token. Key endpoints refuse
+  cross-origin requests.
+- Firecrawl is now actually used: career-page discovery falls back to it when JavaScript rendering is needed
+  and the local browser is unavailable or fails (it was implemented but never connected before).
+- On-demand renderers report "Standby · used only when needed" instead of "Not configured".
+- Security: the whole local API now accepts requests only from the app's own page. The Host must be
+  127.0.0.1/localhost on the app's port (blocks DNS rebinding), a cross-site Origin is refused, and writes
+  must be JSON (blocks form-style cross-site requests). Other websites open in your browser can no longer
+  trigger discovery, change preferences or read data.
+
+### Data
+- Schema v11 (additive, automatic backup): `job_listings.document_type, geo_class, vacancy_status,
+  verification_level, validation_json, last_fetched_at`; table `job_status_history`.
+
 ## 4.2.0 — 2026-11-09
 
 ### More of the right jobs

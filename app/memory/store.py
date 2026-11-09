@@ -170,6 +170,11 @@ CREATE TABLE IF NOT EXISTS source_state (
     verification_ok INTEGER NOT NULL DEFAULT 0, verification_total INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT, updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS job_status_history (
+    id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL, at TEXT NOT NULL,
+    from_status TEXT, to_status TEXT, outcome TEXT, evidence TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history(job_id);
 """
 
 
@@ -180,7 +185,7 @@ CREATE TABLE IF NOT EXISTS source_state (
 
 
 
-SCHEMA_VERSION = 10  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 11  # bump whenever _migrate adds tables/columns
 
 
 class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin, TrackingMixin, SourcesMixin):
@@ -248,7 +253,10 @@ class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin
                              "salary_currency": "TEXT", "education": "TEXT", "conflicts_json": "TEXT",
                              "retrieved_at": "TEXT", "verification_source": "TEXT",
                              # v9: posting-date provenance
-                             "posted_date_source": "TEXT", "posting_date_confidence": "TEXT"},
+                             "posted_date_source": "TEXT", "posting_date_confidence": "TEXT",
+                             # v11: validation gate results (document type, geography, status, verification level)
+                             "document_type": "TEXT", "geo_class": "TEXT", "vacancy_status": "TEXT",
+                             "verification_level": "TEXT", "validation_json": "TEXT", "last_fetched_at": "TEXT"},
             "employers": {"career_discovery_json": "TEXT", "career_outcome": "TEXT", "next_discovery_at": "TEXT",
                           "discovery_attempts": "INTEGER DEFAULT 0", "last_discovery_method": "TEXT",
                           "last_discovery_success": "TEXT",

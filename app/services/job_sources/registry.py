@@ -39,9 +39,14 @@ class SourceDefinition:
         return asdict(self)
 
 
+FEED_COVERED = {"Hasjob"}
+
+
 def _portal_defs() -> list[SourceDefinition]:
     output = []
     for portal in portals.PORTALS:
+        if portal.name in FEED_COVERED:
+            continue  # read through its public feed (feed:*), not registered twice
         sid = "portal:" + re.sub(r"[^a-z0-9]+", "-", portal.name.casefold()).strip("-")
         search_only = portal.policy == portals.SEARCH_ONLY
         output.append(SourceDefinition(
@@ -113,10 +118,24 @@ STATIC_DEFS: list[SourceDefinition] = [
                      "India first", "", "1 search per day", default_enabled=True),
     SourceDefinition("feed:hasjob", "Hasjob public feed", "feed", "public Atom feed", ("enumerate",), "all-in-one",
                      "India", "Public feed; robots.txt respected", "1 request per run"),
+    SourceDefinition("api:himalayas", "Himalayas remote-jobs API", "job_api",
+                     "public JSON API (country=India), page 1 per query (robots.txt disallows paging)",
+                     ("search", "location restrictions", "posting date", "expiry date"), "none",
+                     "Remote jobs; explicit country restrictions", "Free, no key; credit Himalayas when shown",
+                     "≤4 queries per run"),
+    SourceDefinition("api:adzuna", "Adzuna India API", "job_api", "official REST API /jobs/in/search",
+                     ("search", "posting date", "pagination"), "offset", "India",
+                     "Optional free developer key — add it in Settings → API keys", "≤4 calls per run",
+                     alternative="Without a key the source is reported as not configured."),
+    SourceDefinition("api:google-jobs", "Google for Jobs (SerpApi)", "job_api",
+                     "SerpApi google_jobs engine (gl=in) — reaches LinkedIn, Naukri, Indeed, foundit listings indexed by Google",
+                     ("search", "relative posting date", "apply links per portal"), "provider-limited", "India",
+                     "Optional key (free plan: 250 searches/month) — add it in Settings → API keys", "≤2 calls per run",
+                     alternative="Without a key, LinkedIn/Indeed/Naukri are reached only through web-search results."),
     SourceDefinition("renderer:browser", "Headless browser (Chrome)", "renderer", "Playwright, system Chrome",
                      ("render",), "n/a", "n/a", "Used only when static HTML is insufficient", "1 page at a time"),
     SourceDefinition("extractor:firecrawl", "Firecrawl (optional)", "renderer", "Firecrawl API", ("render",), "n/a",
-                     "n/a", "Needs FIRECRAWL_API_KEY; public employer URLs only", "per API plan", default_enabled=False),
+                     "n/a", "Needs a key (Settings → API keys); sends public employer URLs only", "per API plan", default_enabled=False),
 ]
 
 
@@ -134,6 +153,9 @@ def source_id_for(report: dict[str, Any]) -> str | None:
     if category == "ats_board":
         provider = method.split(" ")[0].casefold()
         return f"ats:{provider}" if f"ats:{provider}" in BY_ID else None
+    if method == "job API":
+        sid = str(report.get("domain") or "")
+        return sid if sid in BY_ID else None
     if method == "public feed":
         sid = "feed:" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
         return sid if sid in BY_ID else None
@@ -185,6 +207,10 @@ class RunStats:
     unique: int = 0
     extraction_ok: int = 0
     extraction_total: int = 0
+    rejected: int = 0
+    stored: int = 0
+    verified: int = 0
+    policy_limited: bool = False
     failures: list[str] = field(default_factory=list)
     states: set[str] = field(default_factory=set)
 
@@ -204,14 +230,20 @@ def aggregate(reports: Iterable[dict[str, Any]]) -> dict[str, RunStats]:
         if state in SourceState.SUCCESS:
             entry.success = entry.success or state != SourceState.PARTIAL
             entry.partial = entry.partial or state == SourceState.PARTIAL
-        if state in SourceState.BLOCKED:
+        policy = state in {SourceState.POLICY_SKIPPED, SourceState.ROBOTS_DISALLOWED} or \
+            "(policy)" in str(report.get("method") or "") or "search results only" in str(report.get("method") or "")
+        entry.policy_limited = entry.policy_limited or policy
+        if state in SourceState.BLOCKED and state != SourceState.POLICY_SKIPPED:
             entry.blocked = True
-        if state not in SourceState.SUCCESS | {SourceState.NO_RESULTS}:
+        if state not in SourceState.SUCCESS | {SourceState.NO_RESULTS, SourceState.POLICY_SKIPPED}:
             if report.get("failure_reason"):
                 entry.failures.append(str(report["failure_reason"])[:200])
         entry.results += int(report.get("search_results") or 0)
         entry.listings += int(report.get("listings") or 0)
         entry.unique += int(report.get("unique") or 0)
+        entry.rejected += int(report.get("rejected") or 0)
+        entry.stored += int(report.get("stored") or 0)
+        entry.verified += int(report.get("verified") or 0)
         if state not in {SourceState.POLICY_SKIPPED, SourceState.ROBOTS_DISALLOWED}:
             entry.extraction_total += 1
             entry.extraction_ok += int(state in SourceState.SUCCESS or state == SourceState.NO_RESULTS)
@@ -219,9 +251,19 @@ def aggregate(reports: Iterable[dict[str, Any]]) -> dict[str, RunStats]:
 
 
 def run_state(stats: RunStats) -> str:
-    """One clear state per source for a run: successful / partial / failed / access restricted / not attempted."""
+    """One clear state per source for a run.
+
+    "successful" requires usable records: individual vacancies (listings) or unique candidates from this source.
+    An answer with results that yielded no usable vacancy is "no_usable_results"; a portal limited to
+    search-engine results by its terms is "search_only", whatever it returned.
+    """
     if not stats.attempted:
         return "not_attempted"
+    usable = bool(stats.listings or stats.unique)
+    if stats.policy_limited and not stats.failures:
+        return "search_only"
+    if (stats.success or stats.partial) and not usable:
+        return "no_usable_results" if stats.results else ("partial" if stats.failures else "no_results")
     if stats.success and not stats.failures:
         return "successful"
     if stats.success or stats.partial:
@@ -232,9 +274,11 @@ def run_state(stats: RunStats) -> str:
         return "failed"
     if not (stats.results or stats.listings or stats.unique):
         return "no_results"  # searched and answered, but returned nothing — not counted as a success
-    return "successful"
+    return "successful" if usable else "no_usable_results"
 
 
-RUN_STATE_LABEL = {"no_results": "Searched · no results", "successful": "Successful", "partial": "Partial", "failed": "Failed",
+RUN_STATE_LABEL = {"standby": "Standby · used only when needed", "no_usable_results": "Answered · no usable vacancies",
+                   "search_only": "Search-engine results only (terms forbid fetching)",
+                   "no_results": "Searched · no results", "successful": "Successful", "partial": "Partial", "failed": "Failed",
                    "access_restricted": "Access restricted", "not_configured": "Not configured",
                    "not_attempted": "Not attempted", "disabled": "Disabled", "backing_off": "Backing off"}

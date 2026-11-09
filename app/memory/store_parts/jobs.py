@@ -28,7 +28,7 @@ class JobsMixin:
                     continue
                 original = str(record.get("original_url") or record.get("url") or url)
                 key = dedup_key(record)
-                row = db.execute("SELECT id, first_seen, sources_json, verify_history_json, repost_of, posted_date, "
+                row = db.execute("SELECT id, status, first_seen, sources_json, verify_history_json, repost_of, posted_date, "
                                  "posting_date_confidence, posted_date_source FROM job_listings "
                                  "WHERE canonical_url=?", (url,)).fetchone()
                 from app.services.freshness import date_confidence, stronger_date
@@ -120,9 +120,31 @@ class JobsMixin:
                      record.get("evidence_confidence"), record.get("ats_ref"), record.get("salary_currency"),
                      record.get("education"), record.get("retrieved_at") or now, record.get("verification_source"),
                      record.get("posted_date_source"), record.get("posting_date_confidence")))
+                previous_status = row["status"] if row is not None else None
                 row = db.execute("SELECT * FROM job_listings WHERE canonical_url=?", (url,)).fetchone()
+                db.execute("UPDATE job_listings SET last_fetched_at=? WHERE id=?", (now, row["id"]))
+                if previous_status != row["status"]:
+                    db.execute("INSERT INTO job_status_history(job_id,at,from_status,to_status,outcome,evidence) "
+                               "VALUES(?,?,?,?,?,?)", (row["id"], now, previous_status, row["status"],
+                                                        "discovered" if previous_status is None else "refetched",
+                                                        str(record.get("status_evidence") or "")[:300]))
                 saved.append(self._row(row, "job_listings"))
         return saved
+
+    def update_validations(self, updates: list[dict[str, Any]]) -> None:
+        """Persist validation-gate results (document type, geography, vacancy status, stages) per listing."""
+        with self.connect() as db:
+            for update in updates:
+                db.execute("UPDATE job_listings SET document_type=?, geo_class=?, vacancy_status=?, "
+                           "verification_level=?, validation_json=? WHERE id=?",
+                           (update.get("document_type"), update.get("geo_class"), update.get("vacancy_status"),
+                            update.get("verification_level"), _json(update.get("validation")), update["id"]))
+
+    def status_history(self, job_id: int) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT at, from_status, to_status, outcome, evidence FROM job_status_history WHERE job_id=? ORDER BY id",
+                (job_id,))]
 
     OFFICIAL_VIA = {"company career board", "company career page"}
 
@@ -167,7 +189,8 @@ class JobsMixin:
 
     def record_verification(self, job_id: int, *, status: str | None, evidence: str, outcome: str,
                             missing: bool = False, posted_date: str | None = None,
-                            raw_text: str | None = None) -> dict[str, Any]:
+                            raw_text: str | None = None, posted_source: str | None = None,
+                            deadline: str | None = None) -> dict[str, Any]:
         """Store a re-verification result and its history (never deletes the listing)."""
         now = self.now()
         with self.connect() as db:
@@ -187,10 +210,20 @@ class JobsMixin:
                 fields["verification_source"] = ("employer public job board" if evidence.startswith("Listed on") else
                                                  "employer page" if evidence.startswith(("Employer page", "JobPosting")) else
                                                  "third-party listing page")
-            if posted_date and (not row["posted_date"] or (row["posting_date_confidence"] or "low") in {"low", "unknown"}):
+            from app.services.freshness import date_confidence, stronger_date
+            source = posted_source or ("employer ATS" if evidence.startswith("Listed on") else "JobPosting datePosted")
+            confidence = date_confidence(source, posted_date)
+            if posted_date and stronger_date(posted_date, confidence, row["posted_date"],
+                                             row["posting_date_confidence"] or "low"):
                 fields["posted_date"] = posted_date
-                fields["posted_date_source"] = "employer ATS" if evidence.startswith("Listed on") else "JobPosting datePosted"
-                fields["posting_date_confidence"] = "high"
+                fields["posted_date_source"] = source
+                fields["posting_date_confidence"] = confidence
+            if deadline and not row["deadline"]:
+                fields["deadline"] = deadline
+            fields["last_fetched_at"] = now
+            if status and status != row["status"]:
+                db.execute("INSERT INTO job_status_history(job_id,at,from_status,to_status,outcome,evidence) "
+                           "VALUES(?,?,?,?,?,?)", (job_id, now, row["status"], status, outcome, evidence[:300]))
             if raw_text:
                 raw = _loads(row["raw_json"], {}) or {}
                 raw["raw_text"] = raw_text[:8000]

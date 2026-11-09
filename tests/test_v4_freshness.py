@@ -22,7 +22,7 @@ class FreshnessTests(unittest.TestCase):
         self.assertFalse(stronger_date("2026-11-02", "low", "2026-10-01", "high"))
         self.assertFalse(stronger_date(None, "high", "2026-10-01", "low"))
 
-    def test_buckets_use_trusted_posting_dates_then_first_seen(self):
+    def test_buckets_use_trusted_posting_dates_only(self):
         def bucket(**job):
             return freshness_bucket(job, now=NOW, lifecycle_state=job.pop("_state", "unverified"))["key"]
         self.assertEqual(bucket(posted_date="2026-11-09", posted_date_source="employer ATS"), "new_today")
@@ -35,10 +35,12 @@ class FreshnessTests(unittest.TestCase):
         low = freshness_bucket({"posted_date": "2026-11-09", "posted_date_source": "search engine page date",
                                 "first_seen": (NOW - timedelta(days=10)).isoformat()}, now=NOW)
         self.assertEqual(low["key"], "date_unknown")
+        # v4.3: first-seen is never a publication date; an undated listing is "date unknown", discovered today.
         seen = freshness_bucket({"first_seen": NOW.isoformat()}, now=NOW)
-        self.assertEqual(seen["key"], "new_today")
-        self.assertTrue(seen["label"].startswith("First seen"))
-        self.assertIn("first seen by this app", seen["basis"])
+        self.assertEqual(seen["key"], "date_unknown")
+        self.assertEqual(seen["label"], "Publication date not disclosed · First discovered today")
+        self.assertTrue(seen["newly_discovered"])
+        self.assertFalse(seen["newly_published"])
         self.assertEqual(bucket(status="closed"), "closed")
         self.assertEqual(bucket(_state="expired"), "expired")
         self.assertEqual(freshness_bucket({}, now=NOW)["key"], "date_unknown")

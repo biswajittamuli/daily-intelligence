@@ -16,7 +16,7 @@ function feedFilter(){
   const lens=f.lens||'foryou';
   return (F().items||[]).filter(i=>{
     if(lens==='foryou'&&!(i.kind==='job'&&['strong','possible'].includes(i.tier)))return false;
-    if(lens==='new'&&!(i.sections||[]).includes('new'))return false;
+    if(lens==='new'&&(!(i.sections||[]).includes('new')||i.tier==='pending'))return false;
     if(lens==='saved'&&!['saved','applied','interview','offer'].includes(i.state))return false;
     if(lens==='public'&&i.kind==='job')return false;
     if(f.section&&!(i.sections||[]).includes(f.section))return false;
@@ -38,7 +38,7 @@ function todaysPicks(){
 function rowMeta(i){
   const fresh=(i.freshness||{}).label;
   const parts=[i.org,i.kind==='job'?(i.location||'').split(',')[0]:null,i.kind==='exam'?(i.event||'').replace(/_/g,' '):null,
-    fresh&&!/date unknown/i.test(fresh)?fresh.replace(/^New /,'').replace(/^First seen /,'seen '):null].filter(Boolean);
+    fresh||null].filter(Boolean);
   return parts.map(esc).join(' · ');
 }
 function rowNote(i){
@@ -82,7 +82,8 @@ function feedDetail(i){
   return `<div class="calm-detail">
     <p class="why">${esc(i.why||'No explanation stored yet.')}</p>
     ${(i.matched||[]).length||(i.missing||[]).length?`<p class="skills-line">${(i.matched||[]).length?`<span class="have">You have</span> ${(i.matched||[]).slice(0,6).map(esc).join(', ')}`:''}${(i.missing||[]).length?`${(i.matched||[]).length?'<br>':''}<span class="miss">Missing</span> ${(i.missing||[]).slice(0,4).map(esc).join(', ')}`:''}</p>`:''}
-    <p class="facts">${[(i.lifecycle||{}).label,i.eligibility_label,i.arrangement,i.posted?'posted '+fmtDate(i.posted):null,i.sources>1?i.sources+' sources':null].filter(Boolean).map(esc).join(' · ')}</p>
+    <p class="facts">${[i.vacancy_status||(i.lifecycle||{}).label,i.eligibility_label,i.geography||i.arrangement,i.published_label,i.sources>1?i.sources+' sources':null].filter(Boolean).map(esc).join(' · ')}</p>
+    ${i.group==='pending'&&i.group_reason?`<p class="facts">Verification pending: ${esc(i.group_reason)}</p>`:''}
     <div class="calm-actions">
       ${link?`<a class="open-link" href="${safeUrl(link)}" target="_blank" rel="noopener">${i.application_url?'Apply':'Open listing'} ↗</a>`:''}
       ${quiet('item-state',current==='saved'?'Saved ✓':'Save',`data-kind="job" data-id="${i.id}" data-state="${current==='saved'?'none':'saved'}"`)}
@@ -148,7 +149,7 @@ function viewHome(){
       <aside class="calm-side-col">
         <section><h2 class="calm-h2">Coming up</h2>${coming.length?coming.map(c=>`<div class="side-row"><span>${c.url?`<a href="${safeUrl(c.url)}" target="_blank" rel="noopener">${esc(c.title)}</a>`:esc(c.title)}</span><span class="side-when">${esc(c.when)}</span></div>`).join(''):'<p class="calm-empty small">A quiet two weeks — no deadlines.</p>'}</section>
         ${(f.news||[]).length?`<section><h2 class="calm-h2">Worth knowing</h2>${(f.news||[]).slice(0,2).map(n=>`<div class="side-row"><span><a href="${safeUrl(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a></span></div>`).join('')}<a class="quiet-action" href="#ai-news" data-view="ai-news">More news</a></section>`:''}
-        <p class="side-foot">${disc?`Updated ${esc(fmtDateTime(disc.created_at))} · ${esc(m.sources_successful??0)} of ${esc(m.sources_attempted??0)} sources answered`:'Not updated yet'}
+        <p class="side-foot">${disc?`Updated ${esc(fmtDateTime(disc.created_at))} · ${esc(m.sources_successful??0)} of ${esc(m.sources_attempted??0)} sources returned usable vacancies`:'Not updated yet'}
           · <a href="#sources" data-view="sources">Coverage</a><br>
           ${(f.automation||{}).daily_refresh?`Refreshes daily at ${esc((f.automation||{}).refresh_time||'08:00')}`:`Daily refresh is off · <button class="quiet-action inline" data-action="auto-on">Turn on</button>`}</p>
       </aside>

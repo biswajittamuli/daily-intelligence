@@ -468,7 +468,11 @@ class EmployerDiscovery:
 
         targets = [c for c in companies if c.get("website")]
         progress(f"Checking {len(targets)} company websites for career pages (static first, browser when needed)")
-        discovery = CareerDiscovery(safe, browser=browser, search=search if retriever is not None else None)
+        from app.services.job_sources import firecrawl
+        from app.services.preferences import load_preferences
+        use_firecrawl = firecrawl.configured(load_preferences(self.store))
+        discovery = CareerDiscovery(safe, browser=browser, search=search if retriever is not None else None,
+                                    firecrawl=firecrawl.scrape if use_firecrawl else None)
         for company in targets:
             stored = self.store.find_employer(company["name"])
             company["career_discovery"] = (stored or {}).get("career_discovery")
