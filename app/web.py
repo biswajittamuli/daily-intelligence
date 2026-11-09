@@ -38,7 +38,7 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "4.1.0"
+APP_VERSION = "4.2.0"
 APP_ID = "daily-intelligence"
 THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
 LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}

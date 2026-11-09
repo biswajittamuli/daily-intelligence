@@ -361,5 +361,47 @@ class V32RegressionTests(unittest.TestCase):
                 store.save_application({"status": "submitted-automatically"}, item["id"])
 
 
+class ShortlistSelectionTests(unittest.TestCase):
+    """BroadJobSearch's ranking stages, tested directly (they were extracted from run())."""
+
+    class Cov:
+        def __init__(self):
+            self.excluded = []
+
+        def exclude(self, item, reason, stage):
+            self.excluded.append((item["title"], stage))
+
+    def test_startup_first_ordering_cap_and_stretch_roles(self):
+        from app.services.broad_search import BroadJobSearch
+
+        class FakeStore:
+            def employers(self, limit=0):
+                return [{"id": 1, "name": "Tiny AI Labs", "classification": "startup"},
+                        {"id": 2, "name": "BigCo", "classification": "established"}]
+
+        holder = type("S", (), {"store": FakeStore()})()
+        is_startup, ids = BroadJobSearch._startup_test(holder, {"startup": True, "funded": False})
+        self.assertEqual(ids, {1})
+        self.assertTrue(is_startup({"employer": "tiny ai labs"}))
+        self.assertFalse(is_startup({"employer_id": 2, "employer": "BigCo"}))
+        no_test, no_ids = BroadJobSearch._startup_test(holder, {"startup": False, "funded": False})
+        self.assertEqual(no_ids, set())
+        self.assertFalse(no_test({"employer_id": 1}))
+
+        def job(title, composite, employer_id=2, score=None):
+            return {"title": title, "employer_id": employer_id, "match_score": score or composite,
+                    "eligibility": {"composite": composite, "gates": ["Experience: 5+ years"]}}
+        ranked = [job("BigCo 90", 90), job("Startup 70", 70, employer_id=1), job("BigCo 80", 80)]
+        ineligible = [job("Stretch 65", 65), job("Weak 40", 40)]
+        cov = self.Cov()
+        shortlist, stretch = BroadJobSearch._select_shortlist(ranked, ineligible, is_startup, 2,
+                                                              {"store_cap": 2}, cov)
+        self.assertEqual([j["title"] for j in shortlist], ["Startup 70", "BigCo 90", "Stretch 65"])
+        self.assertEqual([j["title"] for j in stretch], ["Stretch 65"])
+        self.assertIn(("BigCo 80", "shortlist"), cov.excluded)
+        self.assertIn(("Weak 40", "eligibility"), cov.excluded)
+        self.assertEqual(ineligible[1]["_exclusion_detail"], "Experience: 5+ years")
+
+
 if __name__ == "__main__":
     unittest.main()

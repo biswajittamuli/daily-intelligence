@@ -98,13 +98,18 @@ evidence extraction, with optional structured extraction for job/exam requests.
 
 ## Frontend and API
 
-- `app/static/index.html`, `app/static/app.css`, `app/static/app.js`: dark-first
-  responsive SPA. Delegated events, `setView`, background job polling, cancellation,
-  progress boxes, empty states, resume upload, settings forms. Discovery queries are
-  kept separate from display filters, so a query never hides stored results.
-- `app/web.py`: loopback API, single `ThreadPoolExecutor(max_workers=1)`, job
-  submission/status/cancel, bootstrap, preferences, watchlists, resume, item states,
-  export, clear-intel, MCP diagnostics.
+- `app/static/index.html`, `app/static/app.css`, `app/static/js/*.js`: responsive SPA.
+  Classic scripts sharing one global scope, loaded in order with `defer`: `core.js` (state,
+  helpers incl. `esc`/`safeUrl`, layout), one file per group of views (`jobs`, `market`, `intel`,
+  `planning`, `settings`, `startups`, `briefing-skills`, `home`), `palette.js`, and `events.js`
+  last (view registry, delegated events, `boot()`). Function hoisting does not cross files, so
+  anything evaluated at load that names functions from other files belongs in `events.js`.
+  Every link goes through `safeUrl` (http(s), mailto, in-page only). Discovery queries are kept
+  separate from display filters, so a query never hides stored results.
+- `app/web.py`: `Application` — single `ThreadPoolExecutor(max_workers=1)`, job
+  submission/status/cancel, bootstrap, preferences, watchlists, resume, scheduler.
+- `app/http_handler.py`: `make_handler(app)`, the loopback HTTP routes (static files, JSON API,
+  uploads, exports). Scripts are served only from `/js/<name>.js` with a strict name pattern.
 - `app/agent/briefing.py`: stored-intel briefing assembly with live fallback.
 - `app/agent/research.py`, `app/agent/search_planner.py`: bounded research path.
 - `app/llm.py`: installed-model-only Ollama generation; `num_predict` cap, thinking
@@ -130,7 +135,9 @@ evidence extraction, with optional structured extraction for job/exam requests.
 
 ## Data model (additive)
 
-`app/memory/store.py` uses `CREATE TABLE IF NOT EXISTS`; upgrades never drop data.
+`app/memory/store.py` uses `CREATE TABLE IF NOT EXISTS`; upgrades never drop data. `Store` combines
+one mixin per area from `app/memory/store_parts/` (personal, profile, jobs, records, employers,
+tracking, sources); `store.py` keeps setup, migration, backups (five newest kept) and connections.
 
 | Table | Purpose |
 | --- | --- |

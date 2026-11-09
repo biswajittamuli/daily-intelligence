@@ -1,5 +1,38 @@
 # Changelog
 
+## 4.2.0 — 2026-11-09
+
+### More of the right jobs
+- Location matching no longer discards jobs whose board lists only a work arrangement. Cloudflare's
+  Greenhouse board puts "Hybrid" / "Distributed" / "In-Office" in the location for 448 of 464 openings, so
+  every Cloudflare job (including its Remote India ones) was dropped as "outside your geography". The
+  Greenhouse reader now uses the job's offices when the location is only an arrangement; Lever
+  `allLocations` and Ashby `secondaryLocations` are kept too. A live run stored 7 Cloudflare roles
+  (Software Engineer, Data Scientist, Systems Engineer… Remote India) where it had stored none.
+- A preferred place in the title ("… (Based in India)") counts unless the location names a foreign one;
+  a foreign place in the title of a remote-only listing ("SRE — UK") restricts it.
+- "Engineering" in a non-technical title ("Director of Recruiting, Engineering & IT") no longer marks it
+  technical; benefits/compensation roles are non-technical.
+- Feed: listings verified on the employer's own system rank slightly above unverified or undated ones
+  (trust breaks near-ties; it never overrides a much better match).
+- Daily refresh: a full Discover run earlier the same day counts as that day's refresh, so opening the
+  app no longer spends a second round of searches.
+
+### Safety and reliability
+- Links from scraped pages go through `safeUrl`: `javascript:` and `data:` URLs are never rendered.
+- Ollama connections are closed after each request (one socket leaked per job before).
+- News-signal and local-model enrichment failures are logged instead of passing silently.
+- Migration backups: the five newest are kept.
+
+### Code
+- `app.js` (2,489 lines) split into `app/static/js/*.js`; HTTP routes moved to `app/http_handler.py`;
+  `Store` split into mixins (`app/memory/store_parts/`); `BroadJobSearch.run` ranking and shortlist
+  stages extracted and tested directly.
+- Removed the unused legacy `app/mcp` scripts (~1,800 lines; still in git history).
+- pytest is a dev dependency (`uv sync --dev`); ResourceWarnings fail the suite and none remain.
+  202 tests.
+- `IMPLEMENTATION_PLAN_V2.md` and `IMPLEMENTATION_STATUS.md` moved to `docs/history/`.
+
 ## 4.1.0 — 2026-11-09
 
 ### Calmer home

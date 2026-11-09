@@ -811,72 +811,13 @@ class BroadJobSearch:
             await self._llm_enrich([item for item in candidates if item.get("_content")][:4])
         timings["model_s"] = round(time.perf_counter() - t0, 1)
 
-        resumes = self.store.resumes()
-        today = date.today()
-        from app.services.requirements import extract_requirements
-        ranked, ineligible, excluded, gate_counts = [], [], Counter(), Counter()
-        not_vacancy = 0
-        t0 = time.perf_counter()
-        from app.services.job_matching import relevance_gate
-        active_profile = next((r.get("profile") for r in resumes if r.get("is_default")
-                               and r.get("status", "processed") == "processed"), None)
-        for item in candidates:
-            gate = relevance_gate(item, active_profile, self.preferences, targets=plan["variants"])
-            if gate["excluded"]:
-                # Cheap rejection first: no requirement extraction or assessment for clearly irrelevant openings.
-                eligibility = {"tier": "excluded", "excluded_reason": gate["excluded"]}
-            else:
-                item["_requirements"] = extract_requirements(str(item.get("raw_text") or ""),
-                                                             title=str(item.get("title") or ""))
-                match = active_resume_match(item, self.preferences, resumes, targets=plan["variants"], today=today)
-                eligibility = match["eligibility"]
-            if eligibility["tier"] == "excluded":
-                reason = eligibility["excluded_reason"].split(" (")[0].split(" you have")[0]
-                excluded[reason] += 1
-                not_vacancy += int(reason.startswith("Job search page"))
-                item["_exclusion_detail"] = eligibility["excluded_reason"]
-                cov.exclude(item, _exclusion_name(reason), "relevance")
-                item["_rejected"] = True
-                continue
-            item.update(match)
-            if eligibility["tier"] == "ineligible":
-                for gate in eligibility.get("gates") or []:
-                    gate_counts[gate.split(":")[0]] += 1
-                ineligible.append(item)
-            else:
-                ranked.append(item)
-        timings["ranking_s"] = round(time.perf_counter() - t0, 1)
+        ranked, ineligible, excluded, gate_counts, not_vacancy = self._rank_candidates(
+            candidates, plan["variants"], cov, timings)
         excluded["Articles / hiring news (not vacancies)"] += len(articles)
         cov.set("valid_jobs", len(candidates) - not_vacancy)
         cov.set("relevant_jobs", len(ranked) + len(ineligible))
-        # A request about startups puts listings from known startup employers first (ranking within each
-        # group is unchanged); other relevant listings still follow.
-        startup_ids, startup_names = set(), set()
-        if intent["startup"] or intent["funded"]:
-            for employer in self.store.employers(limit=2000):
-                if employer.get("classification") == "startup":
-                    startup_ids.add(employer["id"])
-                    startup_names.add(Store._norm_company(employer["name"]))
-
-        def is_startup(job: dict[str, Any]) -> bool:
-            return bool(startup_ids) and (job.get("employer_id") in startup_ids or
-                                          Store._norm_company(str(job.get("employer") or "")) in startup_names)
-        key = lambda job: (is_startup(job), (job.get("eligibility") or {}).get("composite") or 0,
-                           job.get("posted_date") or "")
-        ranked.sort(key=key, reverse=True)
-        ineligible.sort(key=key, reverse=True)
-        # Every relevant listing is kept (up to a safety cap) so recall is not lost to the shortlist size;
-        # the UI ranks them. A few high-match ineligible roles stay visible as "stretch" roles.
-        store_cap = max(pool_size, int(jobs_pref.get("store_cap") or 500))
-        stretch = [job for job in ineligible if (job.get("match_score") or 0) >= 60][:max(10, pool_size // 5)]
-        for job in ranked[store_cap:]:
-            cov.exclude(job, Exclusion.POOL_LIMIT, "shortlist")
-        stretch_ids = {id(job) for job in stretch}
-        for job in ineligible:
-            if id(job) not in stretch_ids:
-                job["_exclusion_detail"] = "; ".join((job.get("eligibility") or {}).get("gates") or [])
-                cov.exclude(job, Exclusion.INELIGIBLE, "eligibility")
-        shortlist = ranked[:store_cap] + stretch
+        is_startup, startup_ids = self._startup_test(intent)
+        shortlist, stretch = self._select_shortlist(ranked, ineligible, is_startup, pool_size, jobs_pref, cov)
         records = [self._record(item) for item in shortlist]
         saved = self.store.upsert_jobs(records)
         cov.set("stored_jobs", len(saved))
@@ -945,6 +886,90 @@ class BroadJobSearch:
         return summary
 
     # ------------------------------------------------- employer pages stage
+    def _rank_candidates(self, candidates: list[dict[str, Any]], variants: list[str], cov: Any,
+                         timings: dict[str, Any]) -> tuple[list, list, Counter, Counter, int]:
+        """Relevance gate, then full assessment against the active resume, for every candidate.
+
+        Returns (ranked, ineligible, excluded reasons, ineligibility gate counts, non-vacancy pages).
+        Excluded candidates are recorded in coverage and marked ``_rejected``.
+        """
+        from app.services.job_matching import relevance_gate
+        from app.services.requirements import extract_requirements
+
+        resumes = self.store.resumes()
+        today = date.today()
+        ranked, ineligible, excluded, gate_counts = [], [], Counter(), Counter()
+        not_vacancy = 0
+        t0 = time.perf_counter()
+        active_profile = next((r.get("profile") for r in resumes if r.get("is_default")
+                               and r.get("status", "processed") == "processed"), None)
+        for item in candidates:
+            gate = relevance_gate(item, active_profile, self.preferences, targets=variants)
+            if gate["excluded"]:
+                # Cheap rejection first: no requirement extraction or assessment for clearly irrelevant openings.
+                eligibility = {"tier": "excluded", "excluded_reason": gate["excluded"]}
+            else:
+                item["_requirements"] = extract_requirements(str(item.get("raw_text") or ""),
+                                                             title=str(item.get("title") or ""))
+                match = active_resume_match(item, self.preferences, resumes, targets=variants, today=today)
+                eligibility = match["eligibility"]
+            if eligibility["tier"] == "excluded":
+                reason = eligibility["excluded_reason"].split(" (")[0].split(" you have")[0]
+                excluded[reason] += 1
+                not_vacancy += int(reason.startswith("Job search page"))
+                item["_exclusion_detail"] = eligibility["excluded_reason"]
+                cov.exclude(item, _exclusion_name(reason), "relevance")
+                item["_rejected"] = True
+                continue
+            item.update(match)
+            if eligibility["tier"] == "ineligible":
+                for gate in eligibility.get("gates") or []:
+                    gate_counts[gate.split(":")[0]] += 1
+                ineligible.append(item)
+            else:
+                ranked.append(item)
+        timings["ranking_s"] = round(time.perf_counter() - t0, 1)
+        return ranked, ineligible, excluded, gate_counts, not_vacancy
+
+    def _startup_test(self, intent: dict[str, Any]) -> tuple[Callable[[dict[str, Any]], bool], set]:
+        """A request about startups puts listings from known startup employers first."""
+        startup_ids, startup_names = set(), set()
+        if intent["startup"] or intent["funded"]:
+            for employer in self.store.employers(limit=2000):
+                if employer.get("classification") == "startup":
+                    startup_ids.add(employer["id"])
+                    startup_names.add(Store._norm_company(employer["name"]))
+
+        def is_startup(job: dict[str, Any]) -> bool:
+            return bool(startup_ids) and (job.get("employer_id") in startup_ids or
+                                          Store._norm_company(str(job.get("employer") or "")) in startup_names)
+        return is_startup, startup_ids
+
+    @staticmethod
+    def _select_shortlist(ranked: list, ineligible: list, is_startup: Callable[[dict[str, Any]], bool],
+                          pool_size: int, jobs_pref: dict[str, Any], cov: Any) -> tuple[list, list]:
+        """Order relevant listings (startup-first when asked, then fit, then recency) and choose what to store.
+
+        Every relevant listing is kept (up to a safety cap) so recall is not lost to the shortlist size;
+        the UI ranks them. A few high-match ineligible roles stay visible as "stretch" roles.
+        """
+        from app.services.job_sources.models import Exclusion
+
+        key = lambda job: (is_startup(job), (job.get("eligibility") or {}).get("composite") or 0,
+                           job.get("posted_date") or "")
+        ranked.sort(key=key, reverse=True)
+        ineligible.sort(key=key, reverse=True)
+        store_cap = max(pool_size, int(jobs_pref.get("store_cap") or 500))
+        stretch = [job for job in ineligible if (job.get("match_score") or 0) >= 60][:max(10, pool_size // 5)]
+        for job in ranked[store_cap:]:
+            cov.exclude(job, Exclusion.POOL_LIMIT, "shortlist")
+        stretch_ids = {id(job) for job in stretch}
+        for job in ineligible:
+            if id(job) not in stretch_ids:
+                job["_exclusion_detail"] = "; ".join((job.get("eligibility") or {}).get("gates") or [])
+                cov.exclude(job, Exclusion.INELIGIBLE, "eligibility")
+        return ranked[:store_cap] + stretch, stretch
+
     async def _employer_pages(self, retriever, http, browser, items, intent, pool_size, search_budget, cov, note,
                               check_cancel, failures) -> dict[str, Any]:
         """Resolve unknown employers seen in results, re-run due career discoveries, read verified career pages."""

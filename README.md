@@ -388,7 +388,7 @@ fetch, and prints per-stage timing. Credentials are never printed.
 
 ```bash
 uv sync --dev                                         # installs pytest
-./.venv/bin/python -m pytest -q                       # 201 tests (network mocked; browser tests use a local fixture site)
+./.venv/bin/python -m pytest -q                       # 202 tests (network mocked; browser tests use a local fixture site)
 ./.venv/bin/python -m unittest discover -s tests -q   # same suite without pytest
 ./.venv/bin/python -m compileall -q app tests
 ```
