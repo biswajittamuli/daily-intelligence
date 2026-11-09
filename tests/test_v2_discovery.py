@@ -546,6 +546,69 @@ class BriefingAssemblyTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(store.briefings())
 
 
+class PlanningNoteTests(unittest.TestCase):
+    def test_plain_text_lines_become_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = Path(tmp)
+            (notes / "test_notes.txt").write_text(
+                "i want to walk my dog\n\n- [x] submit report\nApply to 3 AI roles due 2026-11-15\n",
+                encoding="utf-8")
+            result = read_planning_notes(notes, date(2026, 11, 9))
+            texts = [task["text"] for task in result["tasks"]]
+            self.assertIn("Walk my dog", texts)
+            self.assertIn("Apply to 3 AI roles", texts)
+            self.assertIn("test_notes.txt", result["files"])
+            applied = next(task for task in result["tasks"] if task["text"] == "Apply to 3 AI roles")
+            self.assertEqual(applied["due_date"], "2026-11-15")
+            submitted = next(task for task in result["tasks"] if task["text"] == "Submit report")
+            self.assertEqual(submitted["status"], "completed")
+
+    def test_markdown_and_json_notes_are_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = Path(tmp)
+            (notes / "plan.md").write_text("# Heading\n- revise GATE by 2026-12-01\n- [ ] read paper\n",
+                                           encoding="utf-8")
+            (notes / "tasks.json").write_text(json.dumps(
+                {"tasks": [{"text": "Ship feature", "due_date": "2026-11-20", "status": "done"}]}),
+                encoding="utf-8")
+            result = read_planning_notes(notes, date(2026, 11, 9))
+            texts = {task["text"]: task for task in result["tasks"]}
+            self.assertIn("Revise GATE", texts)
+            self.assertEqual(texts["Revise GATE"]["due_date"], "2026-12-01")
+            self.assertIn("Read paper", texts)
+            self.assertEqual(texts["Ship feature"]["status"], "completed")
+            self.assertNotIn("Heading", texts)
+
+    def test_missing_notes_directory_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = read_planning_notes(Path(tmp) / "absent", date(2026, 11, 9))
+            self.assertTrue(result["missing"])
+            self.assertEqual(result["tasks"], [])
+
+
+class JobMarketInsightTests(unittest.TestCase):
+    def test_counts_skills_roles_portals_and_freshness(self):
+        jobs = [
+            {"title": "AI Engineer", "skills": ["Python", "PyTorch"], "source_platform": "wellfound.com",
+             "location": "Bengaluru, India", "posted_date": "2026-11-08", "status": "open"},
+            {"title": "LLM Engineer", "skills": ["Python", "LLMs"], "source_platform": "careers.example.com",
+             "location": "Remote", "posted_date": "2026-11-01", "status": "unverified"},
+            {"title": "Data Engineer", "skills": ["SQL"], "source_platform": "naukri.com",
+             "location": "Pune, India", "status": "unverified"},
+        ]
+        market = job_market(jobs, today=date(2026, 11, 9))
+        self.assertEqual(market["totals"]["listings"], 3)
+        self.assertEqual(market["totals"]["recent_30d"], 2)
+        self.assertEqual(market["skills"][0]["name"], "Python")
+        self.assertEqual(market["skills"][0]["count"], 2)
+        kinds = {portal["name"]: portal["kind"] for portal in market["portals"]}
+        self.assertEqual(kinds["wellfound.com"], "Job board")
+        self.assertEqual(kinds["careers.example.com"], "Company / other")
+        self.assertEqual(len(market["skills_by_portal"]["matrix"]),
+                         len(market["skills_by_portal"]["portals"]))
+        self.assertEqual(market["recent"][0]["title"], "AI Engineer")
+
+
 class ApiWiringTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -578,11 +641,34 @@ class ApiWiringTests(unittest.TestCase):
     def test_bootstrap_exposes_v2_collections(self):
         status, data = self.request("/api/bootstrap")
         self.assertEqual(status, 200)
-        for key in ("counts", "jobs", "notices", "exams", "news", "papers",
+        for key in ("counts", "jobs", "job_insights", "notices", "exams", "news", "papers",
                     "item_states", "preferences", "watchlists", "profile",
-                    "search_sessions", "settings"):
+                    "search_sessions", "settings", "planning"):
             self.assertIn(key, data)
         self.assertEqual(data["counts"]["jobs"], 0)
+        self.assertIn("totals", data["job_insights"])
+
+    def test_insights_endpoint_aggregates_stored_jobs(self):
+        self.app.store.upsert_jobs([
+            {"url": "https://wellfound.com/jobs/1", "title": "AI Engineer",
+             "skills": ["Python", "PyTorch"], "source_platform": "wellfound.com",
+             "posted_date": "2026-11-08"},
+        ])
+        status, data = self.request("/api/insights/jobs")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["job_market"]["totals"]["listings"], 1)
+        names = {item["name"]: item["count"] for item in data["job_market"]["skills"]}
+        self.assertEqual(names.get("Python"), 1)
+        self.assertEqual(names.get("PyTorch"), 1)
+
+    def test_planning_refresh_imports_text_notes(self):
+        notes = self.app.settings.notes_dir
+        notes.mkdir(parents=True, exist_ok=True)
+        (notes / "test_notes.txt").write_text("i want to walk my dog\n", encoding="utf-8")
+        status, data = self.request("/api/planning/refresh", {})
+        self.assertEqual(status, 200)
+        self.assertIn("test_notes.txt", data["planning"]["files"])
+        self.assertTrue(any(task["text"] == "Walk my dog" for task in data["tasks"]))
 
     def test_preferences_watchlists_and_item_state_round_trip(self):
         status, data = self.request("/api/preferences", {"preferences": {

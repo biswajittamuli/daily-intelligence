@@ -221,7 +221,8 @@ import re as _re
 NON_TECH_TITLE = _re.compile(
     r"\b(sales|account (executive|manager|director)|business development|bdr|sdr|marketing|"
     r"recruit\w*|talent acquisition|legal|counsel|paralegal|attorney|financ\w*|accountant|"
-    r"accounting|audit\w*|tax|payroll|hr|human resources|people (partner|operations)|"
+    r"accounting|audit\w*|tax|payroll|hr|human resources|people (partner|operations)|benefits|"
+    r"compensation|total rewards|"
     r"customer success|customer support|support specialist|office manager|executive assistant|"
     r"facilities|procurement|compliance|risk analyst|copywriter|content writer|brand|"
     r"public relations|communications manager|events?|partnerships?|growth marketing|"
@@ -232,7 +233,7 @@ TECH_TITLE = _re.compile(
     r"devops|sre|platform|backend|back-end|frontend|front-end|full[- ]?stack|software|"
     r"analyst|architect|security|qa|test|automation|cloud|infrastructure|mobile|android|ios|"
     r"research|intern(ship)?|graduate|trainee|fresher)\b", _re.I)
-STRONG_TECH = _re.compile(r"\b(engineer\w*|developer|programmer|scientist|sde|swe|devops|sre)\b", _re.I)
+STRONG_TECH = _re.compile(r"\b(engineers?|developer|programmer|scientist|sde|swe|devops|sre)\b", _re.I)
 SENIOR_HARD = _re.compile(r"\b(senior|sr\.?|staff|principal|distinguished|director|head of|vp|"
                           r"vice president|chief|manager|lead\b(?! to)|tech lead)\b", _re.I)
 SENIOR_SOFT = _re.compile(r"\b(architect|ii|iii|iv|level 3|l4|l5)\b", _re.I)
@@ -261,6 +262,14 @@ FOREIGN_PLACES = _re.compile(
     r"brazil|são paulo|sao paulo|mexico|israel|tel aviv|uae|dubai|china|beijing|shanghai|"
     r"philippines|vietnam|indonesia)\b", _re.I)
 REMOTE_WORDS = _re.compile(r"\b(remote|anywhere|worldwide|global|distributed|work from home|wfh)\b", _re.I)
+ARRANGEMENT_WORDS = _re.compile(
+    r"\b(remote|hybrid|distributed|in[- ]office|on[- ]?site|onsite|office|flexible|anywhere|work from home|wfh|"
+    r"multiple locations|various locations|tbd|n/?a)\b", _re.I)
+
+
+def strip_arrangement(location: str) -> str:
+    """The place part of a location string, with work-arrangement words and separators removed."""
+    return _re.sub(r"[\s,;/|()\-–]+", " ", ARRANGEMENT_WORDS.sub(" ", str(location or ""))).strip()
 
 
 def _expand_places(preferences: list[str]) -> set[str]:
@@ -278,17 +287,36 @@ def _expand_places(preferences: list[str]) -> set[str]:
     return places
 
 
-def location_fit(location: str, remote: str, preferred: list[str]) -> tuple[bool | None, str | None]:
-    """(fits, exclusion reason). None when no location preference or no location stated."""
+def _foreign_in_title(title: str) -> bool:
+    """A foreign place named in a title ("SRE — UK"); a lowercase "us" is the pronoun, not the country."""
+    return any(match.group(0) != "us" for match in FOREIGN_PLACES.finditer(str(title or "")))
+
+
+def _names_place(text: str, places: set[str]) -> bool:
+    return any(_re.search(r"(?<![a-z])" + _re.escape(place) + r"(?![a-z])", text) for place in places)
+
+
+def location_fit(location: str, remote: str, preferred: list[str], *,
+                 title: str = "") -> tuple[bool | None, str | None]:
+    """(fits, exclusion reason). None when no location preference or no location stated.
+
+    A location that names only a work arrangement ("Hybrid", "In-Office") states no place, so it is unknown,
+    not foreign. A preferred place named in the title ("… (Based in India)") counts as a fit unless the
+    location names a foreign one.
+    """
     places = _expand_places(preferred)
     if not places:
         return None, None
     lowered = " ".join(str(location or "").split()).casefold()
     remote_flag = bool(REMOTE_WORDS.search(lowered)) or "remote" in str(remote or "").casefold()
-    if not lowered:
-        return (True if remote_flag else None), None
-    if any(_re.search(r"(?<![a-z])" + _re.escape(place) + r"(?![a-z])", lowered) for place in places):
+    if _names_place(lowered, places):
         return True, None
+    if _names_place(" ".join(str(title or "").split()).casefold(), places) and not FOREIGN_PLACES.search(lowered):
+        return True, None
+    if not strip_arrangement(lowered):
+        if remote_flag and _foreign_in_title(title):
+            return False, "Remote role restricted to another country or region"
+        return (True if remote_flag else None), None
     if remote_flag:
         if FOREIGN_PLACES.search(lowered):
             return False, "Remote role restricted to another country or region"
@@ -369,7 +397,7 @@ def relevance_gate(listing: dict[str, Any], profile: dict[str, Any] | None, pref
 
     location = str(listing.get("location") or "")
     locations = [str(item) for item in jobs_pref.get("locations") or [] if str(item).strip()]
-    location_ok, location_reason = location_fit(location, str(listing.get("remote") or ""), locations)
+    location_ok, location_reason = location_fit(location, str(listing.get("remote") or ""), locations, title=title)
     if location_ok is False and not excluded:
         excluded = location_reason
 

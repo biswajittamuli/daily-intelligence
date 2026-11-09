@@ -58,6 +58,12 @@ _CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
 CACHE_SECONDS = 3 * 3600
 
 
+def is_arrangement_only(location: str) -> bool:
+    """True when a location names only a work arrangement ("Hybrid", "Distributed; Hybrid"), no place."""
+    from app.services.job_matching import strip_arrangement
+    return bool(str(location or "").strip()) and not strip_arrangement(location)
+
+
 def _text(value: Any) -> str:
     raw = html.unescape(str(value or ""))
     raw = re.sub(r"<[^>]+>", " ", raw)
@@ -92,6 +98,12 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
     if ats == "greenhouse":
         for item in (payload or {}).get("jobs", []):
             location = (item.get("location") or {}).get("name") or ""
+            offices = [str(office.get("name") or "").strip() for office in item.get("offices") or []]
+            offices = [office for office in offices if office]
+            arrangement = None
+            if offices and is_arrangement_only(location):
+                # Boards such as Cloudflare's put only "Hybrid"/"Distributed" here; the place is in offices.
+                arrangement, location = location, "; ".join(dict.fromkeys(offices))
             jobs.append({
                 "title": item.get("title"), "employer": item.get("company_name") or name,
                 "location": location, "url": item.get("absolute_url"),
@@ -99,12 +111,15 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
                 "updated_date": _iso(item.get("updated_at")),
                 "description": _text(item.get("content"))[:12000],
                 "employment_type": None,
-                "remote": "remote" if "remote" in location.casefold() else None,
+                "remote": "remote" if "remote" in f"{location} {arrangement or ''}".casefold() else arrangement,
             })
     elif ats == "lever":
         for item in payload or []:
             categories = item.get("categories") or {}
             location = categories.get("location") or ""
+            extra = [str(place) for place in categories.get("allLocations") or [] if place and place != location]
+            if extra:
+                location = "; ".join([location, *extra] if location else extra)
             jobs.append({
                 "title": item.get("text"), "employer": name, "location": location,
                 "url": item.get("hostedUrl"), "posted_date": _iso(item.get("createdAt")),
@@ -121,6 +136,11 @@ def _parse(company: dict[str, str], payload: Any) -> list[dict[str, Any]]:
                 continue
             address = ((item.get("address") or {}).get("postalAddress") or {})
             location = ", ".join(part for part in (item.get("location"), address.get("addressCountry")) if part)
+            extra = [str(entry.get("location") or "") for entry in item.get("secondaryLocations") or []
+                     if isinstance(entry, dict)]
+            extra = [place for place in extra if place and place not in location]
+            if extra:
+                location = "; ".join([location, *extra] if location else extra)
             jobs.append({
                 "title": item.get("title"), "employer": name, "location": location,
                 "url": item.get("jobUrl"), "posted_date": _iso(item.get("publishedAt")),

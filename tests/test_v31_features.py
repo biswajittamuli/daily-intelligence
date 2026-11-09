@@ -93,6 +93,53 @@ class RankingTests(unittest.TestCase):
         self.assertFalse(location_fit("London, UK", "", ["India"])[0])
         self.assertIsNone(location_fit("", "", ["India"])[0])
 
+    def test_arrangement_only_locations_are_unknown_not_foreign(self):
+        # Cloudflare's Greenhouse board puts only the arrangement in location.name.
+        self.assertIsNone(location_fit("Hybrid", "", ["India"])[0])
+        self.assertIsNone(location_fit("Hybrid; In-Office", "", ["India"])[0])
+        self.assertTrue(location_fit("Distributed", "", ["India"])[0])
+        self.assertTrue(location_fit("Hybrid", "", ["India"], title="Engineer (Based in India)")[0])
+        self.assertFalse(location_fit("Singapore", "", ["India"], title="Architect - India Market")[0])
+        self.assertTrue(location_fit("Remote India", "Distributed", ["India"])[0])
+        self.assertFalse(location_fit("Austin, TX", "Distributed", ["India"])[0])
+        self.assertFalse(location_fit("Remote", "", ["India"], title="Site Reliability Engineer — UK")[0])
+        self.assertTrue(location_fit("Remote", "", ["India"], title="Help us build agents")[0])
+
+    def test_engineering_in_a_non_technical_title_does_not_rescue_it(self):
+        from app.services.job_matching import relevance_gate
+        prefs = {"jobs": {"locations": ["India"], "roles": ["Software Engineer"]}}
+        for title in ("Director of Recruiting, Engineering & IT", "Benefits Analyst"):
+            gate = relevance_gate({"title": title, "location": "Bangalore, India",
+                                   "discovered_via": "company career board"}, {}, prefs)
+            self.assertEqual(gate["excluded"], "Not a technical role for your profile", title)
+        gate = relevance_gate({"title": "Software Engineer, Payroll Systems", "location": "Bangalore, India",
+                               "discovered_via": "company career board"}, {}, prefs)
+        self.assertIsNone(gate["excluded"])
+
+    def test_greenhouse_offices_replace_arrangement_only_location(self):
+        from app.services.ats_sources import _parse
+        payload = {"jobs": [
+            {"title": "Software Engineer", "absolute_url": "https://x/1", "location": {"name": "Hybrid"},
+             "offices": [{"name": "Bengaluru, India"}]},
+            {"title": "Backend Engineer", "absolute_url": "https://x/2", "location": {"name": "Bangalore, India"},
+             "offices": [{"name": "Remote US"}]},
+        ]}
+        jobs = _parse({"ats": "greenhouse", "name": "Acme", "slug": "acme"}, payload)
+        self.assertEqual(jobs[0]["location"], "Bengaluru, India")
+        self.assertEqual(jobs[0]["remote"], "Hybrid")
+        self.assertEqual(jobs[1]["location"], "Bangalore, India")
+
+    def test_lever_and_ashby_secondary_locations_are_kept(self):
+        from app.services.ats_sources import _parse
+        lever = _parse({"ats": "lever", "name": "Acme", "slug": "acme"}, [
+            {"text": "SDE", "hostedUrl": "https://x/1",
+             "categories": {"location": "Singapore", "allLocations": ["Singapore", "Bengaluru"]}}])
+        self.assertEqual(lever[0]["location"], "Singapore; Bengaluru")
+        ashby = _parse({"ats": "ashby", "name": "Acme", "slug": "acme"}, {"jobs": [
+            {"title": "SDE", "jobUrl": "https://x/1", "location": "Remote",
+             "secondaryLocations": [{"location": "Pune"}]}]})
+        self.assertEqual(ashby[0]["location"], "Remote; Pune")
+
     def test_exclusions_are_explicit(self):
         cases = {
             ("Account Executive - AI", "Mumbai, India", ""): "Not a technical role for your profile",
