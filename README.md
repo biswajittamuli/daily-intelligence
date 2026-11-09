@@ -11,6 +11,32 @@ Version 2 makes discovery **preference-driven and dynamic**: there are no hardco
 organizations, notices, exam names, or fixed result lists. You edit your preferences
 once, and every discovery run builds its own query plan from them.
 
+## What's new in 4.0
+
+Daily Intelligence opens on a personal home: a greeting, today's numbers, and one prioritised
+**opportunity feed** built from a single shared database. One action — **Discover** (top bar, or
+Ctrl K → "Discover opportunities") — runs every enabled source:
+
+- job search paths (portal site searches, public ATS hosts, career pages, open web, startup hubs across
+  nine Indian cities, remote-from-India), public ATS boards read through their APIs with pagination,
+  career-page discovery (static → browser → embedded data → sitemaps → common paths → search), the Hasjob
+  public feed, employer discovery once a day;
+- government & PSU notices, exam notifications and AI news (once a day);
+- re-verification of active listings that are due.
+
+Jobs, Startups, Government, Exams and News are views of that database (menu ☰ or Ctrl K); none of them
+needs its own search. A targeted search (Ctrl K → type a role → "Search roles") uses the same engine.
+
+Each listing carries its provenance (every source that found it), how its posting date was obtained and
+how reliable that is, its verification and vacancy status, India work arrangement, and a match against
+your active resume (or your best-fitting resume) with a four-level eligibility label. Sources & coverage
+(menu) shows what every source did on the last run — successful, partial, no results, failed, access
+restricted or not attempted — with reasons and legitimate alternatives.
+
+Coverage is never complete: LinkedIn, Indeed, Glassdoor, Naukri, Wellfound and YC Work at a Startup are
+used only through search-engine results (their terms forbid automated access), and some employer sites
+block automated requests. Those limits are reported, never bypassed.
+
 ## What's new in 3.3
 
 - **Multi-engine acquisition** (`app/services/job_sources/`): Parallel MCP search (kept as is) plus
@@ -163,6 +189,28 @@ Then search for **Daily Intelligence** in KDE's application launcher. The script
 checks Ollama, starts the local server, and opens the browser. Run from this checkout
 because the desktop entry points to its current absolute path.
 
+### Backup and rollback
+
+The database is copied to `data/backups/daily-intelligence-<time>-schema<N>.sqlite3` automatically before
+any schema upgrade (4.0 upgrades schema 6 → 10). To take a manual backup (no `sqlite3` CLI needed):
+
+```bash
+cd ~/projects/daily-intelligence
+./.venv/bin/python -c "import sqlite3,datetime;s=sqlite3.connect('data/daily-intelligence.sqlite3');d=sqlite3.connect(f'data/backups/manual-{datetime.datetime.now():%Y%m%d-%H%M%S}.sqlite3');s.backup(d);print('ok')"
+```
+
+Roll back to 3.3:
+
+```bash
+./scripts/daily-intelligence-stop.sh                     # stop the app first
+git switch --detach v3.3.0                               # previous release (git switch main to return)
+cp data/backups/daily-intelligence-<time>-schema6.sqlite3 data/daily-intelligence.sqlite3   # optional: exact pre-4.0 data
+./scripts/daily-intelligence-launcher.sh
+```
+
+Schema changes are additive, so 3.3 also runs on a 4.0 database (it ignores the new tables and columns);
+restoring the backup is only needed to return to the exact earlier state.
+
 ### Logs and inspection
 
 ```bash
@@ -171,9 +219,18 @@ curl -s http://127.0.0.1:8765/api/sources/health | python3 -m json.tool | less  
 curl -s "http://127.0.0.1:8765/api/sources/exclusions?reason=Duplicate%20of%20another%20listing" | python3 -m json.tool | less
 ```
 
-Optional settings (preferences JSON, `jobs` section): `browser_rendering` (default true),
-`browser_concurrency` (1), `browser_timeout_ms` (15000), `http_concurrency` (6), `store_cap` (500),
+Optional settings (preferences JSON). `jobs`: `browser_rendering` (default true), `browser_concurrency` (1),
+`browser_timeout_ms` (15000), `http_concurrency` (6), `store_cap` (500), `match_mode` (`active` or `best`),
 `firecrawl_enabled` (false; also needs `FIRECRAWL_API_KEY`, sends only public employer URLs).
+`discovery.sections` (jobs, government, exams, news). `automation`: `daily_refresh`, `refresh_time`,
+`followed_hours` (12), `reverify_batch` (30), `notify` (true), `notify_min_score` (70).
+Sources can be enabled or disabled under Sources & coverage.
+
+```bash
+curl -s http://127.0.0.1:8765/api/feed | python3 -m json.tool | less       # the unified feed
+curl -s http://127.0.0.1:8765/api/sources | python3 -m json.tool | less    # registry + per-source state
+curl -s -X POST http://127.0.0.1:8765/api/discover -d '{}'                 # start a full discovery
+```
 
 ### Manual server (development)
 
@@ -331,7 +388,7 @@ fetch, and prints per-stage timing. Credentials are never printed.
 ## Tests
 
 ```bash
-./.venv/bin/python -m unittest discover -s tests -q   # 155 tests (network mocked; browser tests use a local fixture site)
+./.venv/bin/python -m unittest discover -s tests -q   # 187 tests (network mocked; browser tests use a local fixture site)
 ./.venv/bin/python -m compileall -q app tests
 ```
 

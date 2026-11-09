@@ -217,6 +217,7 @@ class DiscoveryOrchestrator:
                                                                               "not_configured"}),
             "sources_successful": sum(1 for s in sources if s["state"] == "successful"),
             "sources_partial": sum(1 for s in sources if s["state"] == "partial"),
+            "sources_no_results": sum(1 for s in sources if s["state"] == "no_results"),
             "sources_restricted": sum(1 for s in sources if s["state"] in {"access_restricted", "failed"}),
             "search_results": funnel.get("search_results", 0),
             "career_pages_discovered": career_pages,

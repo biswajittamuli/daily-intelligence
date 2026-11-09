@@ -7,6 +7,27 @@ single-file SPA, a local SQLite store, a local Ollama model, and dynamically
 discovered Parallel MCP search/fetch tools. There is no cloud LLM and no model
 downloads.
 
+## v4 unified discovery
+
+```text
+POST /api/discover  (or the daily scheduler)
+  -> DiscoveryOrchestrator (app/services/orchestrator.py)
+       skip map: disabled sources + sources backing off after repeated failures (source_state)
+       JobsAdapter        -> BroadJobSearch (below)
+       GovernmentAdapter  -> DiscoveryEngine("government")
+       ExamsAdapter       -> DiscoveryEngine("exams")
+       NewsAdapter        -> DiscoveryEngine("news"), once a day
+       ReverifyAdapter    -> verify_jobs(select_due_for_verification)
+       -> registry state, discovery report (search_sessions category "discovery"), alerts, reminders
+GET /api/feed      -> services/feed.py: one prioritised feed over jobs, notices and exam events
+Scheduler (60 s)   -> daily discovery · followed companies (monitoring.check_followed) · re-verification
+```
+
+The source registry (`job_sources/registry.py`) defines every source (method, pagination, geography,
+restrictions, alternatives); `source_state` (schema v7) persists attempts, successes, extraction and
+verification rates, consecutive failures and backoff. Schema v8 adds employer city/stage/verification/
+followed, v9 posting-date provenance, v10 listing reports.
+
 ## v3.3 acquisition layer
 
 ```text

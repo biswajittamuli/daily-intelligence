@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0.0 — in progress
+## 4.0.0 — 2026-11-09
 
 ### Phase 1: unified acquisition
 - `orchestrator.py`: one "Discover opportunities" run executes every adapter (jobs, government, exams,
