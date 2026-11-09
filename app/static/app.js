@@ -1871,7 +1871,7 @@ function discoverySummary(d){
 }
 
 /* ----------------------------------------------------------- sources (v4) */
-const RUN_STATE_CLASS={successful:'status-ok',partial:'status-warn',failed:'status-bad',access_restricted:'status-bad',not_attempted:'view-note',disabled:'view-note',backing_off:'status-warn',not_configured:'view-note'};
+const RUN_STATE_CLASS={no_results:'status-warn',successful:'status-ok',partial:'status-warn',failed:'status-bad',access_restricted:'status-bad',not_attempted:'view-note',disabled:'view-note',backing_off:'status-warn',not_configured:'view-note'};
 function viewSources(){
   const d=(state.feed||{}).discovery;
   const reg=state.sources||[];

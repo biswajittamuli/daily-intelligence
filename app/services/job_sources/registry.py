@@ -134,6 +134,9 @@ def source_id_for(report: dict[str, Any]) -> str | None:
     if category == "ats_board":
         provider = method.split(" ")[0].casefold()
         return f"ats:{provider}" if f"ats:{provider}" in BY_ID else None
+    if method == "public feed":
+        sid = "feed:" + re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+        return sid if sid in BY_ID else None
     if category == "job_portal":
         portal = next((p for p in portals.PORTALS if p.name.casefold() == name.casefold()
                        or name.casefold() in {d.split(".")[0] for d in p.domains}), None)
@@ -227,9 +230,11 @@ def run_state(stats: RunStats) -> str:
         return "access_restricted"
     if stats.failures:
         return "failed"
-    return "successful"  # attempted, answered, nothing matched (no results)
+    if not (stats.results or stats.listings or stats.unique):
+        return "no_results"  # searched and answered, but returned nothing — not counted as a success
+    return "successful"
 
 
-RUN_STATE_LABEL = {"successful": "Successful", "partial": "Partial", "failed": "Failed",
+RUN_STATE_LABEL = {"no_results": "Searched · no results", "successful": "Successful", "partial": "Partial", "failed": "Failed",
                    "access_restricted": "Access restricted", "not_configured": "Not configured",
                    "not_attempted": "Not attempted", "disabled": "Disabled", "backing_off": "Backing off"}

@@ -136,6 +136,13 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(run_state(stats["ats:lever"]), "partial")
         self.assertEqual(run_state(stats["portal:indeed"]), "access_restricted")
         self.assertEqual(run_state(stats["search:ats"]), "access_restricted")
+        empty = aggregate([{"category": "job_portal", "name": "LinkedIn", "method": "search index only (policy)",
+                            "state": "no_results"},
+                           {"category": "job_portal", "name": "Hasjob", "method": "public feed",
+                            "state": "extraction_successful", "listings": 21}])
+        self.assertEqual(run_state(empty["portal:linkedin-jobs"]), "no_results")
+        self.assertEqual(run_state(empty["feed:hasjob"]), "successful")
+        self.assertNotIn("portal:hasjob", empty)
 
     def test_backoff_and_skip_map(self):
         now = datetime(2026, 11, 9, tzinfo=timezone.utc)
