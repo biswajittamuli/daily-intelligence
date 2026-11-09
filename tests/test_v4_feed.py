@@ -65,6 +65,16 @@ class BuildFeedTests(unittest.TestCase):
                                 reported={7}, today=TODAY, include_hidden=True)
         self.assertIn("[TEST] Reported role", [i["title"] for i in everything["items"]])
 
+    def test_verified_and_dated_listings_outrank_unverified_undated_ones(self):
+        jobs = [job(1, "Unverified undated", composite=62, life="unverified", bucket="date_unknown"),
+                job(2, "Verified dated", composite=55, life="open_verified", bucket="last_week")]
+        feed = build_feed(jobs=jobs, notices=[], exams=[], employers=[], states={}, reported=set(), today=TODAY)
+        self.assertEqual([i["title"] for i in feed["items"]], ["[TEST] Verified dated", "[TEST] Unverified undated"])
+        # A much better match still wins: trust adjusts the order, it does not override fit.
+        jobs[0]["eligibility"]["composite"] = 95
+        feed = build_feed(jobs=jobs, notices=[], exams=[], employers=[], states={}, reported=set(), today=TODAY)
+        self.assertEqual(feed["items"][0]["title"], "[TEST] Unverified undated")
+
 
 class FeedApiTests(unittest.TestCase):
     def setUp(self):

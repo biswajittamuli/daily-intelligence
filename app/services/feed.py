@@ -6,6 +6,7 @@ are filters over the same items — no section triggers its own acquisition.
 
 Priority order (highest first): newly discovered strong matches, approaching deadlines, followed
 companies, fresh startup vacancies, internships, government recruitment, then everything else by rank.
+Within that, listings verified on the employer's system rank above unverified or undated ones.
 Closed/expired, hidden and reported listings are left out of the default feed but never deleted.
 """
 from __future__ import annotations
@@ -17,6 +18,8 @@ from typing import Any
 from app.services.freshness import parse_date
 
 NEW_BUCKETS = {"new_today", "new_24h", "new_3d"}
+LIFECYCLE_ADJUST = {"open_verified": 5, "open_page_checked": -5, "unverified": -15, "unknown": -15,
+                    "inaccessible": -20}
 INTERN = re.compile(r"\b(intern(ship)?s?|trainee|apprentice)\b", re.I)
 
 
@@ -72,6 +75,10 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
         priority -= 200
     if level == "uncertain":
         priority -= 15
+    # Trust: a listing confirmed on the employer's own system outranks one nobody could check.
+    priority += LIFECYCLE_ADJUST.get((job.get("lifecycle") or {}).get("state") or "", 0)
+    if bucket == "date_unknown":
+        priority -= 5
     return {
         "kind": "job", "id": job["id"], "title": job.get("title"), "org": job.get("employer"),
         "employer_id": job.get("employer_id"), "location": job.get("location"),
