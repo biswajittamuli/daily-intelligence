@@ -1147,9 +1147,11 @@ class BroadJobSearch:
                                                "_report_keys": {rep.key}})
         # 3) verified career pages without a readable board: re-read the page (static, cached, cheap)
         readable = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee"}
-        pages = [e for e in self.store.employers(limit=1000) if e.get("career_outcome") == "career_verified"
-                 and e.get("career_url") and not (e.get("ats_provider") in readable and e.get("ats_slug"))
-                 and e["id"] not in {t.get("employer_id") for t in targets}][:{50: 3, 100: 6, 200: 10}.get(pool_size, 6)]
+        # Oldest-read first, so every verified page is re-read in rotation across runs.
+        pages = sorted([e for e in self.store.employers(limit=1000) if e.get("career_outcome") == "career_verified"
+                        and e.get("career_url") and not (e.get("ats_provider") in readable and e.get("ats_slug"))
+                        and e["id"] not in {t.get("employer_id") for t in targets}],
+                       key=lambda e: e.get("last_career_check") or "")[:{50: 3, 100: 6, 200: 10}.get(pool_size, 6)]
         if "career:read" in self.skip:
             pages = []
         for employer in pages:
@@ -1160,6 +1162,7 @@ class BroadJobSearch:
                                                        lambda *a, **k: methods.append({"state": a[2], "detail": a[3] if len(a) > 3 else ""}),
                                                        allow_browser=browser is not None)
             output["pages"] += 1
+            self.store.mark_career_checked(employer["id"])
             jobs = [job for job in outcome["listings"] if not job.get("url_is_synthetic")]
             rep.fetched += 1
             rep.listings += len(jobs)

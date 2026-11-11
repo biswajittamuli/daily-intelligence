@@ -500,7 +500,8 @@ def validate(job: dict[str, Any], *, lifecycle_state: str | None = None, prefere
 
 # ------------------------------------------------------------------ employer-owned pages
 AGGREGATOR_HOSTS = ("himalayas.app", "adzuna.", "jooble.", "google.", "serpapi.com", "talent.com", "simplyhired.",
-                    "careerjet.", "jobrapido.", "glassdoor.", "ziprecruiter.", "monster.", "hasjob.co")
+                    "careerjet.", "jobrapido.", "glassdoor.", "ziprecruiter.", "monster.", "hasjob.co",
+                    "findwork.dev", "remoteok.com", "aidevboard.com", "artificialintelligencejobs.co")
 
 
 def employer_owned_url(url: str, employer: str | None) -> bool:

@@ -335,27 +335,69 @@ class JobApis(unittest.TestCase):
         self.assertEqual(classify_geography(location=item["location"], remote="remote",
                                             restrictions=item["location_restrictions"])["kind"], "remote_india")
 
-    def test_google_jobs_prefers_employer_link_and_keeps_portals(self):
-        from app.services.job_sources.job_apis import parse_google_jobs
-        payload = {"jobs_results": [{
-            "title": "Generative AI Engineer", "company_name": "Acme Labs", "location": "Bengaluru, Karnataka, India",
-            "via": "LinkedIn", "description": "Python, RAG", "detected_extensions": {"posted_at": "3 days ago"},
-            "apply_options": [{"title": "LinkedIn", "link": "https://in.linkedin.com/jobs/view/123"},
-                              {"title": "Naukri", "link": "https://www.naukri.com/job-listings-123"},
-                              {"title": "Acme Labs", "link": "https://careers.acmelabs.com/jobs/77"}]}]}
-        item = parse_google_jobs(payload, today=TODAY)[0]
-        self.assertEqual(item["url"], "https://careers.acmelabs.com/jobs/77")
-        self.assertEqual(item["application_url"], "https://careers.acmelabs.com/jobs/77")
-        self.assertEqual(len(item["extra_sources"]), 3)
-        self.assertEqual(item["posted_date"], (TODAY - timedelta(days=3)).isoformat())
+    def test_new_api_parsers_normalise_fields(self):
+        from app.services.job_sources import job_apis as j
+        dev = j.parse_aidevboard({"jobs": [{"title": "ML Engineer", "url": "https://aidevboard.com/job/1",
+                                            "company_name": "NetraDyne", "location": "Bangalore, India",
+                                            "workplace": "onsite", "status": "active", "tags": ["pytorch"],
+                                            "published_at": "2026-11-01T06:39:32Z", "expires_at": "2026-12-01T00:00:00Z",
+                                            "apply_url": "https://www.netradyne.com/careers?gh_jid=4"},
+                                           {"title": "Closed", "url": "https://aidevboard.com/job/2", "status": "expired"}]})
+        self.assertEqual(len(dev), 1)
+        self.assertEqual((dev[0]["posted_date"], dev[0]["valid_through"]), ("2026-11-01", "2026-12-01"))
+        self.assertEqual(dev[0]["application_url"], "https://www.netradyne.com/careers?gh_jid=4")
+        ok = j.parse_remoteok([{"legal": "link back"}, {"position": "Python Developer", "company": "B",
+                                                        "url": "https://remoteOK.com/remote-jobs/1", "location": "",
+                                                        "date": "2026-11-08T00:00:03+00:00", "tags": ["python"]}])
+        self.assertEqual(len(ok), 1)
+        self.assertIsNone(ok[0]["location_restrictions"])  # unstated, not "worldwide"
+        self.assertTrue(ok[0]["url"].startswith("https://remoteOK.com/"))  # their terms: link back
+        jooble = j.parse_jooble({"jobs": [{"title": "Software Engineer", "company": "Acme", "location": "Pune",
+                                           "link": "https://jooble.org/desc/123", "updated": "2026-11-05T00:00:00.0000000",
+                                           "source": "naukri.com", "snippet": "<b>Java</b>"}]})
+        self.assertEqual(jooble[0]["posted_date"], "2026-11-05")
+        self.assertEqual(jooble[0]["source_platform"], "naukri.com")
+        fw = j.parse_findwork({"results": [{"role": "Go Developer", "company_name": "C", "remote": True, "location": "",
+                                            "url": "https://findwork.dev/abc/go-developer", "date_posted": "2026-11-02T10:00:00Z",
+                                            "keywords": ["go"]}]})
+        self.assertEqual((fw[0]["location"], fw[0]["remote"]), ("Remote", "remote"))
+
+    def test_feed_apis_make_one_call_and_filter_by_role(self):
+        import json
+        from app.services.job_sources.job_apis import REMOTEOK, read_job_apis
+        payload = [{"legal": "link back"},
+                   {"position": "Python Backend Engineer", "url": "https://remoteOK.com/remote-jobs/1", "location": "Worldwide"},
+                   {"position": "Account Executive", "url": "https://remoteOK.com/remote-jobs/2", "location": "Worldwide"}]
+        http = FakeHttp({"https://remoteok.com/api": FetchResult(url="x", status=200, state=SourceState.FETCH_OK,
+                                                                  text=json.dumps(payload))})
+        items, reports = asyncio.run(read_job_apis(http, ["Python Developer", "Backend Developer", "AI Engineer"],
+                                                   apis=[REMOTEOK]))
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual([i["title"] for i in items], ["Python Backend Engineer"])
+        self.assertEqual(reports[0]["count"], 1)
+
+    def test_keyed_requests_send_key_in_header_or_path_only(self):
+        import os
+        from app.services.job_sources.job_apis import FINDWORK, JOOBLE, build_request
+        os.environ["JOOBLE_API_KEY"], os.environ["FINDWORK_API_KEY"] = "jk-123456", "fw-123456"
+        try:
+            jooble = build_request(JOOBLE, "AI Engineer", "")
+            self.assertEqual(jooble["url"], "https://jooble.org/api/jk-123456")
+            self.assertEqual(jooble["kwargs"]["json_body"]["location"], "India")
+            self.assertFalse(jooble["kwargs"]["use_cache"])
+            findwork = build_request(FINDWORK, "AI Engineer", "Pune")
+            self.assertNotIn("fw-123456", findwork["url"])
+            self.assertEqual(findwork["kwargs"]["headers"]["Authorization"], "Token fw-123456")
+        finally:
+            os.environ.pop("JOOBLE_API_KEY"), os.environ.pop("FINDWORK_API_KEY")
 
     def test_unconfigured_api_reports_not_configured_and_sends_nothing(self):
         import os
-        from app.services.job_sources.job_apis import ADZUNA, read_job_apis
-        saved = {k: os.environ.pop(k, None) for k in ADZUNA.env}
+        from app.services.job_sources.job_apis import JOOBLE, read_job_apis
+        saved = {k: os.environ.pop(k, None) for k in JOOBLE.env}
         try:
             http = FakeHttp({})
-            items, reports = asyncio.run(read_job_apis(http, ["AI Engineer"], apis=[ADZUNA]))
+            items, reports = asyncio.run(read_job_apis(http, ["AI Engineer"], apis=[JOOBLE]))
             self.assertEqual(items, [])
             self.assertEqual(reports[0]["state"], "not_configured")
             self.assertEqual(http.calls, [])
@@ -368,16 +410,18 @@ class JobApis(unittest.TestCase):
         from app.services.job_sources.safe_http import SafeFetcher
         captured = {}
 
-        async def fake_request(url, *, use_cache, check_robots, accept_any_type):
-            captured[url] = check_robots
+        async def fake_request(url, *, use_cache, check_robots, accept_any_type, headers=None, json_body=None):
+            captured[url] = (check_robots, use_cache, headers, json_body)
             return FetchResult(url=url)
 
         fetcher = SafeFetcher()
         fetcher._request = fake_request
-        asyncio.run(fetcher.get("https://api.adzuna.com/v1/api/jobs/in/search/1", robots=False))
-        asyncio.run(fetcher.get("https://www.naukri.com/job-listings-1", robots=False))
-        self.assertFalse(captured["https://api.adzuna.com/v1/api/jobs/in/search/1"])
-        self.assertTrue(captured["https://www.naukri.com/job-listings-1"])
+        asyncio.run(fetcher.get("https://jooble.org/api/k123", robots=False, json_body={"keywords": "x"}))
+        asyncio.run(fetcher.get("https://www.naukri.com/job-listings-1", robots=False,
+                                headers={"Authorization": "Token leak"}, json_body={"a": 1}))
+        self.assertEqual(captured["https://jooble.org/api/k123"], (False, False, None, {"keywords": "x"}))
+        # Other hosts never skip robots.txt and never receive a key header or a POST body.
+        self.assertEqual(captured["https://www.naukri.com/job-listings-1"], (True, True, None, None))
 
 
 class SourceHealth(unittest.TestCase):
@@ -392,7 +436,8 @@ class SourceHealth(unittest.TestCase):
 
     def test_registry_lists_job_apis_and_no_duplicate_hasjob(self):
         from app.services.job_sources.registry import BY_ID
-        for sid in ("api:himalayas", "api:adzuna", "api:google-jobs", "feed:hasjob"):
+        for sid in ("api:himalayas", "api:jooble", "api:findwork", "api:aidevboard", "api:aijobs",
+                    "api:remoteok", "feed:hasjob"):
             self.assertIn(sid, BY_ID)
         self.assertNotIn("portal:hasjob", BY_ID)
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Indian startups
+- 17 Indian startups with public job boards join the built-in board list (verified 2026-11-09): Swiggy,
+  Freshworks, Upstox, Unacademy, Cars24, Whatfix, ixigo (SmartRecruiters); InMobi, Glance, HighRadius, Sigmoid
+  (Greenhouse); Mindtickle, FamPay, Pocket FM (Lever); Atlan, Tekion (Ashby); Apna (Workable). Same-named
+  foreign boards (Lever "eternal" and "porter", Ashby "navi" and "leap", Greenhouse "slice") were excluded.
+- 81 Indian startups without a public board API (Zerodha, Flipkart, Blinkit, Zomato, Razorpay, PhonePe,
+  Zepto, Postman, BrowserStack, …) are seeded as employers with their official homepage only. Career discovery
+  finds and verifies their careers page; verified pages are then re-read during discovery.
+- Seeding runs at startup whenever `ats_sources.SEED_VERSION` changes, not only on version upgrades.
+- Verified careers pages are re-read oldest-first, so every page is covered in rotation (previously the same
+  first few were re-read every run).
+- New CLI command: `python -m app.main careers [--limit N]` seeds the lists and runs careers-page discovery
+  for every due employer at once.
+
+### Job APIs
+- Removed Adzuna and Google for Jobs (SerpApi): both need card details to sign up. Keys saved for them earlier
+  are ignored and dropped the next time a key is saved.
+- New optional keys in Settings → API keys: **Jooble** (job search engine indexing Indian portals and company
+  sites; POST API, at most 4 searches per run) and **Findwork** (developer jobs; token header, at most 3 per
+  run). Each key is checked with one search when saved.
+- New keyless sources: **AI Dev Jobs** (`location=India`, publication and expiry dates, employer apply link),
+  **Artificial Intelligence Jobs** (`region=Asia-Pacific`, roles read from AI companies' own career pages) and
+  **Remote OK** (one feed call per run, filtered by the searched roles; listings keep their Remote OK link as
+  its API terms require).
+- Remotive was evaluated and left out: its robots.txt disallows `/api/*`.
+- The polite fetcher can send a header or a JSON POST body, but only to hosts in `KEYED_API_HOSTS`; such calls
+  are never cached and redirects never carry the key.
+
 ## 4.3.0 — 2026-11-09
 
 Accuracy, freshness and source coverage for job discovery. Diagnosis and technology selection:

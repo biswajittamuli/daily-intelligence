@@ -1,7 +1,7 @@
 """Check that a saved API key actually works, with the cheapest call each provider offers.
 
-- Adzuna: one search for 1 result (counts as one API call).
-- SerpApi: account.json, free; does not use a search. Reports searches left this month.
+- Jooble: one search (counts as one API call).
+- Findwork: one search (counts as one API call).
 - Firecrawl: team credit-usage, free; reports remaining credits.
 - Parallel: connects to the MCP endpoint and lists its tools; no search is spent.
 
@@ -46,28 +46,22 @@ async def check(provider_id: str, *, transport: httpx.AsyncBaseTransport | None 
         if provider_id == "parallel":
             return await _check_parallel()
         async with httpx.AsyncClient(timeout=TIMEOUT, transport=transport, follow_redirects=False) as client:
-            if provider_id == "adzuna":
-                response = await client.get("https://api.adzuna.com/v1/api/jobs/in/search/1", params={
-                    "app_id": os.environ["ADZUNA_APP_ID"], "app_key": os.environ["ADZUNA_APP_KEY"],
-                    "results_per_page": 1, "what": "software engineer", "content-type": "application/json"})
+            if provider_id == "jooble":
+                response = await client.post("https://jooble.org/api/" + os.environ["JOOBLE_API_KEY"].strip(),
+                                             json={"keywords": "software engineer", "location": "India"})
                 if response.status_code != 200:
-                    return _http_failure("Adzuna", response)
+                    return _http_failure("Jooble", response)
+                count = (response.json() or {}).get("totalCount")
+                return _result(True, f"Jooble key works: {count:,} matching jobs in India right now." if isinstance(count, int)
+                               else "Jooble key works.", count=count)
+            if provider_id == "findwork":
+                response = await client.get("https://findwork.dev/api/jobs/", params={"search": "python"},
+                                            headers={"Authorization": "Token " + os.environ["FINDWORK_API_KEY"].strip()})
+                if response.status_code != 200:
+                    return _http_failure("Findwork", response)
                 count = (response.json() or {}).get("count")
-                return _result(True, f"Adzuna key works: {count:,} matching jobs in India right now." if isinstance(count, int)
-                               else "Adzuna key works.", count=count)
-            if provider_id == "serpapi":
-                response = await client.get("https://serpapi.com/account.json",
-                                            params={"api_key": os.environ["SERPAPI_API_KEY"]})
-                data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-                if response.status_code != 200 or data.get("error"):
-                    if data.get("error") and response.status_code == 200:
-                        return _result(False, f"SerpApi: {data['error']}",
-                                       rejected="invalid" in str(data["error"]).casefold())
-                    return _http_failure("SerpApi", response)
-                left = data.get("total_searches_left", data.get("plan_searches_left"))
-                return _result(True, f"SerpApi key works ({data.get('plan_name') or 'plan'}"
-                                     + (f", {left} searches left this month" if left is not None else "") + ").",
-                               searches_left=left, plan=data.get("plan_name"))
+                return _result(True, f"Findwork key works: {count:,} Python jobs listed." if isinstance(count, int)
+                               else "Findwork key works.", count=count)
             if provider_id == "firecrawl":
                 headers = {"Authorization": f"Bearer {os.environ['FIRECRAWL_API_KEY']}"}
                 response = await client.get("https://api.firecrawl.dev/v1/team/credit-usage", headers=headers)

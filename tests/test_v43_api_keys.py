@@ -39,22 +39,29 @@ class SecretsStoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_save_applies_immediately_with_owner_only_file(self):
-        from app.services.job_sources.job_apis import GOOGLE_JOBS
-        self.assertFalse(GOOGLE_JOBS.configured())
-        secrets_store.save({"SERPAPI_API_KEY": "  abcd1234efgh5678  "}, self.dir)
-        self.assertEqual(os.environ["SERPAPI_API_KEY"], "abcd1234efgh5678")
-        self.assertTrue(GOOGLE_JOBS.configured())  # discovery sees it without a restart
+        from app.services.job_sources.job_apis import JOOBLE
+        self.assertFalse(JOOBLE.configured())
+        secrets_store.save({"JOOBLE_API_KEY": "  abcd1234efgh5678  "}, self.dir)
+        self.assertEqual(os.environ["JOOBLE_API_KEY"], "abcd1234efgh5678")
+        self.assertTrue(JOOBLE.configured())  # discovery sees it without a restart
         mode = stat.S_IMODE((self.dir / "secrets.json").stat().st_mode)
         self.assertEqual(mode, 0o600)
 
     def test_status_never_contains_the_key(self):
-        secrets_store.save({"ADZUNA_APP_ID": "app12345", "ADZUNA_APP_KEY": "secretkey987654"}, self.dir)
+        secrets_store.save({"FINDWORK_API_KEY": "secretkey987654"}, self.dir)
         text = json.dumps(secrets_store.status(self.dir))
         self.assertNotIn("secretkey987654", text)
-        self.assertNotIn("app12345", text)
-        adzuna = next(p for p in secrets_store.status(self.dir) if p["id"] == "adzuna")
-        self.assertTrue(adzuna["configured"])
-        self.assertTrue(adzuna["keys"][1]["hint"].endswith("7654"))
+        findwork = next(p for p in secrets_store.status(self.dir) if p["id"] == "findwork")
+        self.assertTrue(findwork["configured"])
+        self.assertTrue(findwork["keys"][0]["hint"].endswith("7654"))
+
+    def test_removed_providers_are_ignored_in_old_secrets_files(self):
+        (self.dir / "secrets.json").write_text(json.dumps({"SERPAPI_API_KEY": "old123456789",
+                                                          "JOOBLE_API_KEY": "kept12345678"}))
+        secrets_store.apply_to_environment(self.dir)
+        self.assertIsNone(os.environ.get("SERPAPI_API_KEY"))
+        self.assertEqual(os.environ["JOOBLE_API_KEY"], "kept12345678")
+        self.assertEqual({p["id"] for p in secrets_store.status(self.dir)}, {"jooble", "findwork", "firecrawl", "parallel"})
 
     def test_remove_restores_environment_value(self):
         os.environ["FIRECRAWL_API_KEY"] = "fromenv1234"
@@ -66,15 +73,15 @@ class SecretsStoreTests(unittest.TestCase):
 
     def test_rejects_malformed_values_and_unknown_names(self):
         with self.assertRaises(ValueError):
-            secrets_store.save({"SERPAPI_API_KEY": "has space inside"}, self.dir)
+            secrets_store.save({"JOOBLE_API_KEY": "has space inside"}, self.dir)
         with self.assertRaises(ValueError):
-            secrets_store.save({"SERPAPI_API_KEY": "line\nbreak"}, self.dir)
+            secrets_store.save({"JOOBLE_API_KEY": "line\nbreak"}, self.dir)
         with self.assertRaises(ValueError):
             secrets_store.save({"HOME": "whatever123"}, self.dir)
         self.assertFalse((self.dir / "secrets.json").exists())
 
     def test_redact(self):
-        secrets_store.save({"SERPAPI_API_KEY": "zz9876543210"}, self.dir)
+        secrets_store.save({"JOOBLE_API_KEY": "zz9876543210"}, self.dir)
         self.assertEqual(secrets_store.redact("bad key zz9876543210 here"), "bad key [redacted] here")
 
 
@@ -92,38 +99,40 @@ class KeyCheckTests(unittest.TestCase):
         return asyncio.run(key_check.check(provider, transport=httpx.MockTransport(handler)))
 
     def test_not_configured(self):
-        result = self.run_check("serpapi", lambda r: httpx.Response(500))
+        result = self.run_check("jooble", lambda r: httpx.Response(500))
         self.assertFalse(result["ok"])
         self.assertIn("Not configured", result["message"])
 
-    def test_serpapi_valid_and_invalid(self):
-        os.environ["SERPAPI_API_KEY"] = "goodkey12345"
+    def test_jooble_valid_and_invalid(self):
+        os.environ["JOOBLE_API_KEY"] = "goodkey12345"
 
         def handler(request):
-            self.assertEqual(request.url.path, "/account.json")  # free endpoint, no search spent
-            if request.url.params["api_key"] == "goodkey12345":
-                return httpx.Response(200, json={"plan_name": "Free Plan", "total_searches_left": 248})
-            return httpx.Response(401, json={"error": "Invalid API key."})
-        ok = self.run_check("serpapi", handler)
+            self.assertEqual(request.method, "POST")
+            if request.url.path == "/api/goodkey12345":
+                return httpx.Response(200, json={"totalCount": 15234, "jobs": []})
+            return httpx.Response(403)
+        ok = self.run_check("jooble", handler)
         self.assertTrue(ok["ok"])
-        self.assertIn("248 searches left", ok["message"])
-        os.environ["SERPAPI_API_KEY"] = "badkey12345"
-        bad = self.run_check("serpapi", handler)
+        self.assertIn("15,234", ok["message"])
+        os.environ["JOOBLE_API_KEY"] = "badkey12345"
+        bad = self.run_check("jooble", handler)
         self.assertFalse(bad["ok"])
+        self.assertTrue(bad["rejected"])
         self.assertNotIn("badkey12345", bad["message"])
 
-    def test_adzuna_and_firecrawl(self):
-        os.environ.update({"ADZUNA_APP_ID": "id123456", "ADZUNA_APP_KEY": "key123456", "FIRECRAWL_API_KEY": "fc-123456"})
+    def test_findwork_and_firecrawl(self):
+        os.environ.update({"FINDWORK_API_KEY": "fw123456", "FIRECRAWL_API_KEY": "fc-123456"})
 
         def handler(request):
-            if request.url.host == "api.adzuna.com":
-                return httpx.Response(200, json={"count": 15234, "results": []})
+            if request.url.host == "findwork.dev":
+                self.assertEqual(request.headers["Authorization"], "Token fw123456")
+                return httpx.Response(200, json={"count": 812, "results": []})
             if request.url.path.endswith("credit-usage"):
                 return httpx.Response(200, json={"success": True, "data": {"remaining_credits": 480}})
             return httpx.Response(404)
-        self.assertIn("15,234", self.run_check("adzuna", handler)["message"])
+        self.assertIn("812", self.run_check("findwork", handler)["message"])
         self.assertIn("480 credits", self.run_check("firecrawl", handler)["message"])
-        self.assertFalse(self.run_check("adzuna", lambda r: httpx.Response(401))["ok"])
+        self.assertFalse(self.run_check("findwork", lambda r: httpx.Response(401))["ok"])
 
 
 class RejectedKeyRollbackTests(unittest.TestCase):
@@ -142,19 +151,19 @@ class RejectedKeyRollbackTests(unittest.TestCase):
                         return {"ok": True, "rejected": False, "message": "works", "detail": {}}
 
                     async def bad(provider_id, **kw):
-                        return {"ok": False, "rejected": True, "message": "SerpApi rejected the key (HTTP 401).", "detail": {}}
+                        return {"ok": False, "rejected": True, "message": "Jooble rejected the key (HTTP 401).", "detail": {}}
                     with mock.patch("app.services.key_check.check", good):
-                        out = app.save_api_keys("serpapi", {"SERPAPI_API_KEY": "firstgoodkey1"})
+                        out = app.save_api_keys("jooble", {"JOOBLE_API_KEY": "firstgoodkey1"})
                     self.assertTrue(out["check"]["ok"])
                     with mock.patch("app.services.key_check.check", bad):
-                        out = app.save_api_keys("serpapi", {"SERPAPI_API_KEY": "typo-badkey22"})
+                        out = app.save_api_keys("jooble", {"JOOBLE_API_KEY": "typo-badkey22"})
                     self.assertIn("previous key was kept", out["check"]["message"])
-                    self.assertEqual(os.environ["SERPAPI_API_KEY"], "firstgoodkey1")
-                    app.remove_api_keys("serpapi")
+                    self.assertEqual(os.environ["JOOBLE_API_KEY"], "firstgoodkey1")
+                    app.remove_api_keys("jooble")
                     with mock.patch("app.services.key_check.check", bad):
-                        out = app.save_api_keys("serpapi", {"SERPAPI_API_KEY": "typo-badkey22"})
+                        out = app.save_api_keys("jooble", {"JOOBLE_API_KEY": "typo-badkey22"})
                     self.assertIn("not saved", out["check"]["message"])
-                    self.assertIsNone(os.environ.get("SERPAPI_API_KEY"))
+                    self.assertIsNone(os.environ.get("JOOBLE_API_KEY"))
                 finally:
                     app._executor.shutdown(wait=False)
         finally:
@@ -192,13 +201,13 @@ class EndpointGuardTests(unittest.TestCase):
                     exc.close()
                     return exc.code, payload
             try:
-                status, _ = call("/api/keys", {"provider": "serpapi", "values": {"SERPAPI_API_KEY": "evil12345678"}},
+                status, _ = call("/api/keys", {"provider": "jooble", "values": {"JOOBLE_API_KEY": "evil12345678"}},
                                  {"Content-Type": "application/json", "Origin": "https://evil.example"})
                 self.assertEqual(status, 403)
-                status, _ = call("/api/keys", {"provider": "serpapi", "values": {"SERPAPI_API_KEY": "evil12345678"}},
+                status, _ = call("/api/keys", {"provider": "jooble", "values": {"JOOBLE_API_KEY": "evil12345678"}},
                                  {"Content-Type": "text/plain"})
                 self.assertEqual(status, 403)  # simple cross-site form posts are refused
-                self.assertIsNone(os.environ.get("SERPAPI_API_KEY"))
+                self.assertIsNone(os.environ.get("JOOBLE_API_KEY"))
                 # The whole API is guarded, not only keys: other sites cannot trigger actions or read data.
                 status, _ = call("/api/discover", {}, {"Content-Type": "text/plain"})
                 self.assertEqual(status, 403)
@@ -209,7 +218,7 @@ class EndpointGuardTests(unittest.TestCase):
                 self.assertEqual(status, 403)
                 status, _ = call("/api/health")
                 self.assertEqual(status, 200)
-                os.environ["SERPAPI_API_KEY"] = "envonly987654"
+                os.environ["JOOBLE_API_KEY"] = "envonly987654"
                 status, data = call("/api/keys")
                 self.assertEqual(status, 200)
                 self.assertNotIn("envonly987654", json.dumps(data))

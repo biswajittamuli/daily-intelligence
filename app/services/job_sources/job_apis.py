@@ -1,33 +1,44 @@
-"""Job-search APIs (v4.3): structured vacancies from providers that permit programmatic access.
+"""Job-search APIs: structured vacancies from providers that permit programmatic access.
 
-Each adapter exposes the same operations: build queries, call the API (with timeouts, through the polite
-fetcher), normalise results into the common candidate shape, and report one coverage row per provider.
-A provider failure never stops discovery; a provider without its key reports "not configured".
+Each adapter builds its requests, calls the API through the polite fetcher (timeouts, robots.txt for the
+keyless ones), normalises results into the common candidate shape and reports one coverage row. A provider
+failure never stops discovery; a provider without its key reports "not configured".
 
-- Himalayas: free public JSON API, no key. Remote jobs with explicit ``locationRestrictions``, a publication
-  timestamp and an expiry. robots.txt disallows ``&page=`` URLs, so only page 1 of each query is read.
-- Adzuna (optional ``ADZUNA_APP_ID`` + ``ADZUNA_APP_KEY``): official REST API for the Indian market.
-- Google for Jobs through SerpApi (optional ``SERPAPI_API_KEY``): Google's job index, which includes listings
-  from LinkedIn, Naukri, Indeed and foundit, with one apply link per site. This is the compliant route to those
-  portals, whose terms forbid fetching their pages directly.
+Keyless (free public JSON APIs):
+- Himalayas: remote jobs with explicit ``locationRestrictions``, publication and expiry timestamps. robots.txt
+  disallows ``&page=`` URLs, so only page 1 of each query is read.
+- AI Dev Jobs (aidevboard.com): AI/ML and backend roles, ``location=India`` filter, publication and expiry dates,
+  the employer's own apply link.
+- Artificial Intelligence Jobs (artificialintelligencejobs.co): AI-company roles read from the companies' own
+  career pages; ``region=Asia-Pacific`` plus free text. Attribution requested: the listing links back to them.
+- RemoteOK: one call per run (whole feed), filtered locally by role. Their API terms require linking back to the
+  Remote OK listing and naming them as the source, so the stored URL is the Remote OK page.
 
-Only role titles and a location are sent to these providers, never resume content.
+Keyed (free keys, no card; add them in Settings → API keys):
+- Jooble (``JOOBLE_API_KEY``): aggregator that indexes many Indian portals and company sites. POST API.
+- Findwork (``FINDWORK_API_KEY``): developer job board, ``Authorization: Token`` header.
+
+LinkedIn, Naukri, Indeed and similar portals forbid fetching their pages; Jooble's index is the compliant
+route to listings that those portals also carry. Remotive was evaluated and left out: its robots.txt
+disallows ``/api/*``. Only role titles and a location are sent to these
+providers, never resume content.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode
 
-from app.services.freshness import parse_date, parse_relative_date
+from app.services.freshness import parse_date
 from app.services.job_sources.models import SourceState
 from app.services.job_sources.structured import clean_text
 
 # Keyed REST APIs whose robots.txt addresses crawlers, not API clients holding a key under the API terms.
-KEYED_API_HOSTS = {"api.adzuna.com", "serpapi.com"}
+KEYED_API_HOSTS = {"jooble.org", "findwork.dev"}
 
 
 @dataclass(frozen=True)
@@ -42,14 +53,30 @@ class JobAPI:
 
 
 HIMALAYAS = JobAPI("api:himalayas", "Himalayas remote-jobs API", (), 4)
-ADZUNA = JobAPI("api:adzuna", "Adzuna India API", ("ADZUNA_APP_ID", "ADZUNA_APP_KEY"), 4)
-GOOGLE_JOBS = JobAPI("api:google-jobs", "Google for Jobs (SerpApi)", ("SERPAPI_API_KEY",), 2)
-APIS = [HIMALAYAS, ADZUNA, GOOGLE_JOBS]
+AIDEVBOARD = JobAPI("api:aidevboard", "AI Dev Jobs API", (), 3)
+AIJOBS = JobAPI("api:aijobs", "Artificial Intelligence Jobs API", (), 2)
+REMOTEOK = JobAPI("api:remoteok", "Remote OK API", (), 1)
+JOOBLE = JobAPI("api:jooble", "Jooble API", ("JOOBLE_API_KEY",), 4)
+FINDWORK = JobAPI("api:findwork", "Findwork API", ("FINDWORK_API_KEY",), 3)
+APIS = [HIMALAYAS, JOOBLE, AIDEVBOARD, AIJOBS, FINDWORK, REMOTEOK]
 BY_ID = {api.source_id: api for api in APIS}
+FEED_APIS = {REMOTEOK.source_id}  # one whole-feed call per run, filtered locally
+
+WORLDWIDE = re.compile(r"^\s*(worldwide|anywhere|global|remote|anywhere in the world)\s*$", re.I)
 
 
 def _text(value: Any, limit: int = 8000) -> str:
     return clean_text(re.sub(r"<[^>]+>", " ", str(value or "")), limit)
+
+
+def _https(url: Any) -> str:
+    text = str(url or "").strip()
+    return text if text.startswith("https://") else ""
+
+
+def _day(value: Any) -> str | None:
+    found = parse_date(str(value or "")[:10]) if value else None
+    return found.isoformat() if found else None
 
 
 def _restriction_label(restrictions: list[str]) -> str:
@@ -60,6 +87,25 @@ def _restriction_label(restrictions: list[str]) -> str:
     if india and len(restrictions) > 1:
         return f"India (+{len(restrictions) - 1} other countries)"
     return ", ".join(restrictions[:4]) + (f" (+{len(restrictions) - 4} more)" if len(restrictions) > 4 else "")
+
+
+def _restrictions(text: str) -> list[str]:
+    """'Worldwide' -> [] (no restriction); 'USA, Canada' -> ['USA', 'Canada']."""
+    if not text or WORLDWIDE.match(text):
+        return []
+    return [part.strip() for part in re.split(r"[,;/|]", text) if part.strip() and not WORLDWIDE.match(part)]
+
+
+def _role_words(roles: list[str]) -> set[str]:
+    stop = {"and", "or", "the", "a", "an", "of", "for", "in", "with", "junior", "senior", "fresher", "entry", "level",
+            "graduate", "intern", "remote", "india", "engineer", "developer"}
+    words = {w for role in roles for w in re.findall(r"[a-z0-9+#.]+", str(role).casefold()) if len(w) > 1 and w not in stop}
+    return words or {"engineer", "developer"}
+
+
+def _matches_roles(item: dict[str, Any], words: set[str]) -> bool:
+    haystack = " ".join([item.get("title") or "", " ".join(item.get("skills") or [])]).casefold()
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", haystack) for word in words)
 
 
 # ------------------------------------------------------------------ parsers (pure; tested with fixtures)
@@ -96,58 +142,105 @@ def parse_himalayas(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return items
 
 
-def parse_adzuna(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_aidevboard(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for job in (payload or {}).get("jobs") or []:
+        url, title = _https(job.get("url")), clean_text(job.get("title"), 200)
+        if not url or not title or str(job.get("status") or "active") != "active":
+            continue
+        workplace = str(job.get("workplace") or "").casefold()
+        expiry = _day(job.get("expires_at"))
+        items.append({
+            "title": title, "url": url, "employer": clean_text(job.get("company_name"), 120),
+            "location": clean_text(job.get("location"), 120), "remote": workplace or None,
+            "posted_date": _day(job.get("published_at")), "date_source": "job platform API",
+            "valid_through": expiry, "employment_type": job.get("job_type"),
+            "experience": job.get("experience_level"), "skills": [str(t) for t in job.get("tags") or []][:20],
+            "description": _text(job.get("description"), 6000), "extraction_method": "AI Dev Jobs API",
+            "application_url": _https(job.get("apply_url")) or None, "api_id": AIDEVBOARD.source_id,
+        })
+    return items
+
+
+def parse_aijobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for job in (payload or {}).get("jobs") or []:
+        url, title = _https(job.get("url")), clean_text(job.get("title"), 200)
+        if not url or not title:
+            continue
+        items.append({
+            "title": title, "url": url, "employer": clean_text(job.get("company"), 120),
+            "location": clean_text(job.get("location"), 120), "remote": "remote" if job.get("remote") else None,
+            "posted_date": _day(job.get("posted")), "date_source": "job platform API",
+            "experience": job.get("level"), "salary": job.get("salary") or None,
+            "description": clean_text(f"{job.get('category') or ''} role at {job.get('company') or ''}", 300),
+            "extraction_method": "Artificial Intelligence Jobs API",
+            "application_url": _https(job.get("apply_url")) or None, "api_id": AIJOBS.source_id,
+        })
+    return items
+
+
+def parse_remoteok(payload: Any) -> list[dict[str, Any]]:
+    items = []
+    for job in payload if isinstance(payload, list) else []:
+        if not isinstance(job, dict) or "legal" in job:
+            continue
+        url, title = _https(job.get("url")), clean_text(job.get("position"), 200)
+        if not url or not title:
+            continue
+        place = clean_text(job.get("location"), 200)
+        restrictions = _restrictions(place) if place else None  # empty location = not stated, not "worldwide"
+        items.append({
+            "title": title, "url": url, "employer": clean_text(job.get("company"), 120),
+            "location": "Remote — " + (_restriction_label(restrictions) if restrictions is not None else "location not stated"),
+            "remote": "remote", "location_restrictions": restrictions, "posted_date": _day(job.get("date")),
+            "date_source": "job platform API", "skills": [str(t) for t in job.get("tags") or []][:20],
+            "salary": (f"{int(job['salary_min'])}–{int(job['salary_max'])} USD" if job.get("salary_min") and job.get("salary_max")
+                       else None),
+            "description": _text(job.get("description"), 6000), "extraction_method": "Remote OK public API",
+            "source_platform": "Remote OK", "api_id": REMOTEOK.source_id,
+        })
+    return items
+
+
+def parse_jooble(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for job in (payload or {}).get("jobs") or []:
+        url, title = _https(job.get("link")), clean_text(job.get("title"), 200)
+        if not url or not title:
+            continue
+        items.append({
+            "title": title, "url": url, "employer": clean_text(job.get("company"), 120) or None,
+            "location": clean_text(job.get("location"), 120), "posted_date": _day(job.get("updated")),
+            "date_source": "aggregator API (last updated)", "employment_type": job.get("type") or None,
+            "salary": clean_text(job.get("salary"), 80) or None, "description": _text(job.get("snippet"), 4000),
+            "source_platform": clean_text(job.get("source"), 80) or None,
+            "extraction_method": "Jooble API", "api_id": JOOBLE.source_id,
+        })
+    return items
+
+
+def parse_findwork(payload: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for job in (payload or {}).get("results") or []:
-        url = str(job.get("redirect_url") or "")
-        title = clean_text(job.get("title"), 200)
-        if not url.startswith("https://") or not title:
+        url, title = _https(job.get("url")), clean_text(job.get("role"), 200)
+        if not url or not title:
             continue
-        created = parse_date(str(job.get("created") or "")[:10])
         items.append({
-            "title": title, "url": url, "employer": clean_text((job.get("company") or {}).get("display_name"), 120),
-            "location": clean_text((job.get("location") or {}).get("display_name"), 120),
-            "posted_date": created.isoformat() if created else None, "date_source": "aggregator API",
-            "employment_type": job.get("contract_time") or job.get("contract_type"),
-            "description": _text(job.get("description"), 4000), "requisition_id": None,
-            "extraction_method": "Adzuna API", "api_id": ADZUNA.source_id,
-            "salary": (f"{int(job['salary_min'])}–{int(job['salary_max'])}" if job.get("salary_min") and job.get("salary_max")
-                       else None),
+            "title": title, "url": url, "employer": clean_text(job.get("company_name"), 120),
+            "location": clean_text(job.get("location"), 120) or ("Remote" if job.get("remote") else ""),
+            "remote": "remote" if job.get("remote") else None, "posted_date": _day(job.get("date_posted")),
+            "date_source": "job platform API", "employment_type": job.get("employment_type"),
+            "skills": [str(t) for t in job.get("keywords") or []][:20], "description": _text(job.get("text"), 6000),
+            "source_platform": clean_text(job.get("source"), 80) or None,
+            "extraction_method": "Findwork API", "api_id": FINDWORK.source_id,
         })
     return items
 
 
-def parse_google_jobs(payload: dict[str, Any], *, today: date | None = None) -> list[dict[str, Any]]:
-    """Google for Jobs results. The employer's own apply link is preferred; every site is kept as provenance."""
-    from app.services.job_sources import portals as portal_policy
-
-    today = today or date.today()
-    items = []
-    for job in (payload or {}).get("jobs_results") or []:
-        title = clean_text(job.get("title"), 200)
-        options = [o for o in job.get("apply_options") or [] if str(o.get("link") or "").startswith("https://")]
-        if not title or not options:
-            continue
-        employer_link = next((o for o in options if portal_policy.portal_for(o["link"]) is None
-                              and not re.search(r"(google|adzuna|jooble|talent\.com|simplyhired|glassdoor|ziprecruiter)\.",
-                                                o["link"])), None)
-        primary = employer_link or options[0]
-        posted_text = str((job.get("detected_extensions") or {}).get("posted_at") or "")
-        posted = parse_relative_date(posted_text, today) if posted_text else None
-        sources = [{"platform": urlsplit(o["link"]).hostname, "url": o["link"], "via": f"Google for Jobs · {o.get('title') or ''}".strip(" ·"),
-                    "kind": "google jobs apply option"} for o in options]
-        items.append({
-            "title": title, "url": primary["link"], "employer": clean_text(job.get("company_name"), 120),
-            "location": clean_text(job.get("location"), 120),
-            "remote": "remote" if (job.get("detected_extensions") or {}).get("work_from_home") else None,
-            "posted_date": posted.isoformat() if posted else None,
-            "date_source": "listing text (relative date)" if posted else None,
-            "employment_type": (job.get("detected_extensions") or {}).get("schedule_type"),
-            "description": _text(job.get("description"), 6000), "extraction_method": "Google for Jobs (SerpApi)",
-            "application_url": employer_link["link"] if employer_link else None,
-            "extra_sources": sources, "via_text": job.get("via"), "api_id": GOOGLE_JOBS.source_id,
-        })
-    return items
+PARSERS = {HIMALAYAS.source_id: parse_himalayas, AIDEVBOARD.source_id: parse_aidevboard, AIJOBS.source_id: parse_aijobs,
+           REMOTEOK.source_id: parse_remoteok, JOOBLE.source_id: parse_jooble,
+           FINDWORK.source_id: parse_findwork}
 
 
 # ------------------------------------------------------------------ request builders
@@ -155,29 +248,39 @@ def himalayas_url(query: str) -> str:
     return "https://himalayas.app/jobs/api/search?" + urlencode({"q": query, "country": "India", "sort": "recent"})
 
 
-def adzuna_url(query: str, where: str) -> str:
-    params = {"app_id": os.getenv("ADZUNA_APP_ID", ""), "app_key": os.getenv("ADZUNA_APP_KEY", ""),
-              "what": query, "results_per_page": 50, "max_days_old": 30, "sort_by": "date",
-              "content-type": "application/json"}
-    if where and where.casefold() != "india":
-        params["where"] = where
-    return "https://api.adzuna.com/v1/api/jobs/in/search/1?" + urlencode(params)
-
-
-def google_jobs_url(query: str, where: str) -> str:
-    return "https://serpapi.com/search.json?" + urlencode({
-        "engine": "google_jobs", "q": f"{query} {where}".strip(), "gl": "in", "hl": "en",
-        "location": "India", "api_key": os.getenv("SERPAPI_API_KEY", "")})
+def build_request(api: JobAPI, role: str, where: str) -> dict[str, Any]:
+    """One API call: {url, kwargs for http.get}. Keys travel in a header or the request path, never in logs."""
+    place = where or "India"
+    if api is HIMALAYAS:
+        return {"url": himalayas_url(role), "kwargs": {}}
+    if api is AIDEVBOARD:
+        return {"url": "https://aidevboard.com/api/v1/jobs?" + urlencode({"q": role, "location": place}), "kwargs": {}}
+    if api is AIJOBS:
+        return {"url": "https://artificialintelligencejobs.co/api/jobs?" + urlencode(
+            {"q": role, "region": "Asia-Pacific", "limit": 200}), "kwargs": {}}
+    if api is REMOTEOK:
+        return {"url": "https://remoteok.com/api", "kwargs": {}}
+    if api is JOOBLE:
+        return {"url": "https://jooble.org/api/" + os.getenv("JOOBLE_API_KEY", "").strip(),
+                "kwargs": {"json_body": {"keywords": role, "location": place, "page": "1"},
+                           "robots": False, "use_cache": False}}
+    if api is FINDWORK:
+        return {"url": "https://findwork.dev/api/jobs/?" + urlencode({"search": role, "location": place, "sort_by": "date"}),
+                "kwargs": {"headers": {"Authorization": "Token " + os.getenv("FINDWORK_API_KEY", "").strip()},
+                           "robots": False, "use_cache": False}}
+    raise ValueError(api.source_id)
 
 
 async def read_job_apis(http, roles: list[str], *, location: str = "India", skip: dict[str, str] | None = None,
                         apis: list[JobAPI] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Query every configured job API. Returns (items, reports); each report is one coverage row per API."""
-    import json
+    from app.secrets_store import redact
 
     items: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
     where = "" if re.fullmatch(r"(india\s*)+", (location or "").casefold().strip()) else location
+    roles = [r for r in roles if r]
+    words = _role_words(roles)
     for api in apis or APIS:
         if api.source_id in (skip or {}):
             reports.append({"api": api, "state": SourceState.NOT_TARGETED, "reason": (skip or {})[api.source_id],
@@ -187,16 +290,14 @@ async def read_job_apis(http, roles: list[str], *, location: str = "India", skip
             reports.append({"api": api, "state": "not_configured", "count": 0, "queries": 0,
                             "reason": "Add the key in Settings → API keys (optional)"})
             continue
+        feed = api.source_id in FEED_APIS
         found, errors, statuses, queries = [], [], [], 0
-        for role in [r for r in roles if r][: api.max_queries]:
+        seen: set[str] = set()
+        for role in (["(feed)"] if feed else roles[: api.max_queries]):
             queries += 1
-            if api is HIMALAYAS:
-                url, robots, cache = himalayas_url(role), True, True
-            elif api is ADZUNA:
-                url, robots, cache = adzuna_url(role, where), False, False
-            else:
-                url, robots, cache = google_jobs_url(role, where or "India"), False, False
-            result = await http.get(url, accept_json=True, robots=robots, use_cache=cache)
+            request = build_request(api, role, where)
+            kwargs = {"accept_json": True, **request["kwargs"]}
+            result = await http.get(request["url"], **kwargs)
             statuses.append(result.status)
             if not result.ok:
                 errors.append(f"{SourceState.LABELS.get(result.state, result.state)}"
@@ -209,12 +310,13 @@ async def read_job_apis(http, roles: list[str], *, location: str = "India", skip
             except ValueError:
                 errors.append("response was not JSON")
                 continue
-            parsed = parse_himalayas(payload) if api is HIMALAYAS else parse_adzuna(payload) if api is ADZUNA \
-                else parse_google_jobs(payload)
-            for item in parsed:
+            for item in PARSERS[api.source_id](payload):
+                if item["url"] in seen or (feed and not _matches_roles(item, words)):
+                    continue
+                seen.add(item["url"])
                 item["_via"] = api.name
-                item["_query"] = role
-            found.extend(parsed)
+                item["_query"] = role if not feed else ", ".join(roles[:3])
+                found.append(item)
         if found:
             state = SourceState.PARTIAL if errors else SourceState.EXTRACT_OK
         elif errors:
@@ -224,6 +326,7 @@ async def read_job_apis(http, roles: list[str], *, location: str = "India", skip
             state = SourceState.NO_RESULTS
         items.extend(found)
         reports.append({"api": api, "state": state, "count": len(found), "queries": queries,
-                        "reason": "; ".join(dict.fromkeys(errors))[:200] or None,
+                        "reason": redact("; ".join(dict.fromkeys(errors))[:200]) or None,
                         "http_status": next((s for s in statuses if s), None)})
     return items, reports
+

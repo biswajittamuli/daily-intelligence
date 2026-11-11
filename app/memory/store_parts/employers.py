@@ -156,6 +156,10 @@ class EmployersMixin:
                         ats.get("provider"), 1 if ats.get("readable") else 0, ats.get("slug"),
                         employer_id))
 
+    def mark_career_checked(self, employer_id: int) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE employers SET last_career_check=? WHERE id=?", (self.now(), employer_id))
+
     def employers_due_for_discovery(self, *, limit: int = 10) -> list[dict[str, Any]]:
         """Employers with a website whose career discovery has never run or whose retry time has come."""
         now = self.now()

@@ -21,23 +21,23 @@ from typing import Any
 
 # name -> label shown in the UI
 SECRET_NAMES = {
-    "ADZUNA_APP_ID": "Application ID",
-    "ADZUNA_APP_KEY": "Application key",
-    "SERPAPI_API_KEY": "API key",
+    "JOOBLE_API_KEY": "API key",
+    "FINDWORK_API_KEY": "API key",
     "FIRECRAWL_API_KEY": "API key",
     "PARALLEL_MCP_AUTH_TOKEN": "API key / bearer token",
 }
 
 PROVIDERS: list[dict[str, Any]] = [
-    {"id": "adzuna", "name": "Adzuna India", "keys": ["ADZUNA_APP_ID", "ADZUNA_APP_KEY"],
-     "signup": "https://developer.adzuna.com/signup",
-     "purpose": "Job listings aggregated from the Indian job market, with posting dates.",
-     "cost": "Free developer key (rate-limited)", "sends": "Role titles and a location"},
-    {"id": "serpapi", "name": "Google for Jobs (SerpApi)", "keys": ["SERPAPI_API_KEY"],
-     "signup": "https://serpapi.com/users/sign_up",
-     "purpose": "Google's job index: LinkedIn, Naukri, Indeed and foundit listings with apply links, "
-                "without fetching those portals.",
-     "cost": "Free plan: 250 searches/month; this app uses at most 2 per discovery run",
+    {"id": "jooble", "name": "Jooble", "keys": ["JOOBLE_API_KEY"],
+     "signup": "https://jooble.org/api/about",
+     "purpose": "Job search engine that indexes Indian job portals and company sites, so it reaches listings "
+                "that LinkedIn, Naukri and others also carry, without fetching those portals.",
+     "cost": "Free key (request form, no card); this app makes at most 4 searches per discovery run",
+     "sends": "Role titles and a location"},
+    {"id": "findwork", "name": "Findwork", "keys": ["FINDWORK_API_KEY"],
+     "signup": "https://findwork.dev/developers/",
+     "purpose": "Developer job board with remote and on-site software roles.",
+     "cost": "Free key (sign-up, no card); at most 3 searches per discovery run",
      "sends": "Role titles and a location"},
     {"id": "firecrawl", "name": "Firecrawl", "keys": ["FIRECRAWL_API_KEY"],
      "signup": "https://www.firecrawl.dev/signin/signup",

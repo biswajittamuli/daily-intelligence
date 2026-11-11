@@ -51,7 +51,85 @@ DEFAULT_COMPANIES: list[dict[str, str]] = [
     {"name": "Plaid", "ats": "ashby", "slug": "plaid"},
     {"name": "Supabase", "ats": "ashby", "slug": "supabase"},
     {"name": "PostHog", "ats": "ashby", "slug": "posthog"},
+    # Indian startups with public boards, verified on 2026-11-09 (board name or job locations match the company;
+    # same-named foreign boards such as lever/eternal, lever/porter, ashby/navi and greenhouse/slice were excluded).
+    {"name": "Swiggy", "ats": "smartrecruiters", "slug": "swiggy"},
+    {"name": "Freshworks", "ats": "smartrecruiters", "slug": "freshworks"},
+    {"name": "Upstox", "ats": "smartrecruiters", "slug": "upstox"},
+    {"name": "Unacademy", "ats": "smartrecruiters", "slug": "unacademy"},
+    {"name": "Cars24", "ats": "smartrecruiters", "slug": "cars24"},
+    {"name": "Whatfix", "ats": "smartrecruiters", "slug": "whatfix"},
+    {"name": "ixigo", "ats": "smartrecruiters", "slug": "ixigo"},
+    {"name": "InMobi", "ats": "greenhouse", "slug": "inmobi"},
+    {"name": "Glance", "ats": "greenhouse", "slug": "glance"},
+    {"name": "HighRadius", "ats": "greenhouse", "slug": "highradius"},
+    {"name": "Sigmoid", "ats": "greenhouse", "slug": "sigmoid"},
+    {"name": "Mindtickle", "ats": "lever", "slug": "mindtickle"},
+    {"name": "FamPay", "ats": "lever", "slug": "fampay"},
+    {"name": "Pocket FM", "ats": "lever", "slug": "pocketfm"},
+    {"name": "Atlan", "ats": "ashby", "slug": "atlan"},
+    {"name": "Tekion", "ats": "ashby", "slug": "tekion"},
+    {"name": "Apna", "ats": "workable", "slug": "apna"},
 ]
+
+# Indian employers on the built-in boards above, with how they are classified (never guessed).
+INDIAN_BOARDS = {"groww": "startup", "cred": "startup", "meesho": "startup", "zeta": "startup", "sarvam": "startup",
+                 "paytm": "established", "druva": "startup", "hackerrank": "established", "swiggy": "startup",
+                 "freshworks": "established", "upstox": "startup", "unacademy": "startup", "cars24": "startup",
+                 "whatfix": "startup", "ixigo": "startup", "inmobi": "startup", "glance": "startup",
+                 "highradius": "startup", "sigmoid": "startup", "mindtickle": "startup", "fampay": "startup",
+                 "pocketfm": "startup", "atlan": "startup", "tekion": "startup", "apna": "startup"}
+
+# Indian startups without a public ATS board API. Only the official homepage is recorded: multi-stage career
+# discovery (app.services.job_sources.career_discovery) finds the careers page from the site itself (links,
+# sitemaps, rendering), verifies it holds openings, detects any ATS behind it, and later runs re-read it.
+INDIAN_CAREER_SITES: list[dict[str, str]] = [
+    {"name": name, "website": f"https://{domain}", "classification": kind} for name, domain, kind in [
+        ("Zerodha", "zerodha.com", "startup"), ("Flipkart", "www.flipkart.com", "established"),
+        ("Blinkit", "blinkit.com", "startup"), ("Zomato", "www.zomato.com", "established"),
+        ("Razorpay", "razorpay.com", "startup"), ("PhonePe", "www.phonepe.com", "startup"),
+        ("Zepto", "www.zeptonow.com", "startup"), ("Postman", "www.postman.com", "startup"),
+        ("BrowserStack", "www.browserstack.com", "startup"), ("Dream Sports", "www.dreamsports.group", "startup"),
+        ("ShareChat", "sharechat.com", "startup"), ("Physics Wallah", "www.pw.live", "startup"),
+        ("Nykaa", "www.nykaa.com", "established"), ("Lenskart", "www.lenskart.com", "startup"),
+        ("Rapido", "www.rapido.bike", "startup"), ("Juspay", "juspay.io", "startup"),
+        ("Chargebee", "www.chargebee.com", "startup"), ("CleverTap", "clevertap.com", "startup"),
+        ("MoEngage", "www.moengage.com", "startup"), ("Innovaccer", "innovaccer.com", "startup"),
+        ("Acko", "www.acko.com", "startup"), ("Urban Company", "www.urbancompany.com", "startup"),
+        ("Myntra", "www.myntra.com", "established"), ("Clear (ClearTax)", "cleartax.in", "startup"),
+        ("Ola Electric", "www.olaelectric.com", "startup"), ("Krutrim", "www.olakrutrim.com", "startup"),
+        ("Ather Energy", "www.atherenergy.com", "startup"), ("Udaan", "udaan.com", "startup"),
+        ("Pine Labs", "www.pinelabs.com", "startup"), ("LeadSquared", "www.leadsquared.com", "startup"),
+        ("Sprinklr", "www.sprinklr.com", "established"), ("Jupiter", "jupiter.money", "startup"),
+        ("smallcase", "www.smallcase.com", "startup"), ("Setu", "setu.co", "startup"),
+        ("Spinny", "www.spinny.com", "startup"), ("Policybazaar", "www.policybazaar.com", "established"),
+        ("Darwinbox", "darwinbox.com", "startup"), ("Hasura", "hasura.io", "startup"),
+        ("CoinDCX", "coindcx.com", "startup"), ("CoinSwitch", "coinswitch.co", "startup"),
+        ("Jar", "www.myjar.app", "startup"), ("Zupee", "www.zupee.com", "startup"),
+        ("Games24x7", "www.games24x7.com", "startup"), ("Delhivery", "www.delhivery.com", "established"),
+        ("Shiprocket", "www.shiprocket.in", "startup"), ("Zetwerk", "www.zetwerk.com", "startup"),
+        ("Licious", "www.licious.in", "startup"), ("MakeMyTrip", "www.makemytrip.com", "established"),
+        ("OYO", "www.oyorooms.com", "established"), ("Khatabook", "khatabook.com", "startup"),
+        ("BharatPe", "bharatpe.com", "startup"), ("MobiKwik", "www.mobikwik.com", "established"),
+        ("Cashfree Payments", "www.cashfree.com", "startup"), ("Scaler", "www.scaler.com", "startup"),
+        ("HackerEarth", "www.hackerearth.com", "startup"), ("Zoho", "www.zoho.com", "established"),
+        ("Dailyhunt", "www.dailyhunt.in", "startup"), ("Rebel Foods", "www.rebelfoods.com", "startup"),
+        ("Purplle", "www.purplle.com", "startup"), ("Teachmint", "www.teachmint.com", "startup"),
+        ("Classplus", "classplusapp.com", "startup"), ("Vedantu", "www.vedantu.com", "startup"),
+        ("Airmeet", "www.airmeet.com", "startup"), ("Country Delight", "countrydelight.in", "startup"),
+        ("BlackBuck", "blackbuck.com", "startup"), ("Signzy", "www.signzy.com", "startup"),
+        ("HyperVerge", "hyperverge.co", "startup"), ("Locus", "locus.sh", "startup"),
+        ("Rocketlane", "www.rocketlane.com", "startup"), ("Plum", "www.plumhq.com", "startup"),
+        ("Sprinto", "sprinto.com", "startup"), ("KreditBee", "www.kreditbee.in", "startup"),
+        ("INDmoney", "www.indmoney.com", "startup"), ("Porter", "porter.in", "startup"),
+        ("OfBusiness", "www.ofbusiness.com", "startup"), ("Infra.Market", "www.infra.market", "startup"),
+        ("Perfios", "www.perfios.com", "startup"), ("M2P Fintech", "m2pfintech.com", "startup"),
+        ("Kuku FM", "kukufm.com", "startup"), ("WinZO", "www.winzogames.com", "startup"),
+        ("Fractal", "fractal.ai", "established"),
+    ]
+]
+# Bump when the seed lists change: the app re-seeds employers once per version.
+SEED_VERSION = "2026-11-09.1"
 
 ATS_TYPES = {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee"}
 _CACHE: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}

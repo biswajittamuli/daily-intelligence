@@ -21,20 +21,25 @@ unknown restrictions · Remote not open to India · Relocation · Outside), vaca
 level. The home feed shows only verified, in-geography vacancies as matches; the rest are labelled
 (verification pending, stretch, outside geography, not a vacancy). A first-discovered time is never shown
 as a publication date ("Publication date not disclosed · First discovered today"). New sources: the
-Himalayas remote-jobs API (no key) and, optionally, Adzuna India and Google for Jobs (via SerpApi), the
-compliant route to LinkedIn, Naukri and Indeed listings. See `docs/V4.3_DISCOVERY_DIAGNOSIS.md`.
+Himalayas remote-jobs API (no key). See `docs/V4.3_DISCOVERY_DIAGNOSIS.md`.
+
+Job APIs (4.4): without any key, discovery also reads AI Dev Jobs (India-filtered AI/ML and backend roles),
+Artificial Intelligence Jobs (AI-company roles in Asia-Pacific, from the companies' own career pages) and
+Remote OK (one feed call per run; listings keep their Remote OK link, as its terms require). Two optional
+free keys add more: Jooble, a job search engine that indexes Indian portals and company sites (the compliant
+route to listings that LinkedIn and Naukri also carry), and Findwork (developer jobs).
 
 Optional keys: open **Settings → API keys**, paste the key and press **Save & test**. The app checks the
-key with the provider right away (SerpApi and Firecrawl checks spend no searches or credits), keeps it only
-if the provider accepts it, and uses it from the next discovery run with no restart. Providers: Adzuna India
-(free developer key), Google for Jobs via SerpApi (free plan, 250 searches/month; the app uses at most 2 per
-run), Firecrawl (renders JavaScript career pages when the local browser cannot) and Parallel (optional token
-for higher search limits). Keys are stored in `data/secrets.json` (permissions 0600, git-ignored), never sent
+key with the provider right away (the Firecrawl check spends no credits; the Jooble and Findwork checks run
+one search), keeps it only if the provider accepts it, and uses it from the next discovery run with no
+restart. Providers: Jooble (free key, at most 4 searches per run), Findwork (free key, at most 3 per run),
+Firecrawl (renders JavaScript career pages when the local browser cannot) and Parallel (optional token for
+higher search limits). Keys are stored in `data/secrets.json` (permissions 0600, git-ignored), never sent
 back to the browser in full and never logged; the key endpoints accept requests only from the app's own page.
-Environment variables with the same names (`ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `SERPAPI_API_KEY`,
-`FIRECRAWL_API_KEY`, `PARALLEL_MCP_AUTH_TOKEN`) still work; a key saved in Settings takes precedence. Without
-a key a source reports "Not configured" and discovery continues with the rest. Only role titles and a location
-are sent to these providers, never resume content.
+Environment variables with the same names (`JOOBLE_API_KEY`, `FINDWORK_API_KEY`, `FIRECRAWL_API_KEY`,
+`PARALLEL_MCP_AUTH_TOKEN`) still work; a key saved in Settings takes precedence. Without a key a source
+reports "Not configured" and discovery continues with the rest. Only role titles and a location are sent to
+these providers, never resume content.
 
 ## What's new in 4.0
 

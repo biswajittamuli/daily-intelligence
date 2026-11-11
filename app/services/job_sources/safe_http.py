@@ -180,20 +180,29 @@ class SafeFetcher:
 
     # ------------------------------------------------------------- fetch
     async def get(self, url: str, *, use_cache: bool = True, accept_json: bool = False,
-                  robots: bool = True) -> FetchResult:
+                  robots: bool = True, headers: dict[str, str] | None = None,
+                  json_body: dict[str, Any] | None = None) -> FetchResult:
         """``robots=False`` is only for documented, keyed REST APIs called under the provider's API terms
-        (see job_apis.KEYED_API_HOSTS); every page fetch keeps the robots.txt check."""
-        if not robots:
-            from app.services.job_sources.job_apis import KEYED_API_HOSTS
-            if (urlsplit(url).hostname or "").casefold() not in KEYED_API_HOSTS:
-                robots = True
+        (see job_apis.KEYED_API_HOSTS); every page fetch keeps the robots.txt check.
+
+        ``headers`` and ``json_body`` (sent as a POST) are only for those keyed APIs too; such calls are
+        never cached, because the request carries a key."""
+        keyed = (urlsplit(url).hostname or "").casefold()
+        from app.services.job_sources.job_apis import KEYED_API_HOSTS
+        if keyed not in KEYED_API_HOSTS:
+            robots, headers, json_body = True, None, None
+        extra = {}
+        if headers or json_body is not None:
+            use_cache = False
+            extra = {"headers": headers, "json_body": json_body}
         return await self._request(url, use_cache=use_cache, check_robots=self.respect_robots and robots,
-                                   accept_any_type=accept_json)
+                                   accept_any_type=accept_json, **extra)
 
     async def get_many(self, urls: list[str], **kwargs: Any) -> list[FetchResult]:
         return list(await asyncio.gather(*(self.get(url, **kwargs) for url in urls)))
 
-    async def _request(self, url: str, *, use_cache: bool, check_robots: bool, accept_any_type: bool) -> FetchResult:
+    async def _request(self, url: str, *, use_cache: bool, check_robots: bool, accept_any_type: bool,
+                       headers: dict[str, str] | None = None, json_body: dict[str, Any] | None = None) -> FetchResult:
         assert self._client is not None, "use 'async with SafeFetcher()'"
         started = time.perf_counter()
         result = FetchResult(url=url)
@@ -220,7 +229,8 @@ class SafeFetcher:
             try:
                 async with self._global:
                     await self._wait_host(host, current)
-                    response_info = await self._follow(current, cached if use_cache else None)
+                    response_info = await self._follow(current, cached if use_cache else None,
+                                                        headers=headers, json_body=json_body)
                 break
             except (httpx.TimeoutException, asyncio.TimeoutError):
                 result.state, result.error = SourceState.TIMEOUT, "request timed out"
@@ -276,19 +286,22 @@ class SafeFetcher:
                 await asyncio.sleep(wait)
             self._host_last[host] = time.monotonic()
 
-    async def _follow(self, url: str, cached: dict[str, Any] | None):
+    async def _follow(self, url: str, cached: dict[str, Any] | None, *, headers: dict[str, str] | None = None,
+                      json_body: dict[str, Any] | None = None):
         assert self._client is not None
         redirects: list[str] = []
         current = url
         for _ in range(self.max_redirects + 1):
-            headers = {}
+            request_headers = dict(headers or {}) if current == url else {}
             if cached and current == url:
                 if cached.get("etag"):
-                    headers["If-None-Match"] = cached["etag"]
+                    request_headers["If-None-Match"] = cached["etag"]
                 if cached.get("last_modified"):
-                    headers["If-Modified-Since"] = cached["last_modified"]
+                    request_headers["If-Modified-Since"] = cached["last_modified"]
             self.stats["requests"] += 1
-            async with self._client.stream("GET", current, headers=headers) as response:
+            post = json_body is not None and current == url
+            async with self._client.stream("POST" if post else "GET", current, headers=request_headers,
+                                           **({"json": json_body} if post else {})) as response:
                 if response.status_code in {301, 302, 303, 307, 308} and response.headers.get("location"):
                     target = urljoin(current, response.headers["location"])
                     current = await self.check_url(target)

@@ -125,6 +125,10 @@ class Application:
                 self.store.set_preference("upgrade_version", APP_VERSION)
             except Exception:
                 log.exception("initial job rescoring failed")
+        try:
+            self.seed_employers_if_changed()
+        except Exception:
+            log.exception("employer seeding failed")
 
     def _apply_preferences_to_service(self):
         preference_text = " ".join(self.preferences.get(key, "") for key in ("location", "briefing_preferences")
@@ -353,7 +357,9 @@ class Application:
         async with SafeFetcher(cache_path=self.settings.data_dir / "http-cache.sqlite3") as http:
             browser = BrowserRenderer(max_pages=1, enabled=bool(prefs.get("browser_rendering", True)))
             try:
-                discovery = CareerDiscovery(http, browser=browser)
+                from app.services.job_sources import firecrawl
+                use_firecrawl = firecrawl.configured(self.discovery_preferences)
+                discovery = CareerDiscovery(http, browser=browser, firecrawl=firecrawl.scrape if use_firecrawl else None)
                 targets = [{"name": e["name"], "website": e["website"], "career_discovery": e.get("career_discovery")}
                            for e in employers]
                 progress(f"Career discovery for {len(targets)} employer(s)")
@@ -370,22 +376,40 @@ class Application:
         return {"kind": "career_rediscovery", "status": "complete", "employers": len(employers), "outcomes": outcomes,
                 "details": details, "browser": summary_browser}
 
-    INDIAN_BOARDS = {"groww": "startup", "cred": "startup", "meesho": "startup", "zeta": "startup",
-                     "sarvam": "startup", "paytm": "established"}
-
     def seed_employers(self) -> int:
-        """Built-in verified job boards become employer records (classification is explicit, not guessed)."""
-        from app.services.ats_sources import DEFAULT_COMPANIES
+        """Built-in verified job boards and Indian startup websites become employer records.
+
+        Classification is explicit, never guessed. Startups without a public board get only their official
+        homepage; career discovery finds and verifies their careers page later."""
+        from app.services.ats_sources import DEFAULT_COMPANIES, INDIAN_BOARDS, INDIAN_CAREER_SITES
+        from urllib.parse import urlsplit
+
+        from app.services.employer_discovery import _registrable
         count = 0
         for company in self.discovery_preferences.get("jobs", {}).get("companies") or DEFAULT_COMPANIES:
             slug = company["slug"]
-            india = slug in self.INDIAN_BOARDS
+            india = slug in INDIAN_BOARDS
             self.store.upsert_employer({
                 "name": company["name"], "ats_provider": company["ats"], "ats_slug": slug,
-                "classification": self.INDIAN_BOARDS.get(slug, "established"), "country": "India" if india else None,
+                "classification": INDIAN_BOARDS.get(slug, "established"), "country": "India" if india else None,
                 "career_status": "public job board (built-in list)",
                 "discovery_sources": ["built-in verified board list"]})
             count += 1
+        for site in INDIAN_CAREER_SITES:
+            self.store.upsert_employer({
+                "name": site["name"], "website": site["website"],
+                "domain": _registrable(urlsplit(site["website"]).hostname or ""),
+                "classification": site["classification"], "country": "India",
+                "discovery_sources": ["built-in Indian startup list"]})
+            count += 1
+        return count
+
+    def seed_employers_if_changed(self) -> int:
+        from app.services.ats_sources import SEED_VERSION
+        if self.store.get_preference("employer_seed_version") == SEED_VERSION:
+            return 0
+        count = self.seed_employers()
+        self.store.set_preference("employer_seed_version", SEED_VERSION)
         return count
 
     def application_reminders(self) -> int:
@@ -983,7 +1007,7 @@ class Application:
 
     def _reenable_source(self, provider_id: str) -> None:
         """A source that backed off because it had no/invalid key gets a fresh start once a key is saved."""
-        source_id = {"adzuna": "api:adzuna", "serpapi": "api:google-jobs", "firecrawl": "extractor:firecrawl"}.get(provider_id)
+        source_id = {"jooble": "api:jooble", "findwork": "api:findwork", "firecrawl": "extractor:firecrawl"}.get(provider_id)
         if not source_id:
             return
         with self.store.connect() as db:

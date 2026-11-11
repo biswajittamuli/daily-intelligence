@@ -25,8 +25,9 @@ read time: validate() -> group (verified_strong | verified_good | verified_low |
 
 `app/services/vacancy_validation.py` holds every stage (no I/O). `rescore_stored` writes the result to
 `job_listings.document_type / geo_class / vacancy_status / verification_level / validation_json` (schema v11).
-Job-search APIs live in `app/services/job_sources/job_apis.py` (Himalayas, optional Adzuna and SerpApi
-Google Jobs). A source is "successful" only when it produced usable vacancies; portals limited by their
+Job-search APIs live in `app/services/job_sources/job_apis.py` (keyless: Himalayas, AI Dev Jobs,
+Artificial Intelligence Jobs, Remote OK; optional keys: Jooble, Findwork). Keyed calls send the key only in
+a header or POST body/path, are never cached, and only hosts in `KEYED_API_HOSTS` may receive them. A source is "successful" only when it produced usable vacancies; portals limited by their
 terms report "search_only".
 
 ## v4 unified discovery
