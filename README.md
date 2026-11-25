@@ -90,4 +90,3 @@ uv sync --dev
 - Built and tested on Fedora. It should work on other Linux setups but I haven't tried.
 - Coverage is never complete. Some sites block automated requests, and that's reported in
   the Sources page.
-- More detail: [ARCHITECTURE.md](ARCHITECTURE.md) and [CHANGELOG.md](CHANGELOG.md).
