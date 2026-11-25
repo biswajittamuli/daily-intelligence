@@ -38,7 +38,7 @@ function viewStartups(){
       ${stat('Based in India',all.filter(e=>e.country==='India').length)}
       ${stat('Career pages found',all.filter(e=>e.career_url).length)}
       ${stat('Readable public job boards',all.filter(e=>e.ats_slug).length)}
-      ${stat('Signal events (articles clustered)',`${events.length} <span class="view-note">from ${signals.length} articles</span>`)}
+      ${stat(`Signal events (from ${signals.length} articles)`,events.length)}
     </div>
     ${outcomes.length?`<div class="filter-row section-space"><span class="filter-label">Career discovery</span>${outcomes.map(([k,n])=>`<span class="chip">${esc(k)} <span class="chip-count">${n}</span></span>`).join('')}</div>`:''}
     ${last?employerCoverage(last):''}
