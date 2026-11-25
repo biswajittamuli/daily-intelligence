@@ -1,6 +1,6 @@
 [project]
 name = "daily-intelligence"
-version = "4.3.0"
+version = "5.0.0"
 requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28.1",

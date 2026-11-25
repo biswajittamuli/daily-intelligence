@@ -138,6 +138,24 @@ def make_handler(app: "Application") -> type[BaseHTTPRequestHandler]:
                                        "signal_events": cluster_signals(signals)})
             if path == "/api/keys":
                 return self.json(200, app.api_keys())
+            if path == "/api/eligibility":
+                return self.json(200, app.eligibility_view())
+            if path == "/api/coverage":
+                return self.json(200, app.coverage_view())
+            if path == "/api/companies":
+                try:
+                    limit = max(1, min(int(params.get("limit", ["2000"])[0] or 2000), 5000))
+                except ValueError:
+                    limit = 2000
+                return self.json(200, app.company_registry_view(segment=params.get("segment", [""])[0], limit=limit))
+            if path == "/api/gov/sources":
+                return self.json(200, app.gov_sources_view())
+            if path == "/api/monitoring":
+                return self.json(200, {"status": app.monitor_status,
+                                       "last": app.store.get_preference("last_source_monitoring") or {},
+                                       "enabled": app.monitoring_enabled()})
+            if path == "/api/missed":
+                return self.json(200, app.missed_reports_view(status=params.get("status", [""])[0]))
             if path == "/api/feed":
                 return self.json(200, app.feed(include_hidden=params.get("hidden", ["0"])[0] == "1"))
             if path == "/api/sources":
@@ -331,6 +349,40 @@ def make_handler(app: "Application") -> type[BaseHTTPRequestHandler]:
                     except ValueError as exc:
                         return self.json(400, {"error": str(exc)})
                     return self.json(200, {"ok": True, "id": listing_id, "reported": True})
+                if path == "/api/eligibility":
+                    return self.json(200, app.save_eligibility(payload.get("profile") or payload))
+                if path == "/api/eligibility/reevaluate":
+                    return self.json(200, {"reevaluated": app.reevaluate_eligibility()})
+                if path == "/api/missed":
+                    try:
+                        return self.json(200, app.add_missed_report(payload))
+                    except ValueError as exc:
+                        return self.json(400, {"error": str(exc)})
+                if path.startswith("/api/companies/") and path.endswith("/update"):
+                    try:
+                        company_id = int(path.split("/")[3])
+                    except (ValueError, IndexError):
+                        return self.json(400, {"error": "Invalid company id"})
+                    values = {key: payload[key] for key in ("enabled", "followed", "priority", "segment", "next_due_at")
+                              if key in payload}
+                    if "enabled" in values:
+                        values["enabled"] = int(bool(values["enabled"]))
+                    if "followed" in values:
+                        values["followed"] = int(bool(values["followed"]))
+                    app.store.update_company(company_id, **values)
+                    return self.json(200, {"ok": True, "company": app.store.company(company_id)})
+                if path == "/api/monitoring/run":
+                    kind = str(payload.get("kind") or "auto")
+                    if kind not in {"auto", "gov", "companies"}:
+                        return self.json(400, {"error": "kind must be auto, gov or companies"})
+                    if app._light_future is not None and not app._light_future.done():
+                        return self.json(409, {"error": "A monitoring batch is already running"})
+                    chosen = app.maybe_source_monitoring() if kind == "auto" else None
+                    if chosen is None and kind != "auto":
+                        batch = int((app.discovery_preferences.get("automation") or {}).get("monitor_batch") or 3)
+                        app._light_future = app._light.submit(app._run_monitoring, kind, batch)
+                        chosen = kind
+                    return self.json(202, {"queued": bool(chosen), "kind": chosen})
                 if path == "/api/alerts/read":
                     alerts = app.store.get_preference("alerts", []) or []
                     for alert in alerts:

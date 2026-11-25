@@ -188,9 +188,9 @@ a.meta:hover{color:var(--accent-text)}
 .tag.miss{background:var(--surface-2);color:var(--muted)}
 .badge{display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;font-size:11.5px;font-weight:500;line-height:20px;background:var(--surface-2);color:var(--text-2);white-space:nowrap;text-transform:capitalize}
 .badge.source{text-transform:none}
-.badge.open,.badge.recent,.badge.announced,.badge.explicitly_eligible,.badge.eligible_based_on_listed_equivalent_degree,.badge.complete,.badge.offer,.badge.strong,.badge.processed{background:var(--good-soft);color:var(--good)}
+.badge.open,.badge.recent,.badge.announced,.badge.explicitly_eligible,.badge.eligible_based_on_listed_equivalent_degree,.badge.complete,.badge.offer,.badge.strong,.badge.processed,.badge.eligible{background:var(--good-soft);color:var(--good)}
 .badge.closed,.badge.expired,.badge.old,.badge.not_eligible,.badge.failed,.badge.rejected,.badge.error,.badge.excluded{background:var(--bad-soft);color:var(--bad)}
-.badge.unverified,.badge.date_unavailable,.badge.tentative,.badge.not_verified,.badge.potentially_eligible_needs_verification,.badge.running,.badge.possible{background:var(--warn-soft);color:var(--warn)}
+.badge.unverified,.badge.date_unavailable,.badge.tentative,.badge.not_verified,.badge.potentially_eligible_needs_verification,.badge.running,.badge.possible,.badge.needs_fact,.badge.likely,.badge.uncertain,.badge.undecided{background:var(--warn-soft);color:var(--warn)}
 .badge.new,.badge.applied,.badge.interview,.badge.active{background:var(--accent-soft);color:var(--accent-text)}
 
 /* ------------------------------------------------------------------ lists */

@@ -38,7 +38,7 @@ from app.services.preferences import (
 from app.services.resume import extract_profile, extract_text
 from app.services.today_plan import build_today_plan
 
-APP_VERSION = "4.3.0"
+APP_VERSION = "5.0.0"
 APP_ID = "daily-intelligence"
 THEMES = {"minimal-light", "minimal-dark", "soft-neutral"}
 LEGACY_THEMES = {"light": "minimal-light", "dark": "minimal-dark"}
@@ -112,6 +112,10 @@ class Application:
         self._jobs: dict[str, dict] = {}
         self._active_job: str | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="daily-intel")
+        # Incremental source monitoring (official sources, company registry) runs beside the heavy slot.
+        self._light = ThreadPoolExecutor(max_workers=1, thread_name_prefix="daily-intel-light")
+        self._light_future = None
+        self.monitor_status: dict = {}
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.last_activity = time.monotonic()
         self.shutdown_requested = threading.Event()
@@ -122,6 +126,7 @@ class Application:
                 self.store.link_jobs_to_employers()
                 self.rescore_jobs()
                 self.relabel_news()
+                self.reevaluate_eligibility()  # every stored notice and exam gets a deterministic verdict
                 self.store.set_preference("upgrade_version", APP_VERSION)
             except Exception:
                 log.exception("initial job rescoring failed")
@@ -129,6 +134,10 @@ class Application:
             self.seed_employers_if_changed()
         except Exception:
             log.exception("employer seeding failed")
+        try:
+            self.seed_companies_if_changed()
+        except Exception:
+            log.exception("company registry seeding failed")
 
     def _apply_preferences_to_service(self):
         preference_text = " ".join(self.preferences.get(key, "") for key in ("location", "briefing_preferences")
@@ -283,7 +292,7 @@ class Application:
         from app.services.feed import build_feed
         jobs = self._decorate_jobs(self.store.jobs(limit=2000), self.discovery_preferences)
         visits = self.store.get_preference("visits", {}) or {}
-        feed = build_feed(jobs=jobs, notices=self.store.notices(limit=200), exams=self.store.exams(limit=300),
+        feed = build_feed(jobs=jobs, notices=self.notices_view(limit=300), exams=self.exams_view(limit=300),
                           employers=self.store.employers(limit=3000), states=self.store.item_states().get("job", {}),
                           reported=set(self.store.reported_listings()), news=self.store.intel(category="news", limit=10),
                           last_visit=visits.get("previous"), include_hidden=include_hidden)
@@ -294,6 +303,58 @@ class Application:
         feed["discovery"] = self.last_discovery()
         feed["today_plan"] = self.today_plan(jobs=[j for j in jobs if j.get("source_kind") not in {"search_page", "index_page"}])
         return feed
+
+    # ------------------------------------------------------- eligibility (v5)
+    def notices_view(self, limit: int = 200) -> list[dict]:
+        """Stored notices for the UI: verdict bucket, official/lead flag; the full notification text stays in the DB."""
+        from app.services.eligibility import filter_bucket
+        from app.services.gov_sources import BY_ID, host_of, is_aggregator, is_official_url
+        output = []
+        for notice in self.store.notices(limit=limit):
+            notice["text_chars"] = len(notice.pop("notification_text", None) or "")
+            link = notice.get("document_url") or notice.get("notification_url") or notice.get("original_url") or ""
+            official = bool(notice.get("official_source")) or is_official_url(link)
+            organization = str(notice.get("organization") or "")
+            if organization and (is_aggregator("https://" + organization) or host_of("https://" + organization) == host_of(link)
+                                 and "." in organization and " " not in organization):
+                notice["organization"] = None  # a host name is not an organization (legacy search fallback rows)
+            notice["official"] = official
+            notice["lead"] = not official
+            notice["source_name"] = BY_ID[notice["source_id"]].name if notice.get("source_id") in BY_ID else None
+            notice["eligibility_bucket"] = filter_bucket(notice.get("eligibility"))
+            output.append(notice)
+        return output
+
+    def exams_view(self, limit: int = 200) -> list[dict]:
+        from app.services.eligibility import filter_bucket
+        output = []
+        for event in self.store.exams(limit=limit):
+            event["eligibility_bucket"] = filter_bucket(event.get("eligibility"))
+            output.append(event)
+        return output
+
+    def eligibility_view(self) -> dict:
+        from app.services import eligibility as rules
+        from app.services.requirements import GATE_PAPERS, STATES
+        saved = self.store.eligibility_profile()
+        profile = saved or rules.empty_profile()
+        resume = self.store.profile() or {}
+        return {"profile": profile, "saved": saved is not None, "unknown_facts": rules.unknown_facts(profile),
+                # Shown as suggestions only: nothing from a resume counts until the user saves the form.
+                "suggestions": rules.profile_from_resume(resume.get("profile")),
+                "options": {"categories": rules.CATEGORIES, "genders": rules.GENDERS, "sectors": rules.SECTORS,
+                            "states": STATES, "gate_papers": sorted(GATE_PAPERS)},
+                "counts": self.store.gov_counts()["eligibility"]}
+
+    def save_eligibility(self, payload: dict) -> dict:
+        from app.services import eligibility as rules
+        self.store.save_eligibility_profile(rules.clean_profile(payload))
+        counts = rules.reevaluate_store(self.store)
+        return {**self.eligibility_view(), "reevaluated": counts}
+
+    def reevaluate_eligibility(self) -> dict:
+        from app.services.eligibility import reevaluate_store
+        return reevaluate_store(self.store)
 
     def last_discovery(self) -> dict | None:
         for session in self.store.search_sessions(40):
@@ -327,6 +388,49 @@ class Application:
                            "consecutive_failures": state.get("consecutive_failures") or 0,
                            "next_attempt_at": state.get("next_attempt_at")})
         return output
+
+    # ------------------------------------------------------ coverage (v5)
+    def gov_sources_view(self) -> dict:
+        """Official source catalogue joined with its incremental scan state (attempts, ETag, next due, errors)."""
+        from app.services.gov_sources import catalogue, summary
+        overrides = (self.discovery_preferences.get("government") or {}).get("sources") or {}
+        states = self.store.gov_source_states()
+        output = []
+        for source in catalogue(overrides if isinstance(overrides, dict) else {}):
+            state = states.get(source.id) or {}
+            output.append({**source.to_dict(), "state": state,
+                           "last_scan_at": state.get("last_scan_at"), "next_due_at": state.get("next_due_at"),
+                           "last_success_at": state.get("last_success_at"),
+                           "last_error": state.get("last_error"),
+                           "consecutive_failures": state.get("consecutive_failures") or 0,
+                           "notices": state.get("notices") or 0,
+                           "documents": state.get("documents") or 0})
+        return {"sources": output, "summary": summary(), "counts": self.store.gov_counts()}
+
+    def company_registry_view(self, *, segment: str = "", limit: int = 2000) -> dict:
+        from app.services.company_seeds import summary as seed_summary
+        return {"companies": self.store.companies(segment=segment, limit=limit),
+                "coverage": self.store.company_coverage(), "summary": seed_summary()}
+
+    def coverage_view(self) -> dict:
+        """The measured coverage dashboard: configured / due / scanned / failing, with per-segment counts."""
+        from app.services.company_seeds import summary as seed_summary
+        from app.services.gov_sources import summary as gov_summary
+        return {"gov_sources": gov_summary(), "company_seeds": seed_summary(),
+                "gov": self.store.gov_counts(), "companies": self.store.company_coverage(),
+                "sources": self.sources_view(),
+                "monitoring": self.monitor_status or self.store.get_preference("last_source_monitoring") or {},
+                "missed": self.store.missed_reports(status="open", limit=50)}
+
+    def missed_reports_view(self, *, status: str = "", limit: int = 200) -> dict:
+        return {"reports": self.store.missed_reports(status=status, limit=limit)}
+
+    def add_missed_report(self, payload: dict) -> dict:
+        report = self.store.add_missed_report(
+            url=payload.get("url"), title=payload.get("title"), kind=str(payload.get("kind") or "missed"),
+            reason=payload.get("reason"), note=payload.get("note"), source=payload.get("source"),
+            item_kind=payload.get("item_kind"), item_id=payload.get("item_id"))
+        return {"ok": True, "report": report}
 
     def after_discovery(self, report: dict, *, origin: str = "discovery") -> dict:
         """Alerts for new strong matches, and deadline reminders, after any discovery or monitoring run."""
@@ -412,6 +516,19 @@ class Application:
         self.store.set_preference("employer_seed_version", SEED_VERSION)
         return count
 
+    def seed_companies(self) -> int:
+        """Seed the v5 company registry from the verified catalogue (ATS boards + official career pages)."""
+        from app.services.company_seeds import companies
+        return self.store.seed_companies(companies())
+
+    def seed_companies_if_changed(self) -> int:
+        from app.services.company_seeds import SEED_VERSION
+        if self.store.get_preference("company_seed_version") == SEED_VERSION:
+            return 0
+        count = self.seed_companies()
+        self.store.set_preference("company_seed_version", SEED_VERSION)
+        return count
+
     def application_reminders(self) -> int:
         """Follow-up dates and interviews become planning tasks (idempotent)."""
         existing = {task["text"] for task in self.store.tasks(include_archived=True)}
@@ -479,8 +596,14 @@ class Application:
             "companies": (self.discovery_preferences.get("jobs", {}).get("companies")
                           or __import__("app.services.ats_sources", fromlist=["x"]).DEFAULT_COMPANIES),
             "themes": sorted(THEMES),
-            "notices": self.store.notices(limit=40),
-            "exams": self.store.exams(limit=60),
+            "notices": self.notices_view(limit=200),
+            "exams": self.exams_view(limit=200),
+            "eligibility": self.eligibility_view(),
+            "company_registry": self.store.companies(limit=600),
+            "company_coverage": self.store.company_coverage(),
+            "gov_sources": self.gov_sources_view(),
+            "monitoring": self.monitor_status or self.store.get_preference("last_source_monitoring") or {},
+            "missed_reports": self.store.missed_reports(status="open", limit=50),
             "news": self.store.intel(category="news", limit=40),
             "papers": self.store.intel(category="papers", limit=40),
             "item_states": self.store.item_states(),
@@ -840,6 +963,18 @@ class Application:
                     result["alerts"] = self.after_discovery(result)
                     if job["kind"] == "auto_refresh":
                         self.store.set_preference("last_auto_refresh", date.today().isoformat())
+                elif job["kind"] == "gov_crawl":
+                    payload = job.get("payload") or {}
+                    result = asyncio.run(self.crawl_official_sources(
+                        limit=max(1, min(40, int(payload.get("limit") or 14))), only=payload.get("only"), deep=True,
+                        progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
+                    result["alerts"] = self.after_monitoring(result, origin="official sources")
+                elif job["kind"] == "company_scan":
+                    payload = job.get("payload") or {}
+                    result = asyncio.run(self.scan_company_registry(
+                        limit=max(1, min(60, int(payload.get("limit") or 20))), only=payload.get("only"),
+                        progress=lambda message: self._progress(job_id, message), cancel_event=job["cancel_event"]))
+                    result["alerts"] = self.after_discovery(result, origin="company registry")
                 elif job["kind"] == "followed_check":
                     from app.services.monitoring import check_followed
                     result = asyncio.run(check_followed(self.settings, self.store, self.discovery_preferences,
@@ -850,6 +985,11 @@ class Application:
                     result = run_mcp_diagnostic_process(self.settings, job["cancel_event"])
                 else:
                     raise ValueError("Unknown job type")
+            if job["kind"] in {"discovery", "universal", "scan_all", "discover", "auto_refresh"}:
+                try:
+                    self.reevaluate_eligibility()
+                except Exception:
+                    log.exception("eligibility re-evaluation failed")
             with self._lock:
                 job["result"] = result
                 job["status"] = "complete" if not job["cancel_event"].is_set() else "cancelled"
@@ -1206,11 +1346,127 @@ class Application:
             self.store.set_preference("last_followed_check", now.isoformat())
         return job_id
 
+    # ------------------------------------------------- source monitoring (v5)
+    async def crawl_official_sources(self, *, limit: int = 3, only: list[str] | None = None, deep: bool = False,
+                                     progress=None, cancel_event=None) -> dict:
+        """Poll due official government / PSU / exam sources. ``deep`` (user-triggered or Discover) may also use
+        the headless browser and the search provider; the background batch only fetches directly."""
+        from app.services.gov_crawler import GovCrawler
+        from app.services.job_sources.safe_http import SafeFetcher
+        prefs = self.discovery_preferences.get("government") or {}
+        browser = retriever = None
+        if deep and prefs.get("render_sources", True):
+            from app.services.job_sources.browser import BrowserRenderer
+            browser = BrowserRenderer(max_pages=1, enabled=bool(self.discovery_preferences.get("jobs", {}).get("browser_rendering", True)))
+        if deep and prefs.get("provider_sources", True):
+            try:
+                from app.mcp.retrieval import ParallelWebRetriever
+                retriever = ParallelWebRetriever(settings=self.settings)
+                await retriever.__aenter__()
+            except Exception:
+                retriever = None
+
+        def cancel():
+            if cancel_event is not None and cancel_event.is_set():
+                raise asyncio.CancelledError
+        try:
+            async with SafeFetcher(cache_path=self.settings.data_dir / "http-cache.sqlite3", cache_ttl=0, timeout=25,
+                                   max_bytes=2_500_000, concurrency=4) as http:
+                crawler = GovCrawler(self.store, http, browser=browser, retriever=retriever,
+                                     time_budget=420 if deep else 150)
+                return await crawler.crawl_due(limit=limit, only=only, progress=progress, cancel=cancel)
+        finally:
+            if browser is not None:
+                await browser.close()
+            if retriever is not None:
+                try:
+                    await retriever.__aexit__(None, None, None)
+                except Exception:
+                    pass
+
+    async def scan_company_registry(self, *, limit: int = 6, only: list[int] | None = None, progress=None,
+                                    cancel_event=None) -> dict:
+        from app.services.company_registry import scan_due
+        return await scan_due(self.settings, self.store, self.discovery_preferences, limit=limit, only=only,
+                              progress=progress, cancel_event=cancel_event)
+
+    def after_monitoring(self, result: dict, *, origin: str) -> dict:
+        """Alerts for newly found notices the candidate is eligible for, and deadline reminders."""
+        from app.services.monitoring import deadline_reminders, notable_notices, notify_opportunities
+        prefs = self.discovery_preferences
+        outcome = notify_opportunities(self.store, prefs, notable_notices(self.store, result.get("new_notice_ids") or []),
+                                       origin=origin)
+        outcome["reminders"] = deadline_reminders(self.store)
+        return outcome
+
+    def monitoring_enabled(self) -> bool:
+        return (self.discovery_preferences.get("automation") or {}).get("source_monitoring", True) is not False
+
+    def maybe_source_monitoring(self, now: datetime | None = None) -> str | None:
+        """Continuous, incremental monitoring: one small batch of due official sources, else a few due
+        companies. Runs on the light worker; the heavy slot stays free for user-triggered discovery."""
+        if not self.monitoring_enabled():
+            return None
+        if self._light_future is not None and not self._light_future.done():
+            return None
+        with self._lock:
+            active = self._jobs.get(self._active_job) if self._active_job else None
+            if active and active.get("status") in {"queued", "running"}:
+                return None  # a Discover run reads the same sources itself
+        automation = self.discovery_preferences.get("automation") or {}
+        from app.services.gov_crawler import GovCrawler
+        kind = None
+        if GovCrawler(self.store, None, now=(lambda: now) if now else None).due_sources(limit=1, modes={"direct"}):
+            kind = "gov"
+        elif self.store.companies_due(limit=1, now=now):
+            kind = "companies"
+        if kind is None:
+            return None
+        self._light_future = self._light.submit(self._run_monitoring, kind, int(automation.get("monitor_batch") or 3))
+        return kind
+
+    def _run_monitoring(self, kind: str, batch: int) -> dict:
+        started = time.monotonic()
+        status = {"kind": kind, "started_at": datetime.now(timezone.utc).isoformat(), "state": "running"}
+        self.monitor_status = status
+        try:
+            if kind == "gov":
+                result = asyncio.run(self.crawl_official_sources(limit=max(1, min(batch, 8))))
+                alerts = self.after_monitoring(result, origin="official sources")
+                status.update(sources=len(result.get("sources") or []), notices_new=result.get("notices_new", 0),
+                              notices_updated=result.get("notices_updated", 0), signals=result.get("signals", 0))
+            else:
+                result = asyncio.run(self.scan_company_registry(limit=max(2, min(batch * 2, 12))))
+                alerts = self.after_discovery(result, origin="company registry")
+                status.update(companies=result.get("companies", 0), stored=result.get("stored", 0))
+            status.update(state="complete", alerts=alerts.get("alerts", 0))
+        except Exception as exc:  # monitoring must never take the app down
+            log.error("source monitoring failed kind=%s type=%s", kind, type(exc).__name__)
+            status.update(state="failed", error=type(exc).__name__)
+        status["seconds"] = round(time.monotonic() - started, 1)
+        status["finished_at"] = datetime.now(timezone.utc).isoformat()
+        self.monitor_status = status
+        self.store.set_preference("last_source_monitoring", status)
+        return status
+
+    def maybe_daily_digest(self, now: datetime | None = None) -> dict | None:
+        """Once a day: deadlines, new eligible notices, exams opening/closing, missing notifications."""
+        from app.services.monitoring import daily_digest
+        now = now or datetime.now()
+        if now.strftime("%H:%M") < str((self.discovery_preferences.get("automation") or {}).get("refresh_time") or "08:00"):
+            return None
+        last = self.store.get_preference("daily_digest") or {}
+        if isinstance(last, dict) and last.get("date") == now.date().isoformat():
+            return None
+        return daily_digest(self.store, self.discovery_preferences, today=now.date())
+
     def start_scheduler(self, interval: float = 60.0) -> threading.Thread:
         def loop():
             while True:
                 try:
                     self.maybe_auto_refresh() or self.maybe_followed_check() or self.maybe_reverify()
+                    self.maybe_source_monitoring()
+                    self.maybe_daily_digest()
                 except Exception:
                     log.exception("scheduled refresh check failed")
                 time.sleep(interval)
@@ -1290,6 +1546,7 @@ def serve(open_browser=True, *, idle_timeout: float | None = None, pid_file: Pat
             app.cancel_job(active_id)
         server.server_close()
         app._executor.shutdown(wait=False, cancel_futures=True)
+        app._light.shutdown(wait=False, cancel_futures=True)
         if pid_file and pid_file.exists():
             try:
                 if pid_file.read_text().strip() == str(os.getpid()):

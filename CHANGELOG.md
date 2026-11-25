@@ -1,6 +1,52 @@
 # Changelog
 
-## Unreleased
+## 5.0.0 — 2026-11-16
+
+Source-first, eligibility-first discovery for government, PSU, examination and company opportunities.
+Design and limits: `docs/V5_SOURCE_FIRST_DISCOVERY.md`.
+
+### Official sources first
+- New catalogue (`app/services/gov_sources.py`): 73 sources, 64 official organizations, 41 official
+  direct sources enabled, each verified with one polite request on 2026-11-16. Covers central exams,
+  PSUs, science agencies, finance institutions and seven state PSCs (APSC, UPPSC, BPSC, TNPSC, UKPSC,
+  TPSC, NPSC). State PSCs are polled every 24 hours.
+- New incremental crawler (`app/services/gov_crawler.py`): conditional revalidation, content hash,
+  link fingerprint, new-document-only fetches, bounded detail budget and time budget, exponential
+  backoff. Listing links are classified (advertisement, corrigendum, result, admit card, answer key,
+  calendar, syllabus); tenders, annual reports, navigation and social links are dropped.
+- PDFs are read with `pypdf`; local OCR (`pdftoppm` + `tesseract`) is used only for PDFs without a
+  text layer. Corrigenda update the notice they name instead of duplicating it, with history.
+- RSS/Atom feeds and examination calendars become dated `exam_events`.
+- Search remains, but only as a fallback or as a discovery lead that must resolve to an official
+  document. Aggregator and news entries are stored as signals, never as canonical records.
+- Junk row titles (UKPSC metadata/date rows) are detected; the document's own headline is used.
+
+### Deterministic eligibility
+- New engine (`app/services/eligibility.py`, `app/services/requirements.py`) with a declared,
+  versioned profile. Rules cover age and category relaxation, GATE paper/score/year, degree and
+  branch, percentage/CGPA, graduation year, experience, domicile, nationality, PwD and gender.
+- Verdicts are `eligible`, `likely_eligible`, `uncertain` or `not_eligible`. A missing required fact
+  is never treated as a pass: the verdict is `uncertain` and the missing fact is named.
+- Every rule keeps the notification's quote as evidence. Resume facts remain suggestions until saved.
+- Government and Exams views gain eligible/likely/needs-a-fact/not-eligible filters and verdict
+  details; Settings gains the profile form.
+
+### Company coverage
+- New company registry (`app/services/company_registry.py`) with rotation, per-company backoff,
+  followed-company priority and honest scan states.
+- New seed catalogue (`app/services/company_seeds.py`): 278 companies (25 startup, 106 product,
+  115 GCC, 32 services), 42 with a verified public ATS tenant. Deduplicated by registrable domain.
+- ATS tenants are detected from each company's own page, never guessed. An empty India board or a
+  reached career page with no roles is `no_results`, not a failure.
+- Coverage dashboard, company list, missed-opportunity reporting and a manual monitoring run.
+
+### Data and API
+- Schema v12 (additive, automatic backup): tables `candidate_eligibility`, `gov_sources`,
+  `gov_documents`, `opportunity_signals`, `company_registry`, `missed_reports`, `query_coverage`;
+  new notice/exam columns for source, document, requirements, eligibility and provenance.
+- New endpoints: `GET /api/coverage`, `/api/companies`, `/api/gov/sources`, `/api/monitoring`,
+  `/api/missed`; `POST /api/missed`, `/api/companies/<id>/update`, `/api/monitoring/run`.
+- New tests: `tests/test_v5_eligibility.py`, `tests/test_v5_gov.py`, `tests/test_v5_companies.py`.
 
 ### Indian startups
 - 17 Indian startups with public job boards join the built-in board list (verified 2026-11-09): Swiggy,

@@ -15,10 +15,16 @@ JSON_COLUMNS = {
     "employers": ("locations_json", "funding_json", "discovery_sources_json", "aliases_json", "evidence_json",
                   "career_discovery_json"),
     "applications": ("interview_dates_json", "history_json"),
-    "recruitment_notices": ("evidence_json", "raw_json"),
-    "exam_events": ("evidence_json", "raw_json"),
+    "recruitment_notices": ("evidence_json", "raw_json", "eligibility_json", "missing_facts_json", "requirements_json",
+                            "branches_json", "history_json", "provenance_json"),
+    "exam_events": ("evidence_json", "raw_json", "eligibility_json", "missing_facts_json", "requirements_json"),
     "intel_items": ("evidence_json", "raw_json"),
 }
+
+
+# Keys whose missing value decodes to a list (everything else decodes to a dict).
+LIST_KEYS = {"skills", "evidence", "resume_scores", "sources", "verify_history", "locations", "discovery_sources",
+             "aliases", "interview_dates", "history", "missing_facts", "branches"}
 
 
 def _resume_label(filename: str | None) -> str:

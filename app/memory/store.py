@@ -12,8 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.memory.store_parts.common import JSON_COLUMNS, _json, _loads, _resume_label  # noqa: F401 (re-exported)
+from app.memory.store_parts.common import JSON_COLUMNS, LIST_KEYS, _json, _loads, _resume_label  # noqa: F401 (re-exported)
+from app.memory.store_parts.companies import CompaniesMixin
+from app.memory.store_parts.eligibility import EligibilityMixin
 from app.memory.store_parts.employers import EmployersMixin
+from app.memory.store_parts.gov import GovMixin
 from app.memory.store_parts.jobs import JobsMixin
 from app.memory.store_parts.personal import PersonalMixin
 from app.memory.store_parts.profile import ProfileMixin
@@ -175,6 +178,46 @@ CREATE TABLE IF NOT EXISTS job_status_history (
     from_status TEXT, to_status TEXT, outcome TEXT, evidence TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history(job_id);
+CREATE TABLE IF NOT EXISTS candidate_eligibility (
+    id INTEGER PRIMARY KEY CHECK (id = 1), profile_json TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gov_sources (
+    source_id TEXT PRIMARY KEY, etag TEXT, last_modified TEXT, content_hash TEXT, last_scan_at TEXT,
+    last_success_at TEXT, last_change_at TEXT, next_due_at TEXT, last_state TEXT, last_error TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0, scans INTEGER NOT NULL DEFAULT 0,
+    links_seen INTEGER NOT NULL DEFAULT 0, documents_new INTEGER NOT NULL DEFAULT 0,
+    notices_found INTEGER NOT NULL DEFAULT 0, last_method TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS gov_documents (
+    id INTEGER PRIMARY KEY, source_id TEXT NOT NULL, url TEXT NOT NULL UNIQUE, title TEXT, doc_class TEXT,
+    content_type TEXT, content_hash TEXT, text TEXT, text_chars INTEGER, state TEXT, error TEXT,
+    notice_id INTEGER, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, fetched_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_gov_documents_source ON gov_documents(source_id, last_seen DESC);
+CREATE TABLE IF NOT EXISTS opportunity_signals (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, source_id TEXT, title TEXT NOT NULL, url TEXT NOT NULL UNIQUE,
+    organization TEXT, official_url TEXT, notice_id INTEGER, status TEXT NOT NULL DEFAULT 'unresolved',
+    detail TEXT, published TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_signals_status ON opportunity_signals(status, last_seen DESC);
+CREATE TABLE IF NOT EXISTS company_registry (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE, segment TEXT NOT NULL,
+    ats TEXT, tenant TEXT, careers_url TEXT, priority INTEGER NOT NULL DEFAULT 50,
+    enabled INTEGER NOT NULL DEFAULT 1, followed INTEGER NOT NULL DEFAULT 0, last_scan_at TEXT,
+    last_success_at TEXT, next_due_at TEXT, jobs_count INTEGER NOT NULL DEFAULT 0,
+    india_jobs INTEGER NOT NULL DEFAULT 0, consecutive_failures INTEGER NOT NULL DEFAULT 0, state TEXT,
+    last_error TEXT, source TEXT, verified_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_company_registry_due ON company_registry(enabled, next_due_at);
+CREATE TABLE IF NOT EXISTS missed_reports (
+    id INTEGER PRIMARY KEY, url TEXT, title TEXT, kind TEXT NOT NULL DEFAULT 'missed', reason TEXT, note TEXT,
+    source TEXT, host TEXT, item_kind TEXT, item_id INTEGER, status TEXT NOT NULL DEFAULT 'open',
+    resolution TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS query_coverage (
+    query_key TEXT PRIMARY KEY, family TEXT NOT NULL, query TEXT NOT NULL, runs INTEGER NOT NULL DEFAULT 0,
+    last_run_at TEXT, last_results INTEGER, first_planned_at TEXT NOT NULL
+);
 """
 
 
@@ -185,10 +228,11 @@ CREATE INDEX IF NOT EXISTS idx_job_status_history_job ON job_status_history(job_
 
 
 
-SCHEMA_VERSION = 11  # bump whenever _migrate adds tables/columns
+SCHEMA_VERSION = 12  # bump whenever _migrate adds tables/columns
 
 
-class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin, TrackingMixin, SourcesMixin):
+class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin, TrackingMixin, SourcesMixin,
+            EligibilityMixin, GovMixin, CompaniesMixin):
     def __init__(self, data_dir: Path):
         data_dir.mkdir(parents=True, exist_ok=True)
         self.data_dir = data_dir
@@ -264,12 +308,24 @@ class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin
                           "city": "TEXT", "stage": "TEXT", "followed": "INTEGER NOT NULL DEFAULT 0",
                           "verification_status": "TEXT"},
             "intel_items": {"region": "TEXT", "topic": "TEXT", "updated_date": "TEXT"},
+            # v12: source-first government discovery and deterministic eligibility
+            "recruitment_notices": {"source_id": "TEXT", "official_source": "INTEGER", "document_url": "TEXT",
+                                    "notification_text": "TEXT", "eligibility_status": "TEXT",
+                                    "eligibility_json": "TEXT", "missing_facts_json": "TEXT",
+                                    "eligibility_as_of": "TEXT", "requirements_json": "TEXT", "age_min": "INTEGER",
+                                    "age_max": "INTEGER", "qualification_level": "TEXT", "branches_json": "TEXT",
+                                    "min_percentage": "REAL", "gate_required": "INTEGER", "gate_score_min": "REAL",
+                                    "dedup_key": "TEXT", "history_json": "TEXT", "provenance_json": "TEXT"},
+            "exam_events": {"source_id": "TEXT", "official_source": "INTEGER", "document_url": "TEXT",
+                            "eligibility_status": "TEXT", "eligibility_json": "TEXT", "missing_facts_json": "TEXT",
+                            "eligibility_as_of": "TEXT", "requirements_json": "TEXT"},
         }
         for table, columns in additions.items():
             existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
             for name, kind in columns.items():
                 if name not in existing:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_notices_dedup ON recruitment_notices(dedup_key)")
         # Existing tracked jobs become application records once (history preserved).
         if not db.execute("SELECT COUNT(*) AS n FROM applications").fetchone()["n"]:
             state_map = {"saved": "saved", "applied": "applied", "interview": "interview", "offer": "offer",
@@ -317,9 +373,12 @@ class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin
         with self.connect() as db:
             removed = {}
             for table in ("job_listings", "recruitment_notices", "exam_events",
-                          "intel_items", "search_sessions", "saved_items", "source_reports", "job_exclusions"):
+                          "intel_items", "search_sessions", "saved_items", "source_reports", "job_exclusions",
+                          "gov_documents", "opportunity_signals"):
                 removed[table] = int(db.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"])
                 db.execute(f"DELETE FROM {table}")
+            # Listing pages must be re-read after their notices were removed.
+            db.execute("UPDATE gov_sources SET etag=NULL, last_modified=NULL, content_hash=NULL, next_due_at=NULL")
             return removed
 
     def export_data(self) -> dict[str, Any]:
@@ -328,7 +387,8 @@ class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin
             for table in ("tasks", "history", "briefings", "preferences",
                           "job_listings", "recruitment_notices", "exam_events",
                           "intel_items", "exam_watchlist", "organization_watchlist",
-                          "saved_items", "search_sessions", "candidate_profile", "resumes"):
+                          "saved_items", "search_sessions", "candidate_profile", "resumes",
+                          "candidate_eligibility", "missed_reports"):
                 rows = [dict(row) for row in db.execute(f"SELECT * FROM {table}")]
                 for row in rows:
                     for key in list(row):
@@ -359,7 +419,5 @@ class Store(PersonalMixin, ProfileMixin, JobsMixin, RecordsMixin, EmployersMixin
             if column not in item:
                 continue
             key = column.removesuffix("_json")
-            item[key] = _loads(item.pop(column), [] if key in {"skills", "evidence", "resume_scores", "sources",
-                                                               "verify_history", "locations", "discovery_sources",
-                                                               "aliases", "interview_dates", "history"} else {})
+            item[key] = _loads(item.pop(column), [] if key in LIST_KEYS else {})
         return item

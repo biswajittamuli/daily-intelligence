@@ -45,6 +45,15 @@ document.addEventListener('click',async event=>{
     else if(action==='sources-cat'){state.filters.sourcesCat=button.dataset.value;render();}
     else if(action==='source-toggle'){const r=await api(`/api/sources/${encodeURIComponent(button.dataset.id)}/enabled`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:button.dataset.on==='1'})});
       state.sources=r.sources||state.sources;render();}
+    else if(action==='monitor-run'){
+      const r=await api('/api/monitoring/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:button.dataset.kind||'auto'})});
+      toast(r.queued?`Monitoring batch queued (${r.kind})`:'Nothing is due right now');
+      setTimeout(async()=>{await refresh();render();},1800);
+    }
+    else if(action==='company-follow'){
+      const r=await api(`/api/companies/${button.dataset.id}/update`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({followed:button.dataset.on==='1'})});
+      await refresh();render();toast(button.dataset.on==='1'?'Following this company':'Unfollowed');
+    }
     else if(action==='briefing'){await startJobRequest('/api/briefings',{},'Briefing started');}
     else if(action==='scan-all'){await startJobRequest('/api/search/scan-all',{},'Scanning all enabled sections');}
     else if(action==='discover-jobs'){await startJobRequest('/api/intel/search',{category:'jobs',query:state.lastQuery.jobs||'',pool_size:((D().preferences||{}).jobs||{}).pool_size||100},'Discovering jobs');}
@@ -287,6 +296,38 @@ document.addEventListener('submit',async event=>{
       state.lastQuery.jobs=query;
       await startJobRequest('/api/intel/search',{category:'jobs',query,pool_size:Number(data.get('pool_size')||100)},'Discovering jobs');
     }
+    else if(kind==='eligibility'){
+      const value=key=>String(data.get(key)||'').trim();
+      const number=key=>{const raw=value(key);return raw===''?null:Number(raw);};
+      const profile={
+        date_of_birth:value('date_of_birth')||null,age:number('age'),age_as_of:value('age_as_of')||null,
+        category:value('category')||null,gender:value('gender')||null,pwd:data.has('pwd'),
+        ex_serviceman:data.has('ex_serviceman'),nationality:value('nationality')||null,
+        domicile_state:value('domicile_state')||null,
+        education:{degree:value('degree'),branch:value('branch'),university:value('university'),
+          graduation_year:number('graduation_year'),final_year:data.has('final_year'),
+          percentage:number('percentage'),cgpa:number('cgpa'),cgpa_scale:number('cgpa_scale'),backlogs:number('backlogs')},
+        experience:{full_time_months:number('full_time_months'),internship_months:number('internship_months')},
+        gate:{appeared:data.has('gate_appeared'),paper:value('gate_paper')||null,year:number('gate_year'),
+          score:number('gate_score'),rank:number('gate_rank'),valid_until:value('gate_valid_until')||null},
+        preferences:{sectors:['psu','government','private'].filter(s=>data.has('sector:'+s)),
+          locations:splitList(value('locations')),min_salary:number('min_salary'),
+          employment_types:splitList(value('employment_types'))},
+      };
+      const result=await api('/api/eligibility',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({profile})});
+      await refresh();render();
+      toast(`Eligibility profile saved; ${result.reevaluated?.notices??0} notice(s) and ${result.reevaluated?.exams??0} exam(s) re-evaluated`);
+    }
+    else if(kind==='missed'){
+      const url=String(data.get('url')||'').trim();
+      const title=String(data.get('title')||'').trim();
+      if(!url&&!title){toast('Give the link or title of the missed opportunity',true);return;}
+      await api('/api/missed',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:url||null,title:title||null,kind:'missed',
+          reason:String(data.get('reason')||'').trim()||null,note:String(data.get('note')||'').trim()||null})});
+      await refresh();render();toast('Reported. It is stored locally for source and rule fixes.');
+    }
     else if(kind==='sources'){
       const prefs=JSON.parse(JSON.stringify(D().preferences||{}));
       const companies=String(data.get('companies')||'').split('\n').map(line=>line.trim()).filter(Boolean).map(line=>{
@@ -382,6 +423,7 @@ document.addEventListener('input',event=>{
 document.addEventListener('change',event=>{
   const target=event.target;
   if(target.dataset.action==='gov-eligibility'){state.filters.government.eligibility=target.value;render();}
+  if(target.dataset.action==='exam-eligibility'){state.filters.exams.eligibility=target.value;render();}
   if(target.dataset.action==='gov-doc'){state.filters.government.doc=target.value;render();}
   if(target.dataset.action==='job-sort'){state.filters.jobs.sort=target.value;render();}
   if(target.dataset.action==='job-expired'){state.filters.jobs.showExpired=target.checked;render();}

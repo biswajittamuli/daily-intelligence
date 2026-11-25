@@ -203,5 +203,54 @@ function viewSources(){
         <td class="view-note">${esc(s.access)}${s.alternative?`<div>${esc(s.alternative)}</div>`:''}</td>
         <td><button class="link-button" data-action="source-toggle" data-id="${esc(s.id)}" data-on="${s.enabled?0:1}">${s.enabled?'Disable':'Enable'}</button></td></tr>`;}).join('')}
       </tbody></table></div>
-    </div>`;
+    </div>
+    ${coveragePanels()}`;
+}
+
+function coveragePanels(){
+  const gov=D().gov_sources||{};
+  const companies=D().company_coverage||{};
+  const monitor=D().monitoring||{};
+  const missed=D().missed_reports||[];
+  const gs=gov.summary||{};
+  const gcounts=gov.counts||{};
+  const totals=companies.totals||{};
+  const metric=(label,value)=>`<div class="mini-kv"><span>${esc(label)}</span><b>${esc(value??0)}</b></div>`;
+  const govRows=(gov.sources||[]).filter(s=>s.official).slice(0,80);
+  return `<div class="grid grid-2 section-space">
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">Official sources (v5)</h3><span class="panel-kicker">${esc(gs.official_direct||0)} of ${esc(gs.official||0)} read directly</span></div>
+      ${metric('Catalogue',gs.total)}${metric('Official organisations',gs.official)}${metric('Polled directly',gs.official_direct)}${metric('Notices stored',gcounts.notices)}${metric('With an eligibility verdict',(gcounts.eligibility||{}).decided)}${metric('Needing one fact',(gcounts.eligibility||{}).needs_fact)}
+      <div class="view-note section-space">A source counts as working only when it produced a usable record. JavaScript-only and challenge-protected sites are read in Discover runs, never bypassed.</div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3 class="panel-title">Company registry</h3><span class="panel-kicker">${esc(totals.companies||0)} companies</span></div>
+      ${metric('Enabled',totals.enabled)}${metric('Scanned at least once',totals.scanned)}${metric('Successful',totals.successful)}${metric('Failing (3+ attempts)',totals.failing)}${metric('Due now',totals.due)}${metric('India roles stored',totals.india_jobs)}
+      <div class="table-wrap section-space"><table class="data-table"><thead><tr><th>Segment</th><th class="num">Companies</th><th class="num">Scanned</th><th class="num">Failing</th><th class="num">India roles</th></tr></thead><tbody>
+        ${Object.entries(companies.segments||{}).map(([name,row])=>`<tr><td>${esc(name)}</td><td class="num">${esc(row.companies)}</td><td class="num">${esc(row.scanned)}</td><td class="num">${esc(row.failing)}</td><td class="num">${esc(row.india_jobs)}</td></tr>`).join('')}
+      </tbody></table></div>
+    </div>
+  </div>
+  <div class="panel section-space">
+    <div class="panel-head"><h3 class="panel-title">Incremental monitoring</h3><span class="panel-kicker">${monitor.state?esc(monitor.state):'idle'}</span></div>
+    ${monitor.state?`${metric('Batch',monitor.kind)}${metric('Companies / sources',monitor.companies??monitor.sources)}${metric('Stored / new notices',monitor.stored??monitor.notices_new)}${metric('Finished',monitor.finished_at?fmtDateTime(monitor.finished_at):'')}${monitor.error?`<div class="reason status-bad">${esc(monitor.error)}</div>`:''}`:'<div class="mini-empty">No monitoring batch has run yet. It runs on the light worker while the app is open.</div>'}
+    <div class="item-actions"><button class="quiet-button" data-action="monitor-run" data-kind="auto">Run a monitoring batch now</button></div>
+  </div>
+  <div class="panel section-space">
+    <div class="panel-head"><h3 class="panel-title">Official source registry</h3><span class="panel-kicker">${govRows.length} shown</span></div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>Source</th><th>Category</th><th>Access</th><th>Last scan</th><th>Next due</th><th class="num">Notices</th><th>State</th></tr></thead><tbody>
+      ${govRows.map(s=>`<tr><td><b>${esc(s.name)}</b><div class="view-note">${esc(s.host||'')}</div></td><td>${esc(s.category)}</td><td class="view-note">${esc(s.access)}</td><td class="view-note">${s.last_scan_at?esc(fmtDateTime(s.last_scan_at)):'never'}</td><td class="view-note">${s.next_due_at?esc(fmtDateTime(s.next_due_at)):'—'}</td><td class="num">${esc(s.notices||0)}</td><td class="view-note ${s.consecutive_failures?'status-warn':''}">${esc(s.last_error||s.state?.last_state||'not scanned')}</td></tr>`).join('')}
+    </tbody></table></div>
+  </div>
+  <div class="panel section-space">
+    <div class="panel-head"><h3 class="panel-title">Report a missed opportunity</h3><span class="panel-kicker">stored locally</span></div>
+    <div class="view-note">If a notice or job still does not appear, report it here. The link, title and reason are stored so the source catalogue and parsers can be fixed. The reported page is not scraped without the same safety rules.</div>
+    <form data-form="missed" class="inline-form section-space">
+      <input class="input" name="url" placeholder="https://official-notification-or-job-link" style="min-width:280px">
+      <input class="input" name="title" placeholder="Title (if no link)">
+      <input class="input" name="reason" placeholder="Why it was missed">
+      <button class="primary-button" type="submit">Report</button>
+    </form>
+    ${missed.length?`<div class="table-wrap"><table class="data-table"><thead><tr><th>Reported</th><th>Title / link</th><th>Reason</th><th>Status</th></tr></thead><tbody>
+      ${missed.slice(0,20).map(r=>`<tr><td class="view-note">${esc(fmtDate(r.created_at))}</td><td>${r.url?`<a href="${safeUrl(r.url)}" target="_blank" rel="noopener">${esc(r.title||hostOf(r.url)||r.url)}</a>`:esc(r.title||'—')}</td><td class="view-note">${esc(r.reason||'')}</td><td>${badge(r.status)}</td></tr>`).join('')}
+    </tbody></table></div>`:'<div class="mini-empty section-space">No open reports.</div>'}
+  </div>`;
 }

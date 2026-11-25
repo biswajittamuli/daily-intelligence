@@ -3,8 +3,10 @@
     load resume + preferences + source state (disabled / backing-off sources are skipped and reported)
     → JobsAdapter        BroadJobSearch: search paths, ATS boards (paginated), career pages,
                          employer discovery/resolution, feeds, dedup, freshness, resume matching, store
-    → GovernmentAdapter  government & PSU recruitment notices
-    → ExamsAdapter       examination notifications
+    → GovSourceAdapter   official government / PSU / examination sources, polled incrementally (v5):
+                         listing pages → new notifications (HTML/PDF) → structured fields → eligibility
+    → GovernmentAdapter  search fallback, targeted requests only ("NTPC recruitment")
+    → ExamsAdapter       search fallback, targeted requests only
     → NewsAdapter        AI developments (at most once per day)
     → ReverifyAdapter    re-verification of active listings whose check is due
     → registry update, discovery report, notifications
@@ -58,6 +60,9 @@ class _EngineAdapter:
     name = ""
     daily = False
 
+    # Government and exams are source-first (GovSourceAdapter); the search engine is only their fallback.
+    targeted_only = False
+
     def applies(self, ctx: AcquisitionContext) -> bool:
         sections = (ctx.preferences.get("discovery") or {}).get("sections") or ["jobs", "government", "exams", "news"]
         if self.category not in sections or self.source_id in ctx.skip:
@@ -65,6 +70,8 @@ class _EngineAdapter:
         if ctx.mode == "targeted":
             from app.services.universal_search import classify_rules
             return self.category in classify_rules(ctx.request)
+        if self.targeted_only:
+            return False
         if self.daily:
             last = ctx.store.get_preference(f"last_{self.category}_discovery")
             return last != date.today().isoformat()
@@ -87,11 +94,77 @@ class _EngineAdapter:
 
 
 class GovernmentAdapter(_EngineAdapter):
-    category, source_id, name = "government", "gov:notices", "Government & PSU"
+    category, source_id, name, targeted_only = "government", "gov:notices", "Government & PSU (search)", True
 
 
 class ExamsAdapter(_EngineAdapter):
-    category, source_id, name = "exams", "gov:exams", "Exams"
+    category, source_id, name, targeted_only = "exams", "gov:exams", "Exams (search)", True
+
+
+class GovSourceAdapter:
+    """Official government / PSU / examination sources, polled incrementally (app.services.gov_crawler).
+
+    A Discover run reads more due sources than the background scheduler does, and is the only place the
+    headless browser and the search provider are used (JavaScript sites, broken TLS chains, blocked sites)."""
+    name = "Government & exams"
+    source_ids = ()
+
+    def applies(self, ctx: AcquisitionContext) -> bool:
+        sections = (ctx.preferences.get("discovery") or {}).get("sections") or ["jobs", "government", "exams", "news"]
+        return ctx.mode != "targeted" and bool({"government", "exams"} & set(sections))
+
+    async def acquire(self, ctx: AcquisitionContext) -> AdapterResult:
+        from app.services.gov_crawler import GovCrawler
+        from app.services.job_sources.browser import BrowserRenderer
+        from app.services.job_sources.models import SourceState
+        from app.services.job_sources.safe_http import SafeFetcher
+        prefs = ctx.preferences.get("government") or {}
+        limit = max(1, min(40, int(prefs.get("sources_per_run") or 14)))
+        browser = BrowserRenderer(max_pages=1, enabled=bool((ctx.preferences.get("jobs") or {}).get("browser_rendering", True))) \
+            if prefs.get("render_sources", True) else None
+        retriever = None
+        if prefs.get("provider_sources", True):
+            try:
+                from app.mcp.retrieval import ParallelWebRetriever
+                retriever = ParallelWebRetriever(settings=ctx.settings)
+                await retriever.__aenter__()
+            except Exception:  # the provider is optional: blocked sources are then reported, not fetched
+                retriever = None
+        llm = None
+        if prefs.get("llm_assist", False):
+            from app.llm import OllamaProvider
+            llm = OllamaProvider(host=ctx.settings.ollama_host, preferred_model=ctx.settings.ollama_model,
+                                 timeout=ctx.settings.ollama_timeout)
+
+        def cancel() -> None:
+            if ctx.cancelled():
+                raise asyncio.CancelledError
+        try:
+            async with SafeFetcher(cache_path=ctx.settings.data_dir / "http-cache.sqlite3", cache_ttl=0, timeout=25,
+                                   max_bytes=2_500_000, concurrency=4) as http:
+                crawler = GovCrawler(ctx.store, http, browser=browser, retriever=retriever, llm=llm,
+                                     time_budget=float(prefs.get("time_budget_seconds") or 420))
+                summary = await crawler.crawl_due(limit=limit, progress=ctx.progress, cancel=cancel, record_registry=False)
+        finally:
+            if browser is not None:
+                await browser.close()
+            if retriever is not None:
+                try:
+                    await retriever.__aexit__(None, None, None)
+                except Exception:
+                    pass
+        reports = []
+        for item in summary["sources"]:
+            usable = int(item.get("notices_new") or 0) + int(item.get("notices_updated") or 0) + \
+                int(item.get("exam_events") or 0) + int(item.get("signals") or 0)
+            state = (SourceState.EXTRACT_OK if usable else SourceState.FETCH_OK) if item["ok"] else (
+                SourceState.ACCESS_DENIED if item["outcome"] == "blocked" else SourceState.UNAVAILABLE)
+            reports.append({"source_id": item["source_id"], "category": "government", "name": item["name"],
+                            "method": item["method"], "state": state, "search_results": int(item.get("links") or 0),
+                            "listings": usable, "unique": usable, "failure_reason": item.get("error"),
+                            "outcome_label": item.get("outcome_label")})
+        return AdapterResult(self.name, "complete" if summary["status"] in {"complete", "partial"} else "failed",
+                             summary, reports)
 
 
 class NewsAdapter(_EngineAdapter):
@@ -118,7 +191,7 @@ class ReverifyAdapter:
         return AdapterResult(self.name, "complete", result)
 
 
-ADAPTERS = [JobsAdapter, GovernmentAdapter, ExamsAdapter, NewsAdapter, ReverifyAdapter]
+ADAPTERS = [JobsAdapter, GovSourceAdapter, GovernmentAdapter, ExamsAdapter, NewsAdapter, ReverifyAdapter]
 
 
 class DiscoveryOrchestrator:
@@ -187,6 +260,7 @@ class DiscoveryOrchestrator:
                          "extraction_ok": entry.extraction_ok, "extraction_total": entry.extraction_total,
                          "failure": "; ".join(dict.fromkeys(entry.failures))[:300] or None}
         self.store.record_source_runs(runs)
+        outcome_labels = {r["source_id"]: r["outcome_label"] for r in reports if r.get("outcome_label") and r.get("source_id")}
         from app.services.job_sources import job_apis, portals as portal_policy
         from app.services.preferences import portal_domains
         persisted = self.store.source_states()
@@ -214,8 +288,11 @@ class DiscoveryOrchestrator:
                 on = portal is not None and any(d in enabled for d in portal.domains)
                 reason = ("Queued for a later run (portal searches rotate across runs)" if on
                           else "Disabled in your portal preferences")
+            label = RUN_STATE_LABEL[state]
+            if sid in outcome_labels and state in {"successful", "no_usable_results", "no_results"}:
+                label = "Checked · " + outcome_labels[sid]  # an unchanged listing page is a normal incremental outcome
             sources.append({"id": sid, "name": definition.name, "category": definition.category,
-                            "method": definition.method, "state": state, "state_label": RUN_STATE_LABEL[state],
+                            "method": definition.method, "state": state, "state_label": label,
                             "results": (run or {}).get("results", 0), "listings": (run or {}).get("listings", 0),
                             "unique": (run or {}).get("unique", 0), "stored": (run or {}).get("stored", 0),
                             "verified": (run or {}).get("verified", 0), "rejected": (run or {}).get("rejected", 0),
@@ -263,6 +340,10 @@ class DiscoveryOrchestrator:
             "board_removals_detected": (jobs.get("reconciliation") or {}).get("closed", 0),
         }
         reverify = next((r.summary for r in results if r.name == "Re-verification"), {}) or {}
+        gov = next((r.summary for r in results if r.name == "Government & exams"), {}) or {}
+        metrics.update({"gov_sources_checked": len(gov.get("sources") or []), "gov_notices_new": gov.get("notices_new", 0),
+                        "gov_notices_updated": gov.get("notices_updated", 0), "gov_documents_read": gov.get("documents", 0),
+                        "gov_signals": gov.get("signals", 0), "gov_exam_events": gov.get("exam_events", 0)})
         return {
             "kind": "discovery", "mode": mode, "request": request, "status": "complete",
             "adapters": [{"name": r.name, "status": r.status, "seconds": r.seconds, "error": r.error,
@@ -271,6 +352,7 @@ class DiscoveryOrchestrator:
                                                               ("checked", "verified_open", "closed", "expired",
                                                                "unreachable", "not_checked")} if reverify else None,
             "jobs_session_id": jobs.get("session_id"), "new_job_ids": new_ids[:500],
+            "new_notice_ids": (gov.get("new_notice_ids") or [])[:200],
         }
 
 

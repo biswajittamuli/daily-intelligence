@@ -412,18 +412,21 @@ class DiscoveryEngineTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events["exam"]["date_status"], "tentative")
 
     async def test_news_and_papers_persist_with_freshness(self):
+        # A date relative to today: a fixed date ages out of the news freshness window.
+        from datetime import timedelta
+        recent = (date.today() - timedelta(days=2)).isoformat()
         news_url = "https://blog.example.com/new-model"
         news_retriever = FakeRetriever(
             [source("New open model released", news_url, ["A new open model was released."],
-                    published="2026-11-06")],
+                    published=recent)],
             {news_url: {"title": "New open model released",
-                        "content": "A new open model was released on 2026-11-06 with faster inference."}},
+                        "content": f"A new open model was released on {recent} with faster inference."}},
         )
         news_provider = FakeProvider({"items": [{
             "source_id": "S1", "title": "New open model released",
             "summary": "A new open model was released with faster inference.",
-            "why_it_matters": "Faster local inference.", "published_date": "2026-11-06",
-            "evidence_quote": "A new open model was released on 2026-11-06 with faster inference.",
+            "why_it_matters": "Faster local inference.", "published_date": recent,
+            "evidence_quote": f"A new open model was released on {recent} with faster inference.",
         }]})
         with tempfile.TemporaryDirectory() as tmp:
             engine = self.engine(tmp, news_retriever, news_provider)

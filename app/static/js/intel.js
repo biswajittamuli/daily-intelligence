@@ -3,13 +3,12 @@ function viewGovernment(){
   const notices=D().notices||[];
   const f=state.filters.government;
   const filtered=notices.filter(notice=>{
-    if(f.eligibility!=='all'&&notice.cse_eligibility!==f.eligibility)return false;
+    if(f.eligibility!=='all'&&(notice.eligibility_bucket||'undecided')!==f.eligibility)return false;
     if(f.doc!=='all'&&(notice.document_type||'')!==f.doc)return false;
     return true;
   });
-  const eligibility=[['all','All eligibility'],['explicitly_eligible','CSE explicitly eligible'],
-    ['eligible_based_on_listed_equivalent_degree','Equivalent degree'],['potentially_eligible_needs_verification','Needs verification'],
-    ['not_eligible','Not eligible'],['not_verified','Not verified']];
+  const eligibility=[['all','All eligibility'],['eligible','Eligible for me'],['likely','Likely eligible'],
+    ['needs_fact','Needs one fact'],['uncertain','Uncertain'],['not_eligible','Not eligible'],['undecided','Not evaluated']];
   const docs=['all',...Array.from(new Set(notices.map(n=>n.document_type).filter(Boolean)))];
   return heading('Intelligence','Government & PSU',
     'Official recruitment discovery. Aggregators are used only for discovery; official notifications and application links are preserved where found.',
@@ -30,12 +29,18 @@ function viewGovernment(){
 }
 function noticeCard(notice){
   const current=stateOf('notice',notice.id);
+  const verdict=notice.eligibility||{};
+  const bucket=notice.eligibility_bucket||'undecided';
+  const missing=(verdict.missing_facts||[]).slice(0,3);
   return `<article class="item-card">
     <div class="item-head">
       <div><h3 class="item-title">${notice.notification_url?`<a href="${safeUrl(notice.notification_url)}" target="_blank" rel="noopener">${esc(notice.post_name||notice.organization||'Recruitment notice')}</a>`:esc(notice.post_name||notice.organization||'Recruitment notice')}</h3>
         <div class="item-sub">${esc(notice.organization||'Organisation not stated')}${notice.discipline?' · '+esc(notice.discipline):''}${notice.advertisement_number?' · Adv. '+esc(notice.advertisement_number):''}</div></div>
-      <div class="chips">${badge(notice.status||'unverified')}${badge(notice.cse_eligibility||'not_verified')}</div>
+      <div class="chips">${badge(notice.status||'unverified')}${badge(bucket,(verdict.status_label||'Not evaluated'))}${notice.lead?badge('unverified','Discovery lead'):''}</div>
     </div>
+    ${verdict.summary?`<div class="reason">${esc(verdict.summary)}</div>`:''}
+    ${missing.length?`<div class="reason status-warn">Missing fact${missing.length>1?'s':''}: ${missing.map(esc).join(' · ')}</div>`:''}
+    ${(verdict.failed_rules||[]).length?`<div class="reason status-bad">${esc(verdict.failed_rules[0])}</div>`:''}
     <div class="kv-grid">
       ${kv('Vacancies',notice.vacancies)}
       ${kv('Qualifications',notice.qualifications)}
@@ -48,10 +53,12 @@ function noticeCard(notice){
       ${kv('Exam date',notice.exam_date?fmtDate(notice.exam_date):'')}
       ${kv('Selection',notice.selection_process)}
       ${kv('Document type',notice.document_type)}
+      ${kv('Official source',notice.source_name)}
     </div>
     ${evidence(notice)}
     <div class="item-actions">
-      ${notice.notification_url?`<a class="link-button" href="${safeUrl(notice.notification_url)}" target="_blank" rel="noopener">Official notification</a>`:''}
+      ${notice.document_url?`<a class="link-button" href="${safeUrl(notice.document_url)}" target="_blank" rel="noopener">Official notification</a>`:''}
+      ${notice.notification_url?`<a class="link-button" href="${safeUrl(notice.notification_url)}" target="_blank" rel="noopener">Notice page</a>`:''}
       ${notice.application_url&&notice.application_url!==notice.notification_url?`<a class="link-button primary" href="${safeUrl(notice.application_url)}" target="_blank" rel="noopener">Apply / portal</a>`:''}
       ${stateButtons('notice',notice.id,current)}
     </div>
@@ -63,7 +70,10 @@ function viewExams(){
   const events=D().exams||[];
   const f=state.filters.exams;
   const watch=(D().watchlists||{}).exam||[];
-  const filtered=events;
+  const filtered=events.filter(event=>!f.eligibility||f.eligibility==='all'||
+    (event.eligibility_bucket||'undecided')===f.eligibility);
+  const buckets=[['all','All eligibility'],['eligible','Eligible for me'],['likely','Likely eligible'],
+    ['needs_fact','Needs one fact'],['uncertain','Uncertain'],['not_eligible','Not eligible']];
   return heading('Intelligence','Examinations',
     'Dated events extracted from official notifications. Announced and tentative dates are labelled separately; past dates stay visible for context.',
     `<button class="quiet-button" data-action="quick-search" data-category="exams" data-query="">Discover exams</button>`) +
@@ -77,19 +87,24 @@ function viewExams(){
       <input class="input" name="query" placeholder="Examination name or organisation…" value="${esc(state.lastQuery.exams||'')}">
       <select class="select" name="freshness">${freshnessOptions(f.freshness)}</select>
       <button class="primary-button" type="submit">Search exams</button>
-    </form></div>` +
+    </form>
+    <select class="select" data-action="exam-eligibility" style="width:auto">${buckets.map(([v,l])=>`<option value="${v}" ${(f.eligibility||'all')===v?'selected':''}>${l}</option>`).join('')}</select></div>` +
     (filtered.length?`<div class="list-grid">${filtered.map(examCard).join('')}</div>`:emptyRich('No examination events stored',
       'Add examinations to your watchlist, then run a search. Events are extracted only when an official source states a date; missing dates are never generated from model knowledge.',
       `<button class="primary-button" data-action="quick-search" data-category="exams" data-query="">Search exams</button>`));
 }
 function examCard(event){
   const current=stateOf('exam',event.id);
+  const verdict=event.eligibility||{};
+  const bucket=event.eligibility_bucket||'undecided';
   return `<article class="item-card">
     <div class="item-head">
       <div><h3 class="item-title">${event.notification_url?`<a href="${safeUrl(event.notification_url)}" target="_blank" rel="noopener">${esc(event.exam_name||'Examination')}</a>`:esc(event.exam_name||'Examination')}</h3>
         <div class="item-sub">${esc(event.organization||'Conducting organisation not stated')} · ${esc(event.event_type||'event')}</div></div>
-      <div class="chips">${badge(event.date_status||'unverified')}</div>
+      <div class="chips">${badge(event.date_status||'unverified')}${verdict.status?badge(bucket,verdict.status_label):''}</div>
     </div>
+    ${verdict.summary?`<div class="reason">${esc(verdict.summary)}</div>`:''}
+    ${(verdict.missing_facts||[]).length?`<div class="reason status-warn">Missing fact: ${verdict.missing_facts.slice(0,3).map(esc).join(' · ')}</div>`:''}
     <div class="item-meta">${event.event_date?meta(fmtDate(event.event_date)):meta('Date unavailable')}${event.event_date?meta(event.event_date):''}</div>
     ${evidence(event)}
     <div class="item-actions">

@@ -114,26 +114,50 @@ def job_item(job: dict[str, Any], *, employers: dict[int, dict[str, Any]], state
     }
 
 
+ELIGIBILITY_ADJUST = {"eligible": 60, "likely_eligible": 30, "uncertain": 0, "not_eligible": -200}
+
+
+def _verdict(record: dict[str, Any]) -> dict[str, Any]:
+    """Feed fields of a stored deterministic verdict (app.services.eligibility)."""
+    e = record.get("eligibility") or {}
+    status = e.get("status") or "uncertain"
+    missing = e.get("missing_facts") or []
+    return {"eligibility": status, "eligibility_label": e.get("status_label") or "Not evaluated yet",
+            "eligibility_bucket": record.get("eligibility_bucket") or ("needs_fact" if status == "uncertain" and missing else None),
+            "why": e.get("summary"), "missing": missing[:4], "passed": (e.get("passed_rules") or [])[:5],
+            "failed": (e.get("failed_rules") or [])[:4], "evidence": (e.get("evidence") or [])[:2],
+            "as_of": e.get("as_of"), "window": (e.get("window") or {}).get("label"),
+            # "ineligible" keeps a notice out of the default lenses, exactly like a stretch job.
+            "tier": "ineligible" if status == "not_eligible" else ("strong" if status == "eligible" else None)}
+
+
 def notice_item(notice: dict[str, Any], today: date) -> dict[str, Any]:
     deadline = notice.get("closing_date")
     deadline_days = _days_until(deadline, today)
+    verdict = _verdict(notice)
     priority = 150 + (max(0, 60 - deadline_days * 3) if deadline_days is not None and deadline_days >= 0 else 0)
+    priority += ELIGIBILITY_ADJUST.get(verdict["eligibility"], 0)
+    sections = ["government"] + ([verdict["eligibility"]] if verdict["eligibility"] in {"eligible", "likely_eligible"} else [])
     return {"kind": "notice", "id": notice["id"], "title": notice.get("post_name") or notice.get("organization"),
-            "org": notice.get("organization"), "location": notice.get("location"), "deadline": deadline,
-            "deadline_days": deadline_days, "url": notice.get("original_url"),
-            "application_url": notice.get("application_url"),
-            "eligibility_label": str(notice.get("cse_eligibility") or "").replace("_", " "),
-            "sections": ["government"], "priority": priority, "first_seen": notice.get("first_seen")}
+            "org": notice.get("organization") or notice.get("source_name"), "location": notice.get("location"),
+            "deadline": deadline, "deadline_days": deadline_days,
+            "url": notice.get("document_url") or notice.get("original_url"),
+            "application_url": notice.get("application_url"), "official": bool(notice.get("official", True)),
+            "source_name": notice.get("source_name"), "advertisement_number": notice.get("advertisement_number"),
+            **verdict, "sections": sections, "priority": priority, "first_seen": notice.get("first_seen")}
 
 
 def exam_item(exam: dict[str, Any], today: date) -> dict[str, Any] | None:
     days = _days_until(exam.get("event_date"), today)
     if days is None or days < 0 or days > 60:
         return None
+    verdict = _verdict(exam)
     return {"kind": "exam", "id": exam["id"], "title": exam.get("exam_name"),
             "org": exam.get("organization"), "event": exam.get("event_type"), "deadline": exam.get("event_date"),
-            "deadline_days": days, "url": exam.get("original_url"), "sections": ["exam"],
-            "priority": 100 + max(0, 60 - days), "first_seen": exam.get("first_seen")}
+            "deadline_days": days, "url": exam.get("document_url") or exam.get("original_url"),
+            **verdict, "sections": ["exam"],
+            "priority": 100 + max(0, 60 - days) + min(0, ELIGIBILITY_ADJUST.get(verdict["eligibility"], 0)),
+            "first_seen": exam.get("first_seen")}
 
 
 def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exams: list[dict[str, Any]],
@@ -169,8 +193,12 @@ def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exa
             hidden += 1
             continue
         items.append(job_item(job, employers=by_id, states=states, reported=reported, today=today))
+    leads = 0
     for notice in notices:
         if str(notice.get("status") or "") in {"closed", "expired"}:
+            continue
+        if notice.get("lead"):
+            leads += 1  # search-fallback results without an official notification: shown under Government, not here
             continue
         items.append(notice_item(notice, today))
     for exam in exams:
@@ -199,6 +227,9 @@ def build_feed(*, jobs: list[dict[str, Any]], notices: list[dict[str, Any]], exa
         "good_matches": sum(1 for i in jobs_only if i["tier"] == "possible"),
         "deadlines_14d": len(deadlines), "exam_updates": sum(1 for i in items if i["kind"] == "exam"),
         "government": sum(1 for i in items if i["kind"] == "notice"), "hidden": hidden,
+        "government_eligible": sum(1 for i in items if i["kind"] == "notice" and i.get("eligibility") == "eligible"),
+        "government_needs_fact": sum(1 for i in items if i["kind"] == "notice" and i.get("eligibility_bucket") == "needs_fact"),
+        "government_leads": leads,
         "sections": sections,
     }
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "summary": summary, "items": items,

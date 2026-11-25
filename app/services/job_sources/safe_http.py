@@ -40,6 +40,8 @@ log = logging.getLogger(__name__)
 USER_AGENT = "Mozilla/5.0 (compatible; DailyIntelligence/3.3; local personal job finder; respects robots.txt)"
 TEXT_TYPES = ("text/html", "application/xhtml", "application/json", "application/ld+json", "text/plain",
               "application/xml", "text/xml", "application/rss", "application/atom")
+# Applicant-tracking systems whose public job boards are read with a JSON POST (see ats_readers).
+PUBLIC_POST_HOSTS = ("myworkdayjobs.com", "myworkdaysite.com")
 CHALLENGE_MARKERS = ("cf-chl", "challenge-platform", "attention required! | cloudflare", "verify you are human",
                      "are you a robot", "px-captcha", "g-recaptcha", "h-captcha", "hcaptcha.com", "captcha-delivery",
                      "datadome", "perimeterx", "please enable cookies", "checking your browser",
@@ -60,10 +62,12 @@ class FetchResult:
     elapsed_ms: int = 0
     redirects: list[str] = field(default_factory=list)
     truncated: bool = False
+    content: bytes = b""  # raw body, only for get_bytes()
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
-        return self.state == SourceState.FETCH_OK and bool(self.text)
+        return self.state == SourceState.FETCH_OK and bool(self.text or self.content)
 
 
 class PrivateAddressError(UnsafeURLError):
@@ -198,11 +202,31 @@ class SafeFetcher:
         return await self._request(url, use_cache=use_cache, check_robots=self.respect_robots and robots,
                                    accept_any_type=accept_json, **extra)
 
+    async def get_bytes(self, url: str, *, max_bytes: int = 8_000_000) -> FetchResult:
+        """Bounded binary download (PDF notifications). Same safety as ``get``: URL and redirect validation,
+        robots.txt, per-host pacing. Never cached; the caller keeps its own record of what it has read."""
+        return await self._request(url, use_cache=False, check_robots=self.respect_robots, accept_any_type=True,
+                                   binary=True, max_bytes=max(1, min(max_bytes, 25_000_000)))
+
+    async def post_json(self, url: str, body: dict[str, Any]) -> FetchResult:
+        """JSON POST for the documented public job-board endpoints of applicant-tracking systems (Workday CXS).
+
+        Only hosts under ``PUBLIC_POST_HOSTS`` may receive a body; robots.txt is still honoured and nothing but
+        the paging/search parameters is sent."""
+        host = (urlsplit(url).hostname or "").casefold()
+        if not any(host == base or host.endswith("." + base) for base in PUBLIC_POST_HOSTS):
+            result = FetchResult(url=url)
+            result.state, result.error = SourceState.UNSUPPORTED, "POST is not allowed for this host"
+            return result
+        return await self._request(url, use_cache=False, check_robots=self.respect_robots, accept_any_type=True,
+                                   headers={"Accept": "application/json"}, json_body=body)
+
     async def get_many(self, urls: list[str], **kwargs: Any) -> list[FetchResult]:
         return list(await asyncio.gather(*(self.get(url, **kwargs) for url in urls)))
 
     async def _request(self, url: str, *, use_cache: bool, check_robots: bool, accept_any_type: bool,
-                       headers: dict[str, str] | None = None, json_body: dict[str, Any] | None = None) -> FetchResult:
+                       headers: dict[str, str] | None = None, json_body: dict[str, Any] | None = None,
+                       binary: bool = False, max_bytes: int | None = None) -> FetchResult:
         assert self._client is not None, "use 'async with SafeFetcher()'"
         started = time.perf_counter()
         result = FetchResult(url=url)
@@ -230,7 +254,7 @@ class SafeFetcher:
                 async with self._global:
                     await self._wait_host(host, current)
                     response_info = await self._follow(current, cached if use_cache else None,
-                                                        headers=headers, json_body=json_body)
+                                                        headers=headers, json_body=json_body, max_bytes=max_bytes)
                 break
             except (httpx.TimeoutException, asyncio.TimeoutError):
                 result.state, result.error = SourceState.TIMEOUT, "request timed out"
@@ -245,9 +269,10 @@ class SafeFetcher:
                 result.elapsed_ms = int((time.perf_counter() - started) * 1000)
                 return result
             await asyncio.sleep(1.5 * attempt)
-        status, final_url, content_type, text, headers, redirects, truncated = response_info
+        status, final_url, content_type, text, headers, redirects, truncated, body = response_info
         result.status, result.final_url, result.content_type, result.redirects = status, final_url, content_type, redirects
         result.truncated = truncated
+        result.headers = {str(k).casefold(): str(v) for k, v in headers.items()}
         result.elapsed_ms = int((time.perf_counter() - started) * 1000)
         self.stats["durations_ms"].append(result.elapsed_ms)
         if status == 304 and cached is not None:
@@ -261,6 +286,12 @@ class SafeFetcher:
             result.state, result.error = SourceState.BOT_CHALLENGE, f"bot challenge page (HTTP {status})"
             return result
         result.state = SourceState.from_http(status)
+        if binary:
+            if result.state == SourceState.FETCH_OK:
+                result.content = body
+            else:
+                result.error = f"HTTP {status}"
+            return result
         if result.state == SourceState.FETCH_OK:
             if not accept_any_type and content_type and not content_type.startswith(TEXT_TYPES):
                 result.state, result.error = SourceState.UNSUPPORTED, f"content type {content_type}"
@@ -287,7 +318,8 @@ class SafeFetcher:
             self._host_last[host] = time.monotonic()
 
     async def _follow(self, url: str, cached: dict[str, Any] | None, *, headers: dict[str, str] | None = None,
-                      json_body: dict[str, Any] | None = None):
+                      json_body: dict[str, Any] | None = None, max_bytes: int | None = None):
+        limit = max_bytes or self.max_bytes
         assert self._client is not None
         redirects: list[str] = []
         current = url
@@ -313,17 +345,17 @@ class SafeFetcher:
                     async for chunk in response.aiter_bytes():
                         chunks.append(chunk)
                         size += len(chunk)
-                        if size >= self.max_bytes:
+                        if size >= limit:
                             truncated = True
                             break
-                body = b"".join(chunks)[: self.max_bytes]
+                body = b"".join(chunks)[:limit]
                 self.stats["bytes"] += len(body)
                 encoding = response.encoding or "utf-8"
                 try:
                     text = body.decode(encoding, errors="replace")
                 except LookupError:
                     text = body.decode("utf-8", errors="replace")
-                return (response.status_code, current, content_type, text, dict(response.headers), redirects, truncated)
+                return (response.status_code, current, content_type, text, dict(response.headers), redirects, truncated, body)
         raise UnsafeURLError("too many redirects")
 
     # ------------------------------------------------------------- cache

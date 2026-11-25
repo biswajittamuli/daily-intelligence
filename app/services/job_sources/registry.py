@@ -107,13 +107,14 @@ STATIC_DEFS: list[SourceDefinition] = [
     SourceDefinition("employers:resolution", "Unknown-employer resolution", "employer_discovery",
                      "name → official domain via search", ("resolve domain",), "provider-limited", "Any",
                      "Search-provider quota", "≤3 searches per run"),
-    SourceDefinition("gov:notices", "Government & PSU recruitment", "government",
-                     "Parallel search + fetch of official notices, local-model extraction", ("search", "extract"),
-                     "provider-limited", "India", "Official sites often serve PDFs; dates are evidence-checked",
-                     "1 search per run"),
-    SourceDefinition("gov:exams", "Examination notifications", "government",
-                     "Parallel search + fetch, local-model extraction", ("search", "extract"), "provider-limited",
-                     "India", "Dates must be quoted from the source", "1 search per run"),
+    SourceDefinition("gov:notices", "Government & PSU recruitment (search fallback)", "government",
+                     "Parallel search + fetch of official notices, local-model extraction — targeted requests only",
+                     ("search", "extract"), "provider-limited", "India",
+                     "Fallback for requests that name an organisation; official sources are polled directly (gov:*)",
+                     "1 search per request"),
+    SourceDefinition("gov:exams", "Examination notifications (search fallback)", "government",
+                     "Parallel search + fetch, local-model extraction — targeted requests only", ("search", "extract"),
+                     "provider-limited", "India", "Dates must be quoted from the source", "1 search per request"),
     SourceDefinition("news:ai", "AI developments", "news", "Parallel search", ("search",), "provider-limited",
                      "India first", "", "1 search per day", default_enabled=True),
     SourceDefinition("feed:hasjob", "Hasjob public feed", "feed", "public Atom feed", ("enumerate",), "all-in-one",
@@ -150,8 +151,33 @@ STATIC_DEFS: list[SourceDefinition] = [
 ]
 
 
+_GOV_METHOD = {"direct": "listing page polled directly (ETag / content hash); new notifications read as HTML or PDF",
+               "render": "listing page rendered in the local headless browser (JavaScript site), Discover runs only",
+               "provider": "listing page read through the search provider (server sends a broken TLS chain), Discover runs only",
+               "search": "search-engine results only (the site blocks direct access), Discover runs only",
+               "unavailable": "not fetched"}
+
+
+def _gov_defs() -> list[SourceDefinition]:
+    """One registry entry per catalogue source (app.services.gov_sources), so state and coverage are per source."""
+    from app.services import gov_sources
+    output = []
+    for source in gov_sources.SOURCES:
+        signal = source.category in {"news", "aggregator"}
+        output.append(SourceDefinition(
+            source.registry_id, source.name, "government", _GOV_METHOD[source.access],
+            ("signals",) if signal else ("enumerate", "detail", "PDF text", "eligibility clauses"),
+            "none", "India", source.note or ("Discovery signal only — never stored as the organization or the application record"
+                                             if signal else "Official source; robots.txt respected"),
+            f"every {source.cadence_hours} h, 1 request/s per host",
+            alternative="Open the official site; a targeted search request can still find its notices."
+            if source.access in {"unavailable", "search"} else "",
+            default_enabled=source.enabled and source.access != "unavailable"))
+    return output
+
+
 def definitions() -> list[SourceDefinition]:
-    return STATIC_DEFS + _ats_defs() + _portal_defs()
+    return STATIC_DEFS + _ats_defs() + _portal_defs() + _gov_defs()
 
 
 BY_ID = {d.id: d for d in definitions()}

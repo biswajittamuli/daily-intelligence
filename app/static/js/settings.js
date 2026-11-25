@@ -12,7 +12,7 @@ function viewSettings(){
     `<label class="portal-card"><input type="checkbox" name="portal:${esc(name)}" ${portal.enabled?'checked':''}><span>${esc(name)}</span><small>${esc(portal.domain||'custom')}</small></label>`).join('');
   const profile=D().profile;
   return heading('Personal','Settings','Preferences are stored locally and applied to future searches, matching and briefings.','') +
-    appearancePanel() + apiKeysPanel() + `<div class="panel section-space">
+    eligibilityPanel() + appearancePanel() + apiKeysPanel() + `<div class="panel section-space">
       <div class="panel-head"><h3 class="panel-title">Local model & resources</h3><span class="panel-kicker">Ollama</span></div>
       <form data-form="settings">
         <div class="settings-grid">
@@ -112,6 +112,76 @@ function viewSettings(){
       <div class="view-note section-space">Clearing intelligence removes jobs, notices, exam events, news, papers, sessions and saved states. Tasks, history, briefings and preferences are preserved.</div>
     </div>`;
 }
+function eligibilityPanel(){
+  const info=D().eligibility||{};
+  const p=info.profile||{};
+  const edu=p.education||{};
+  const exp=p.experience||{};
+  const gate=p.gate||{};
+  const pref=p.preferences||{};
+  const opt=info.options||{};
+  const states=opt.states||[];
+  const unknown=info.unknown_facts||[];
+  const sectors=opt.sectors||['psu','government','private'];
+  const option=(values,selected)=>(values||[]).map(v=>`<option value="${esc(v)}" ${String(selected||'')===String(v)?'selected':''}>${esc(v)}</option>`).join('');
+  return `<div class="panel section-space">
+    <div class="panel-head"><h3 class="panel-title">Eligibility profile</h3><span class="panel-kicker">${p.updated_at?`saved ${esc(fmtDate(p.updated_at))}`:'not saved yet'}</span></div>
+    <div class="banner ${unknown.length?'warn':'good'}">${unknown.length?`${unknown.length} fact(s) still unknown: ${unknown.slice(0,6).map(esc).join(' · ')}. A notice that needs one is shown as “Needs one fact”, never as eligible.`:'All key public-recruitment facts are declared.'}</div>
+    <form data-form="eligibility">
+      <div class="settings-grid">
+        <div class="field"><label>Date of birth</label><input class="input" type="date" name="date_of_birth" value="${esc(p.date_of_birth||'')}"></div>
+        <div class="field"><label>Age (if date of birth unknown)</label><input class="input" type="number" min="14" max="80" name="age" value="${esc(p.age??'')}"><small>Only used with the as-of date below.</small></div>
+        <div class="field"><label>Age as of</label><input class="input" type="date" name="age_as_of" value="${esc(p.age_as_of||'')}"></div>
+        <div class="field"><label>Category</label><select class="select" name="category"><option value="">Not declared</option>${option(opt.categories,p.category)}</select></div>
+        <div class="field"><label>Gender</label><select class="select" name="gender"><option value="">Not declared</option>${option(opt.genders,p.gender)}</select></div>
+        <div class="field"><label>Nationality</label><input class="input" name="nationality" value="${esc(p.nationality||'')}" placeholder="Indian"></div>
+        <div class="field"><label>Domicile state</label><select class="select" name="domicile_state"><option value="">Not declared</option>${option(states,p.domicile_state)}</select></div>
+        <div class="field"><label class="check-row"><input type="checkbox" name="pwd" ${p.pwd?'checked':''}> PwD / benchmark disability</label></div>
+        <div class="field"><label class="check-row"><input type="checkbox" name="ex_serviceman" ${p.ex_serviceman?'checked':''}> Ex-serviceman</label></div>
+      </div>
+      <div class="settings-section"><h3>Education</h3>
+        <div class="settings-grid">
+          <div class="field"><label>Degree</label><input class="input" name="degree" value="${esc(edu.degree||'')}" placeholder="B.Tech"></div>
+          <div class="field"><label>Branch</label><input class="input" name="branch" value="${esc(edu.branch||'')}" placeholder="Computer Science and Engineering"></div>
+          <div class="field"><label>University / institute</label><input class="input" name="university" value="${esc(edu.university||'')}"></div>
+          <div class="field"><label>Graduation year</label><input class="input" type="number" min="1970" max="2100" name="graduation_year" value="${esc(edu.graduation_year??'')}"></div>
+          <div class="field"><label class="check-row"><input type="checkbox" name="final_year" ${edu.final_year?'checked':''}> Currently in final year</label></div>
+          <div class="field"><label>Percentage</label><input class="input" type="number" step="0.01" min="0" max="100" name="percentage" value="${esc(edu.percentage??'')}"></div>
+          <div class="field"><label>CGPA</label><input class="input" type="number" step="0.01" min="0" max="10" name="cgpa" value="${esc(edu.cgpa??'')}"></div>
+          <div class="field"><label>CGPA scale</label><input class="input" type="number" min="4" max="10" name="cgpa_scale" value="${esc(edu.cgpa_scale??10)}"></div>
+          <div class="field"><label>Backlogs</label><input class="input" type="number" min="0" max="60" name="backlogs" value="${esc(edu.backlogs??'')}"></div>
+        </div>
+      </div>
+      <div class="settings-section"><h3>Experience</h3>
+        <div class="settings-grid">
+          <div class="field"><label>Full-time experience (months)</label><input class="input" type="number" min="0" max="720" name="full_time_months" value="${esc(exp.full_time_months??'')}"></div>
+          <div class="field"><label>Internship experience (months)</label><input class="input" type="number" min="0" max="240" name="internship_months" value="${esc(exp.internship_months??'')}"></div>
+        </div>
+      </div>
+      <div class="settings-section"><h3>GATE / other examinations</h3>
+        <div class="settings-grid">
+          <div class="field"><label class="check-row"><input type="checkbox" name="gate_appeared" ${gate.appeared?'checked':''}> I have appeared in GATE</label></div>
+          <div class="field"><label>Paper</label><select class="select" name="gate_paper"><option value="">Not declared</option>${option(opt.gate_papers,gate.paper)}</select></div>
+          <div class="field"><label>Year</label><input class="input" type="number" min="2000" max="2100" name="gate_year" value="${esc(gate.year??'')}"></div>
+          <div class="field"><label>Score</label><input class="input" type="number" step="0.01" min="0" max="1000" name="gate_score" value="${esc(gate.score??'')}"></div>
+          <div class="field"><label>All India rank</label><input class="input" type="number" min="1" name="gate_rank" value="${esc(gate.rank??'')}"></div>
+          <div class="field"><label>Valid until</label><input class="input" type="date" name="gate_valid_until" value="${esc(gate.valid_until||'')}"></div>
+        </div>
+      </div>
+      <div class="settings-section"><h3>Preferences</h3>
+        <div class="settings-grid">
+          <div class="field"><label>Preferred sectors</label><div class="chips">${sectors.map(s=>`<label class="chip"><input type="checkbox" name="sector:${esc(s)}" ${(pref.sectors||[]).includes(s)?'checked':''}> ${esc(s)}</label>`).join('')}</div></div>
+          <div class="field"><label>Preferred locations</label><input class="input" name="locations" value="${esc((pref.locations||[]).join(', '))}" placeholder="India, Bengaluru, Remote"></div>
+          <div class="field"><label>Minimum salary</label><input class="input" type="number" min="0" name="min_salary" value="${esc(pref.min_salary??'')}"></div>
+          <div class="field"><label>Employment types</label><input class="input" name="employment_types" value="${esc((pref.employment_types||[]).join(', '))}" placeholder="Full-time, Internship"></div>
+        </div>
+      </div>
+      <div class="field-actions"><button class="primary-button" type="submit">Save eligibility profile</button></div>
+    </form>
+    <div class="view-note section-space">Resume facts are never copied into this form automatically. ${info.suggestions&&Object.keys(info.suggestions).length?'A resume suggestion is available to review, but nothing counts until you save it.':''}</div>
+  </div>`;
+}
+
 function modelOptions(){
   const current=(D().settings||{}).ollama_model||'';
   const models=state.models.length?state.models:[current].filter(Boolean);

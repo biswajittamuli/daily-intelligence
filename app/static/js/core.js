@@ -54,7 +54,7 @@ const state={
   filters:{
     jobs:{status:'all',q:'',freshness:'30d',recency:'all',role:'',resume:'',sort:'match',layout:'list',undated:true},
     government:{eligibility:'all',doc:'all',q:'',freshness:'90d'},
-    exams:{q:'',freshness:'365d'},
+    exams:{q:'',freshness:'365d',eligibility:'all'},
     news:{q:'',freshness:'7d',region:'',topic:''},
     papers:{q:'',freshness:'30d'},
     startups:{kind:'',q:'',signal:'',builtin:false},

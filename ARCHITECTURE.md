@@ -7,6 +7,47 @@ single-file SPA, a local SQLite store, a local Ollama model, and dynamically
 discovered Parallel MCP search/fetch tools. There is no cloud LLM and no model
 downloads.
 
+## v5 source-first discovery
+
+```text
+catalogue: app/services/gov_sources.py (73 entries; access = direct | render | provider | search | unavailable)
+  -> GovCrawler.crawl_due (app/services/gov_crawler.py)
+       due sources only: never scanned first, then longest overdue; failures back off exponentially (cap 7 days)
+       listing page    conditional GET (ETag / Last-Modified) + content hash + link-set fingerprint
+       new links only  classify: advertisement | corrigendum | result | admit_card | answer_key | schedule
+                                | calendar | syllabus | other      drop tenders, reports, navigation, social
+       bounded fetch   HTML or PDF (pypdf; local OCR only when there is no text layer)
+       build_notice    fields + requirements + evidence quotes + dedup key (org | advt no | post)
+       corrigendum     merges into its parent notice (same org + advt no), dates kept in history
+       exam calendar   dated events -> exam_events (canonical key includes type + date)
+       signals         aggregator / news entries are leads, never canonical records
+  -> deterministic eligibility (app/services/eligibility.py + requirements.py)
+       declared profile -> rule results -> eligible | likely_eligible | uncertain (named missing fact)
+                                          | not_eligible (failed rule + quote)
+  -> store (schema v12) -> feed / alerts / daily digest
+```
+
+Search-based `GovernmentAdapter` / `ExamsAdapter` remain as targeted-request fallbacks and are
+marked `targeted_only`; they no longer drive normal discovery. `DiscoveryEngine` is unchanged for
+requests that name a topic.
+
+Company side:
+
+```text
+company_registry.scan_due (app/services/company_registry.py)
+  -> due companies (followed first, then priority, then never scanned); failures back off
+  -> known ATS tenant   ats_readers (Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Workday, ...)
+  -> unknown            company careers page -> detect_board on the page itself -> read board
+                        else careers-page JSON-LD / embedded data -> static CareerDiscovery
+  -> outcome            extraction_successful | no_results | fetch_successful | bot_challenge | ...
+                        (an empty India board is a success; a blocked page is not)
+  -> jobs + coverage counters (company_registry, company_coverage)
+```
+
+The seed (`app/services/company_seeds.py`, 278 companies, 42 verified ATS tenants) is applied at
+startup when `SEED_VERSION` changes. Existing rows keep user changes. Design and limits:
+`docs/V5_SOURCE_FIRST_DISCOVERY.md`.
+
 ## v4.3 validation gate
 
 ```text
@@ -174,6 +215,13 @@ tracking, sources); `store.py` keeps setup, migration, backups (five newest kept
 | `saved_items` | Save / hide / track state per item |
 | `search_sessions` | Discovery runs: category, plan, progress, summary |
 | `candidate_profile` | Single-row local resume profile |
+| `candidate_eligibility` | Single-row declared eligibility profile (v5) |
+| `gov_sources` | Per-source revalidation state, due time, failures, counts (v5) |
+| `gov_documents` | Every official page/PDF read, with text and content hash (v5) |
+| `opportunity_signals` | Aggregator/news leads; never canonical records (v5) |
+| `company_registry` | Company scan state, ATS tenant, segment, coverage (v5) |
+| `missed_reports` | User-reported missed opportunities (v5) |
+| `query_coverage` | Which planned queries have actually run (v5) |
 
 Exam canonical keys are `<source-url>#event:<type>:<date>` so multiple events from one
 page do not overwrite each other. Job canonical keys are the canonical listing URL.
