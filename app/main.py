@@ -22,7 +22,7 @@ async def show_models(*, json_worker: bool = False) -> int:
     try:
         if json_worker:
             provider = OllamaProvider(host=settings.ollama_host, timeout=settings.ollama_timeout)
-            models = await provider.list_models()
+            models = await provider.chat_models()
             print(json.dumps({"models": [model.name for model in models]}))
             return 0
         model_names = discover_installed_models(settings)

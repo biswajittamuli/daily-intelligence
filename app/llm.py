@@ -122,7 +122,27 @@ class OllamaProvider:
                     f"installed. Available models: {', '.join(sorted(names))}"
                 )
             return self.preferred_model
-        return models[0].name
+        usable = await self.chat_models(models)
+        if not usable:
+            raise LocalModelError(
+                "No installed Ollama model can generate text (only embedding models were found: "
+                f"{', '.join(sorted(names))}). Install a chat model, then retry."
+            )
+        return usable[0].name
+
+    async def chat_models(self, models: list[ModelInfo] | None = None) -> list[ModelInfo]:
+        """Installed models that can generate text; embedding-only models are left out."""
+        if models is None:
+            models = await self.list_models()
+        usable = []
+        for model in models:
+            capabilities = await self._capabilities_for(model.name, model.capabilities)
+            if capabilities:
+                if "completion" in capabilities:
+                    usable.append(model)
+            elif "embed" not in model.name.lower():
+                usable.append(model)
+        return usable
 
     async def generate(
         self,
