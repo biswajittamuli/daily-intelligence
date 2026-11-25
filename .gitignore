@@ -15,3 +15,6 @@ notes/
 .aws/
 .codex/
 .agents/
+
+# Working notes, not part of the project
+docs/PROMPTS/
