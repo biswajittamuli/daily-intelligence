@@ -6,7 +6,7 @@ recruitment, exams and AI news for me, so I don't have to check dozens of sites 
 Everything runs locally. Language tasks use a small Ollama model on my machine, and my
 resume and notes never leave it.
 
-![Home feed](docs/screenshot.png)
+![Home feed](docs/screenshots/home.png)
 
 ## What it does
 
@@ -22,6 +22,19 @@ resume and notes never leave it.
   from my notes.
 
 One **Discover** button runs all of this and fills a single feed on the home page.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| **Job shortlist** – ranked against my resume, with the reasons | **Daily briefing** – what changed and what to do next |
+| ![Jobs](docs/screenshots/jobs.png) | ![Briefing](docs/screenshots/briefing.png) |
+| **AI news** – filtered by region and topic | **Skills market** – what employers ask for vs. what my resume has |
+| ![News](docs/screenshots/news.png) | ![Skills](docs/screenshots/skills.png) |
+| **Startups** – employers, career pages and funding news | **Government & PSU** – official notices with quoted evidence |
+| ![Startups](docs/screenshots/startups.png) | ![Government](docs/screenshots/government.png) |
+| **Sources & coverage** – what every source returned last run | **Local model** – runs on `qwen3:4b` through Ollama |
+| ![Sources](docs/screenshots/sources.png) | ![Local model](docs/screenshots/local-model.png) |
 
 ## How it works
 
